@@ -19,7 +19,7 @@ plain-HTML iframe.
 React (one line in `KioskPage.tsx`).
 
 **Spec:** `docs/superpowers/specs/2026-08-19-one-jarvis-goal-execution-design.md`
-(sections 3 and 5; section 4 is Phase 3, payment is Phase 4)
+(sections 3 and 5; section 4 is Phase 2, payment is Phase 4)
 
 ## Global Constraints
 
@@ -34,8 +34,8 @@ React (one line in `KioskPage.tsx`).
   a minimal acknowledgement and never reports the resulting state.
 - No payment tool in this phase. `payment_start` and `payment_verify` are
   Phase 4.
-- No capability store, no `merchant_learn`, no network recording. That is
-  Phase 3.
+- No capability store, no `merchant_learn`, no bundle reading, no schema
+  probing. That is Phase 2.
 - The LLM never emits HTML. Display tools take structured data only.
 - Run tests with `.venv/bin/pytest` from `/home/robber/Work/jarvis/OpenJarvis-v2`.
 - Branch is `native/runtime`. Do not push or merge. Commit only the files each
@@ -78,7 +78,7 @@ deliberate ceiling, marked in code.
 | File | Responsibility |
 |---|---|
 | `src/openjarvis/merchants/__init__.py` (new) | Package marker. |
-| `src/openjarvis/merchants/port.py` (new) | `MerchantPort` protocol plus the small dataclasses tools exchange (`MenuItem`, `CartLine`, `Cart`, `Order`). No logic. |
+| `src/openjarvis/merchants/port.py` (new) | `MerchantPort` protocol plus the dataclasses tools exchange (`Branch`, `Product`, `Variant`, `CartLine`, `Cart`, `Order`) and `ORDER_TYPES`. No logic. |
 | `src/openjarvis/merchants/fake.py` (new) | `FakeMerchant` — an in-process merchant with a fixed coffee menu. Deterministic, no I/O. |
 | `src/openjarvis/tools/ordering.py` (new) | The seven ordering tools. One module: they share the port and are read together. |
 | `src/openjarvis/tools/display.py` (new) | `display_menu`, `display_cart`, `display_clear`. Publishes on the bus. |
@@ -104,21 +104,35 @@ deliberate ceiling, marked in code.
 **Interfaces:**
 - Produces:
   ```python
+  ORDER_TYPES = ("at-table", "take-out", "delivery")
+
   @dataclass(frozen=True, slots=True)
-  class MenuItem:
-      id: str
+  class Branch:
+      slug: str
       name: str
-      price: int          # VND, integer minor-unit-free
-      available: bool
+      address: str
+
+  @dataclass(frozen=True, slots=True)
+  class Variant:
+      slug: str            # what cart_add takes; a separately priced SKU
+      size: str
+      price: int           # VND
+
+  @dataclass(frozen=True, slots=True)
+  class Product:
+      slug: str
+      name: str
       category: str
-      options: dict[str, list[str]]   # {"size": ["M","L"], "sugar": ["100","70","50","0"]}
+      available: bool
+      variants: tuple[Variant, ...]
 
   @dataclass(frozen=True, slots=True)
   class CartLine:
       line_id: str
-      item_id: str
+      variant_slug: str
       name: str
-      options: dict[str, str]
+      size: str
+      note: str            # free text; nothing verifies it
       quantity: int
       line_total: int
 
@@ -130,80 +144,150 @@ deliberate ceiling, marked in code.
   @dataclass(frozen=True, slots=True)
   class Order:
       order_id: str
+      order_type: str
+      branch_slug: str
       lines: tuple[CartLine, ...]
       total: int
-      status: str          # "placed" | "unknown"
+      status: str          # "placed"
 
   class MerchantPort(Protocol):
-      def search_menu(self, query: str) -> list[MenuItem]: ...
-      def get_item(self, item_id: str) -> MenuItem | None: ...
-      def add_to_cart(self, item_id: str, options: dict[str, str], quantity: int) -> str: ...
+      def list_branches(self) -> list[Branch]: ...
+      def search_menu(self, query: str, branch_slug: str) -> list[Product]: ...
+      def get_product(self, product_slug: str, branch_slug: str) -> Product | None: ...
+      def add_to_cart(self, variant_slug: str, quantity: int, note: str) -> str: ...
       def remove_from_cart(self, line_id: str) -> bool: ...
       def read_cart(self) -> Cart: ...
-      def place_order(self) -> str: ...
+      def place_order(self, order_type: str, branch_slug: str) -> str: ...
       def read_order(self, order_id: str) -> Order | None: ...
 
   class FakeMerchant:   # implements MerchantPort
       def __init__(self) -> None: ...
-      def set_price(self, item_id: str, price: int) -> None: ...   # test seam
+      def set_price(self, variant_slug: str, price: int) -> None: ...   # test seam
   ```
+
+**Why this shape.** It mirrors a real merchant API that was probed before this
+plan was written, so Phase 2 does not require rewriting every tool:
+
+- A size is a **variant** — its own slug and its own price — not an option on a
+  product. `cart_add` therefore takes a `variant`, never a `{"size": "L"}` map.
+- Sugar, ice and anything else the merchant does not model arrive as free text
+  in `note`. **Nothing verifies a note**; a person reads it.
+- Menus are **branch-scoped**. Searching without a branch is meaningless.
+- An order carries a **type**: `at-table`, `take-out` or `delivery`. The
+  customer saying "mang đi" is choosing one, and it belongs on `place_order`.
 
 - [ ] **Step 1: Write the failing test**
 
 Create `tests/merchants/test_fake_merchant.py`:
 
 ```python
-"""The fake merchant is the ground truth Phase 1 reasons against."""
+"""The fake merchant is the ground truth Phase 1 reasons against.
+
+Its shape mirrors a real merchant API: variants rather than modifiers,
+branch-scoped menus, free-text notes, and an order type.
+"""
 
 from __future__ import annotations
 
+import pytest
+
 from openjarvis.merchants.fake import FakeMerchant
+
+BRANCH = "br-thu-duc"
+
+
+def test_branches_are_listed_with_a_slug_and_a_name():
+    branches = FakeMerchant().list_branches()
+    assert BRANCH in {branch.slug for branch in branches}
+    assert all(branch.name for branch in branches)
 
 
 def test_search_finds_by_name_case_insensitively():
-    merchant = FakeMerchant()
-    results = merchant.search_menu("LATTE")
-    assert [item.id for item in results] == ["latte"]
+    results = FakeMerchant().search_menu("CÀ PHÊ ĐEN", BRANCH)
+    assert [product.slug for product in results] == ["ca-phe-den"]
 
 
-def test_search_with_empty_query_returns_the_whole_menu():
+def test_search_with_an_empty_query_returns_the_whole_branch_menu():
+    assert len(FakeMerchant().search_menu("", BRANCH)) >= 5
+
+
+def test_menus_are_branch_scoped():
+    """A product on one branch's menu need not be on another's."""
     merchant = FakeMerchant()
-    assert len(merchant.search_menu("")) >= 5
+    here = {p.slug for p in merchant.search_menu("", BRANCH)}
+    there = {p.slug for p in merchant.search_menu("", "br-quan-1")}
+    assert here != there
+
+
+def test_search_on_an_unknown_branch_returns_nothing():
+    assert FakeMerchant().search_menu("", "br-nowhere") == []
+
+
+def test_a_product_carries_priced_variants():
+    product = FakeMerchant().get_product("ca-phe-den", BRANCH)
+    assert product.name == "Cà phê đen"
+    assert [(v.slug, v.size, v.price) for v in product.variants] == [
+        ("ca-phe-den-std", "tiêu chuẩn", 35_000)
+    ]
 
 
 def test_add_returns_a_line_id_and_does_not_return_the_cart():
     """The port mirrors the doctrine: a mutation acknowledges, it does not report."""
-    merchant = FakeMerchant()
-    line_id = merchant.add_to_cart("latte", {"size": "L"}, 1)
+    line_id = FakeMerchant().add_to_cart("ca-phe-den-std", 1, "ít đường")
     assert isinstance(line_id, str) and line_id
 
 
-def test_cart_total_reflects_quantity_and_size():
+def test_the_note_survives_verbatim_because_nothing_interprets_it():
     merchant = FakeMerchant()
-    merchant.add_to_cart("latte", {"size": "L"}, 2)
+    merchant.add_to_cart("ca-phe-den-std", 1, "ít đường")
+    assert merchant.read_cart().lines[0].note == "ít đường"
+
+
+def test_cart_total_is_variant_price_times_quantity():
+    merchant = FakeMerchant()
+    merchant.add_to_cart("ca-phe-den-std", 2, "")
     cart = merchant.read_cart()
     assert len(cart.lines) == 1
     assert cart.lines[0].quantity == 2
-    assert cart.total == cart.lines[0].line_total
+    assert cart.total == 70_000
+
+
+def test_add_rejects_an_unknown_variant():
+    with pytest.raises(ValueError):
+        FakeMerchant().add_to_cart("no-such-variant", 1, "")
+
+
+def test_add_rejects_a_non_positive_quantity():
+    with pytest.raises(ValueError):
+        FakeMerchant().add_to_cart("ca-phe-den-std", 0, "")
 
 
 def test_remove_empties_the_cart():
     merchant = FakeMerchant()
-    line_id = merchant.add_to_cart("latte", {}, 1)
+    line_id = merchant.add_to_cart("ca-phe-den-std", 1, "")
     assert merchant.remove_from_cart(line_id) is True
     assert merchant.read_cart().lines == ()
 
 
-def test_place_order_snapshots_the_cart_and_clears_it():
+def test_place_order_records_type_and_branch_then_clears_the_cart():
     merchant = FakeMerchant()
-    merchant.add_to_cart("latte", {}, 1)
-    order_id = merchant.place_order()
+    merchant.add_to_cart("ca-phe-den-std", 1, "ít đường")
+    order_id = merchant.place_order("take-out", BRANCH)
 
     order = merchant.read_order(order_id)
     assert order is not None
     assert order.status == "placed"
-    assert len(order.lines) == 1
+    assert order.order_type == "take-out"
+    assert order.branch_slug == BRANCH
+    assert order.lines[0].note == "ít đường"
     assert merchant.read_cart().lines == ()
+
+
+def test_place_order_rejects_an_unknown_order_type():
+    merchant = FakeMerchant()
+    merchant.add_to_cart("ca-phe-den-std", 1, "")
+    with pytest.raises(ValueError):
+        merchant.place_order("teleport", BRANCH)
 
 
 def test_read_order_of_an_unknown_id_is_none():
@@ -211,10 +295,11 @@ def test_read_order_of_an_unknown_id_is_none():
 
 
 def test_set_price_changes_what_the_merchant_reports():
-    """The seam the fast-path safety test will need in Phase 3."""
+    """The seam the fast-path safety test will need in Phase 2."""
     merchant = FakeMerchant()
-    merchant.set_price("latte", 80_000)
-    assert merchant.get_item("latte").price == 80_000
+    merchant.set_price("ca-phe-den-std", 80_000)
+    product = merchant.get_product("ca-phe-den", BRANCH)
+    assert product.variants[0].price == 80_000
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -235,34 +320,63 @@ Create `src/openjarvis/merchants/port.py`:
 ```python
 """What an ordering tool may ask a merchant, and what it gets back.
 
-The port deliberately mirrors the mutation/observation doctrine the tools
-enforce: ``add_to_cart`` and ``place_order`` return an identifier and nothing
-else, so a tool built on them *cannot* report resulting state without calling
-an observing method.
+Shaped after a real merchant API rather than an imagined one:
+
+* A size is a **variant** -- its own slug, its own price -- not an option on a
+  product. There is no modifier map anywhere in this port.
+* Anything the merchant does not model (sugar level, ice, "no straw") is free
+  text in ``note``. Nothing validates it and nothing verifies it; a person
+  reads it.
+* Menus are **branch-scoped**, so every read takes a branch.
+* An order carries a **type**: eating in, taking away, or delivery.
+
+The port also mirrors the mutation/observation doctrine the tools enforce:
+``add_to_cart`` and ``place_order`` return an identifier and nothing else, so a
+tool built on them *cannot* report resulting state without calling an observing
+method.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Protocol, Tuple
+from typing import List, Optional, Protocol, Tuple
+
+# What an order can be. The customer saying "mang đi" is choosing "take-out".
+ORDER_TYPES: Tuple[str, ...] = ("at-table", "take-out", "delivery")
 
 
 @dataclass(frozen=True, slots=True)
-class MenuItem:
-    id: str
+class Branch:
+    slug: str
     name: str
+    address: str
+
+
+@dataclass(frozen=True, slots=True)
+class Variant:
+    """A separately priced SKU. This is what goes in a cart, not a product."""
+
+    slug: str
+    size: str
     price: int
-    available: bool
+
+
+@dataclass(frozen=True, slots=True)
+class Product:
+    slug: str
+    name: str
     category: str
-    options: Dict[str, List[str]]
+    available: bool
+    variants: Tuple[Variant, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class CartLine:
     line_id: str
-    item_id: str
+    variant_slug: str
     name: str
-    options: Dict[str, str]
+    size: str
+    note: str
     quantity: int
     line_total: int
 
@@ -276,6 +390,8 @@ class Cart:
 @dataclass(frozen=True, slots=True)
 class Order:
     order_id: str
+    order_type: str
+    branch_slug: str
     lines: Tuple[CartLine, ...]
     total: int
     status: str
@@ -284,24 +400,35 @@ class Order:
 class MerchantPort(Protocol):
     """The whole merchant surface. Nothing else may be called from a tool."""
 
-    def search_menu(self, query: str) -> List[MenuItem]: ...
+    def list_branches(self) -> List[Branch]: ...
 
-    def get_item(self, item_id: str) -> Optional[MenuItem]: ...
+    def search_menu(self, query: str, branch_slug: str) -> List[Product]: ...
 
-    def add_to_cart(
-        self, item_id: str, options: Dict[str, str], quantity: int
-    ) -> str: ...
+    def get_product(
+        self, product_slug: str, branch_slug: str
+    ) -> Optional[Product]: ...
+
+    def add_to_cart(self, variant_slug: str, quantity: int, note: str) -> str: ...
 
     def remove_from_cart(self, line_id: str) -> bool: ...
 
     def read_cart(self) -> Cart: ...
 
-    def place_order(self) -> str: ...
+    def place_order(self, order_type: str, branch_slug: str) -> str: ...
 
     def read_order(self, order_id: str) -> Optional[Order]: ...
 
 
-__all__ = ["Cart", "CartLine", "MenuItem", "MerchantPort", "Order"]
+__all__ = [
+    "ORDER_TYPES",
+    "Branch",
+    "Cart",
+    "CartLine",
+    "MerchantPort",
+    "Order",
+    "Product",
+    "Variant",
+]
 ```
 
 - [ ] **Step 4: Write the fake merchant**
@@ -309,35 +436,76 @@ __all__ = ["Cart", "CartLine", "MenuItem", "MerchantPort", "Order"]
 Create `src/openjarvis/merchants/fake.py`:
 
 ```python
-"""An in-process merchant, so the goal loop can be proven without a website."""
+"""An in-process merchant, so the goal loop can be proven without a website.
+
+Menu, prices and slugs are modelled on a real Vietnamese coffee chain that was
+probed while writing this: two branches with different menus, sizes as
+separately priced variants, and no modifier system at all -- "ít đường" is a
+free-text note a person reads.
+"""
 
 from __future__ import annotations
 
 import itertools
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-from openjarvis.merchants.port import Cart, CartLine, MenuItem, Order
+from openjarvis.merchants.port import (
+    ORDER_TYPES,
+    Branch,
+    Cart,
+    CartLine,
+    Order,
+    Product,
+    Variant,
+)
 
-_SIZE_SURCHARGE = {"M": 0, "L": 6_000}
-
-_MENU: tuple[MenuItem, ...] = (
-    MenuItem("latte", "Latte", 45_000, True, "coffee",
-             {"size": ["M", "L"], "sugar": ["100", "70", "50", "0"]}),
-    MenuItem("americano", "Americano", 39_000, True, "coffee",
-             {"size": ["M", "L"], "ice": ["100", "50", "0"]}),
-    MenuItem("cold-brew", "Cold Brew", 55_000, True, "coffee",
-             {"size": ["M", "L"]}),
-    MenuItem("matcha-latte", "Matcha Latte", 52_000, True, "tea",
-             {"size": ["M", "L"], "sugar": ["100", "70", "50", "0"]}),
-    MenuItem("peach-tea", "Peach Tea", 42_000, True, "tea",
-             {"size": ["M", "L"], "ice": ["100", "50", "0"]}),
-    MenuItem("croissant", "Butter Croissant", 35_000, True, "food", {}),
-    MenuItem("tiramisu", "Tiramisu", 48_000, False, "food", {}),
+_BRANCHES: Tuple[Branch, ...] = (
+    Branch("br-thu-duc", "Chi nhánh 1", "Thủ Đức"),
+    Branch("br-quan-1", "Chi nhánh 2", "Quận 1"),
 )
 
 
+def _product(slug, name, category, available, sizes) -> Product:
+    return Product(
+        slug=slug,
+        name=name,
+        category=category,
+        available=available,
+        variants=tuple(
+            Variant(f"{slug}-{key}", size, price) for key, size, price in sizes
+        ),
+    )
+
+
+_CATALOGUE: Tuple[Product, ...] = (
+    _product("ca-phe-den", "Cà phê đen", "coffee", True,
+             [("std", "tiêu chuẩn", 35_000)]),
+    _product("ca-phe-sua", "Cà phê sữa", "coffee", True,
+             [("std", "tiêu chuẩn", 39_000)]),
+    _product("americano", "Americano", "coffee", True,
+             [("std", "tiêu chuẩn", 50_000)]),
+    _product("espresso", "Espresso", "coffee", True,
+             [("std", "tiêu chuẩn", 45_000)]),
+    _product("latte", "Latte", "coffee", True,
+             [("m", "vừa", 55_000), ("l", "lớn", 61_000)]),
+    _product("tra-dao", "Trà đào", "tea", True,
+             [("m", "vừa", 45_000), ("l", "lớn", 52_000)]),
+    _product("banh-mi", "Bánh mì", "food", True,
+             [("std", "tiêu chuẩn", 35_000)]),
+    _product("tiramisu", "Tiramisu", "food", False,
+             [("std", "tiêu chuẩn", 64_000)]),
+)
+
+# Menus are per branch, as they are on a real chain. The second branch carries
+# a subset, so a test can prove that searching without a branch is meaningless.
+_MENUS: Dict[str, Tuple[str, ...]] = {
+    "br-thu-duc": tuple(product.slug for product in _CATALOGUE),
+    "br-quan-1": ("ca-phe-den", "ca-phe-sua", "latte", "banh-mi"),
+}
+
+
 class FakeMerchant:
-    """A deterministic merchant with a fixed menu and one cart.
+    """A deterministic merchant with branch menus and one cart.
 
     One cart, not a map keyed by thread: the design's first confirmed
     constraint is one conversation session at a time per server process.
@@ -349,7 +517,12 @@ class FakeMerchant:
     """
 
     def __init__(self) -> None:
-        self._menu: Dict[str, MenuItem] = {item.id: item for item in _MENU}
+        self._products: Dict[str, Product] = {p.slug: p for p in _CATALOGUE}
+        self._variant_owner: Dict[str, str] = {
+            variant.slug: product.slug
+            for product in _CATALOGUE
+            for variant in product.variants
+        }
         self._lines: Dict[str, CartLine] = {}
         self._orders: Dict[str, Order] = {}
         self._line_seq = itertools.count(1)
@@ -357,18 +530,27 @@ class FakeMerchant:
 
     # -- observation ---------------------------------------------------
 
-    def search_menu(self, query: str) -> List[MenuItem]:
+    def list_branches(self) -> List[Branch]:
+        return list(_BRANCHES)
+
+    def search_menu(self, query: str, branch_slug: str) -> List[Product]:
+        on_menu = _MENUS.get(branch_slug, ())
+        products = [self._products[slug] for slug in on_menu]
         needle = query.strip().lower()
         if not needle:
-            return list(self._menu.values())
+            return products
         return [
-            item
-            for item in self._menu.values()
-            if needle in item.name.lower() or needle in item.category
+            product
+            for product in products
+            if needle in product.name.lower() or needle in product.category
         ]
 
-    def get_item(self, item_id: str) -> Optional[MenuItem]:
-        return self._menu.get(item_id)
+    def get_product(
+        self, product_slug: str, branch_slug: str
+    ) -> Optional[Product]:
+        if product_slug not in _MENUS.get(branch_slug, ()):
+            return None
+        return self._products.get(product_slug)
 
     def read_cart(self) -> Cart:
         lines = tuple(self._lines.values())
@@ -379,32 +561,43 @@ class FakeMerchant:
 
     # -- mutation ------------------------------------------------------
 
-    def add_to_cart(
-        self, item_id: str, options: Dict[str, str], quantity: int
-    ) -> str:
-        item = self._menu.get(item_id)
-        if item is None or not item.available or quantity < 1:
-            raise ValueError(item_id)
-        unit = item.price + _SIZE_SURCHARGE.get(options.get("size", "M"), 0)
+    def add_to_cart(self, variant_slug: str, quantity: int, note: str) -> str:
+        product_slug = self._variant_owner.get(variant_slug)
+        if product_slug is None or quantity < 1:
+            raise ValueError(variant_slug)
+        product = self._products[product_slug]
+        if not product.available:
+            raise ValueError(variant_slug)
+        variant = next(v for v in product.variants if v.slug == variant_slug)
+
         line_id = f"L{next(self._line_seq)}"
         self._lines[line_id] = CartLine(
             line_id=line_id,
-            item_id=item_id,
-            name=item.name,
-            options=dict(options),
+            variant_slug=variant_slug,
+            name=product.name,
+            size=variant.size,
+            # Stored verbatim. Nothing here interprets it, and nothing later
+            # can verify it -- that is what a free-text note means.
+            note=note or "",
             quantity=quantity,
-            line_total=unit * quantity,
+            line_total=variant.price * quantity,
         )
         return line_id
 
     def remove_from_cart(self, line_id: str) -> bool:
         return self._lines.pop(line_id, None) is not None
 
-    def place_order(self) -> str:
+    def place_order(self, order_type: str, branch_slug: str) -> str:
+        if order_type not in ORDER_TYPES:
+            raise ValueError(order_type)
+        if branch_slug not in _MENUS:
+            raise ValueError(branch_slug)
         cart = self.read_cart()
         order_id = f"ORD{next(self._order_seq):04d}"
         self._orders[order_id] = Order(
             order_id=order_id,
+            order_type=order_type,
+            branch_slug=branch_slug,
             lines=cart.lines,
             total=cart.total,
             status="placed",
@@ -414,11 +607,19 @@ class FakeMerchant:
 
     # -- test seam -----------------------------------------------------
 
-    def set_price(self, item_id: str, price: int) -> None:
+    def set_price(self, variant_slug: str, price: int) -> None:
         """Change a price behind the Agent's back, as a real site could."""
-        item = self._menu[item_id]
-        self._menu[item_id] = MenuItem(
-            item.id, item.name, price, item.available, item.category, item.options
+        product_slug = self._variant_owner[variant_slug]
+        product = self._products[product_slug]
+        self._products[product_slug] = Product(
+            slug=product.slug,
+            name=product.name,
+            category=product.category,
+            available=product.available,
+            variants=tuple(
+                Variant(v.slug, v.size, price if v.slug == variant_slug else v.price)
+                for v in product.variants
+            ),
         )
 
 
@@ -445,7 +646,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 2: Menu observation tools
+### Task 2: Branch and menu observation tools
 
 **Files:**
 - Create: `src/openjarvis/tools/ordering.py`
@@ -454,67 +655,100 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `MerchantPort`, `FakeMerchant` from Task 1.
-- Produces: registered tool names `menu_search`, `menu_item`. Both carry
+- Produces: registered tool names `branch_list`, `menu_search`, `menu_item`,
+  and the shared `_MerchantTool` base plus the `OBSERVES` / `MUTATES` metadata
+  constants that tasks 3 and 4 import. All three carry
   `spec.metadata == {"observes": True}`. Each tool instance exposes a
   `_merchant` attribute that `SystemBuilder` injects in Task 5; it is `None`
   until then and every tool returns a failed `ToolResult` when it is `None`.
+
+`branch_list` exists because menus and orders are branch-scoped: there is no
+menu to search and no order to place until a branch is chosen.
 
 - [ ] **Step 1: Write the failing test**
 
 Create `tests/tools/test_ordering_menu.py`:
 
 ```python
-"""Menu tools observe. They never change anything."""
+"""Branch and menu tools observe. They never change anything."""
 
 from __future__ import annotations
 
 import json
 
 from openjarvis.merchants.fake import FakeMerchant
-from openjarvis.tools.ordering import MenuItemTool, MenuSearchTool
+from openjarvis.tools.ordering import BranchListTool, MenuItemTool, MenuSearchTool
+
+BRANCH = "br-thu-duc"
 
 
-def _tool(cls):
+def _tool(cls, merchant=None):
     tool = cls()
-    tool._merchant = FakeMerchant()
+    tool._merchant = merchant or FakeMerchant()
     return tool
 
 
-def test_menu_search_declares_itself_an_observation():
-    assert MenuSearchTool().spec.metadata == {"observes": True}
+def test_all_three_declare_themselves_observations():
+    for cls in (BranchListTool, MenuSearchTool, MenuItemTool):
+        assert cls().spec.metadata == {"observes": True}
 
 
-def test_menu_search_returns_matching_items_as_json():
-    result = _tool(MenuSearchTool).execute(query="latte")
+def test_branch_list_returns_slugs_and_names():
+    payload = json.loads(_tool(BranchListTool).execute().content)
+    slugs = [branch["slug"] for branch in payload["branches"]]
+    assert BRANCH in slugs
+    assert all(branch["name"] for branch in payload["branches"])
+
+
+def test_menu_search_returns_matching_products_with_priced_variants():
+    result = _tool(MenuSearchTool).execute(query="cà phê đen", branch=BRANCH)
     assert result.success
     payload = json.loads(result.content)
-    assert [item["id"] for item in payload["items"]] == ["latte"]
-    assert payload["items"][0]["price"] == 45_000
-    assert payload["items"][0]["available"] is True
+    assert [p["slug"] for p in payload["products"]] == ["ca-phe-den"]
+    variants = payload["products"][0]["variants"]
+    assert variants[0]["slug"] == "ca-phe-den-std"
+    assert variants[0]["price"] == 35_000
 
 
-def test_menu_search_reports_unavailable_items_rather_than_hiding_them():
+def test_menu_search_reports_unavailable_products_rather_than_hiding_them():
     """The Agent must be able to say 'tiramisu is sold out' instead of
     silently pretending it does not exist."""
-    result = _tool(MenuSearchTool).execute(query="tiramisu")
+    result = _tool(MenuSearchTool).execute(query="tiramisu", branch=BRANCH)
     payload = json.loads(result.content)
-    assert payload["items"][0]["available"] is False
+    assert payload["products"][0]["available"] is False
 
 
-def test_menu_item_returns_options():
-    result = _tool(MenuItemTool).execute(item_id="latte")
-    payload = json.loads(result.content)
-    assert payload["options"]["size"] == ["M", "L"]
-
-
-def test_menu_item_unknown_id_fails_without_raising():
-    result = _tool(MenuItemTool).execute(item_id="unicorn-frappe")
+def test_menu_search_requires_a_branch():
+    """A menu without a branch is meaningless, and guessing one would put the
+    customer's order at the wrong shop."""
+    result = _tool(MenuSearchTool).execute(query="latte")
     assert result.success is False
-    assert "unknown_item" in result.content
+    assert "branch_required" in result.content
+
+
+def test_menu_search_on_an_unknown_branch_says_so():
+    result = _tool(MenuSearchTool).execute(query="latte", branch="br-nowhere")
+    assert result.success is False
+    assert "unknown_branch" in result.content
+
+
+def test_menu_item_returns_every_variant_with_its_own_slug_and_price():
+    result = _tool(MenuItemTool).execute(product="latte", branch=BRANCH)
+    payload = json.loads(result.content)
+    assert [(v["size"], v["price"]) for v in payload["variants"]] == [
+        ("vừa", 55_000),
+        ("lớn", 61_000),
+    ]
+
+
+def test_menu_item_unknown_product_fails_without_raising():
+    result = _tool(MenuItemTool).execute(product="unicorn-frappe", branch=BRANCH)
+    assert result.success is False
+    assert "unknown_product" in result.content
 
 
 def test_tool_without_a_merchant_fails_clearly():
-    result = MenuSearchTool().execute(query="latte")
+    result = MenuSearchTool().execute(query="latte", branch=BRANCH)
     assert result.success is False
     assert "merchant_unavailable" in result.content
 ```
@@ -582,9 +816,40 @@ class _MerchantTool(BaseTool):
         return ToolResult(tool_name=name, success=False, content=reason)
 
 
+@ToolRegistry.register("branch_list")
+class BranchListTool(_MerchantTool):
+    """Which shops exist. Nothing else works until one is chosen."""
+
+    tool_id = "branch_list"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="branch_list",
+            description=(
+                "List the merchant's branches with their slug, name and "
+                "address. Menus and orders are per branch, so call this "
+                "first when you do not already know which branch the "
+                "customer is at. Read-only."
+            ),
+            parameters={"type": "object", "properties": {}},
+            category="ordering",
+            metadata=dict(OBSERVES),
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        unavailable = self._require_merchant()
+        if unavailable is not None:
+            return unavailable
+        branches = self._merchant.list_branches()
+        return self._ok(
+            "branch_list", {"branches": [asdict(b) for b in branches]}
+        )
+
+
 @ToolRegistry.register("menu_search")
 class MenuSearchTool(_MerchantTool):
-    """Find items. This is where recommendation gets its material."""
+    """Find products. This is where recommendation gets its material."""
 
     tool_id = "menu_search"
 
@@ -593,10 +858,11 @@ class MenuSearchTool(_MerchantTool):
         return ToolSpec(
             name="menu_search",
             description=(
-                "Search the merchant's menu. Returns matching items with id, "
-                "name, price and availability. An empty query returns the "
-                "whole menu. Use this to recommend, compare or check what "
-                "exists. Read-only."
+                "Search one branch's menu. Returns matching products with "
+                "their availability and their variants -- each variant is a "
+                "size with its own slug and its own price, and the variant "
+                "slug is what cart_add takes. An empty query returns the "
+                "whole menu. Read-only."
             ),
             parameters={
                 "type": "object",
@@ -604,9 +870,13 @@ class MenuSearchTool(_MerchantTool):
                     "query": {
                         "type": "string",
                         "description": "Name or category to match; empty for all.",
-                    }
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": "Branch slug from branch_list.",
+                    },
                 },
-                "required": ["query"],
+                "required": ["query", "branch"],
             },
             category="ordering",
             metadata=dict(OBSERVES),
@@ -616,13 +886,20 @@ class MenuSearchTool(_MerchantTool):
         unavailable = self._require_merchant()
         if unavailable is not None:
             return unavailable
-        items = self._merchant.search_menu(str(params.get("query", "")))
-        return self._ok("menu_search", {"items": [asdict(item) for item in items]})
+        branch = str(params.get("branch", "")).strip()
+        if not branch:
+            return self._fail("menu_search", "branch_required")
+        if branch not in {b.slug for b in self._merchant.list_branches()}:
+            return self._fail("menu_search", "unknown_branch")
+        products = self._merchant.search_menu(str(params.get("query", "")), branch)
+        return self._ok(
+            "menu_search", {"products": [asdict(p) for p in products]}
+        )
 
 
 @ToolRegistry.register("menu_item")
 class MenuItemTool(_MerchantTool):
-    """Read one item in full, including the options it accepts."""
+    """Read one product in full, including every priced variant."""
 
     tool_id = "menu_item"
 
@@ -631,16 +908,26 @@ class MenuItemTool(_MerchantTool):
         return ToolSpec(
             name="menu_item",
             description=(
-                "Read one menu item by id: price, availability and the "
-                "options it accepts (size, sugar, ice). Call this before "
-                "adding an item whose options you have not seen. Read-only."
+                "Read one product on one branch's menu: its availability and "
+                "each variant with its size, price and slug. Call this when "
+                "you need a variant slug before adding to the cart. There "
+                "are no sugar or ice options here -- anything the merchant "
+                "does not price as a variant goes in cart_add's note. "
+                "Read-only."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "item_id": {"type": "string", "description": "Menu item id."}
+                    "product": {
+                        "type": "string",
+                        "description": "Product slug from menu_search.",
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": "Branch slug from branch_list.",
+                    },
                 },
-                "required": ["item_id"],
+                "required": ["product", "branch"],
             },
             category="ordering",
             metadata=dict(OBSERVES),
@@ -650,10 +937,15 @@ class MenuItemTool(_MerchantTool):
         unavailable = self._require_merchant()
         if unavailable is not None:
             return unavailable
-        item = self._merchant.get_item(str(params.get("item_id", "")))
-        if item is None:
-            return self._fail("menu_item", "unknown_item")
-        return self._ok("menu_item", asdict(item))
+        branch = str(params.get("branch", "")).strip()
+        if not branch:
+            return self._fail("menu_item", "branch_required")
+        product = self._merchant.get_product(
+            str(params.get("product", "")), branch
+        )
+        if product is None:
+            return self._fail("menu_item", "unknown_product")
+        return self._ok("menu_item", asdict(product))
 ```
 
 - [ ] **Step 4: Register the module so the decorators fire**
@@ -731,7 +1023,7 @@ def test_cart_add_returns_only_an_acknowledgement():
     """The doctrine, enforced at the payload level: no total, no lines,
     nothing the Agent could mistake for the state of the cart."""
     add, = _wired(FakeMerchant(), CartAddTool)
-    result = add.execute(item_id="latte", options={"size": "L"}, quantity=1)
+    result = add.execute(variant="ca-phe-den-std", quantity=1, note="ít đường")
 
     assert result.success
     payload = json.loads(result.content)
@@ -739,36 +1031,45 @@ def test_cart_add_returns_only_an_acknowledgement():
     assert payload["added"] is True
 
 
-def test_cart_view_reports_lines_and_total():
+def test_cart_view_reports_lines_total_and_the_note_verbatim():
     merchant = FakeMerchant()
     add, view = _wired(merchant, CartAddTool, CartViewTool)
-    add.execute(item_id="latte", options={"size": "L"}, quantity=2)
+    add.execute(variant="ca-phe-den-std", quantity=2, note="ít đường")
 
     payload = json.loads(view.execute().content)
     assert len(payload["lines"]) == 1
     assert payload["lines"][0]["quantity"] == 2
-    assert payload["total"] == payload["lines"][0]["line_total"]
+    assert payload["lines"][0]["note"] == "ít đường"
+    assert payload["total"] == 70_000
 
 
-def test_cart_add_rejects_an_unavailable_item():
+def test_cart_add_works_without_a_note():
+    add, view = _wired(FakeMerchant(), CartAddTool, CartViewTool)
+    add.execute(variant="ca-phe-den-std", quantity=1)
+    assert json.loads(view.execute().content)["lines"][0]["note"] == ""
+
+
+def test_cart_add_rejects_an_unavailable_product():
     add, = _wired(FakeMerchant(), CartAddTool)
-    result = add.execute(item_id="tiramisu", options={}, quantity=1)
+    result = add.execute(variant="tiramisu-std", quantity=1)
     assert result.success is False
-    assert "item_unavailable" in result.content
+    assert "variant_unavailable" in result.content
 
 
-def test_cart_add_rejects_an_unknown_item():
+def test_cart_add_rejects_an_unknown_variant():
+    """A product slug is not a variant slug; passing one must fail loudly
+    rather than silently ordering something else."""
     add, = _wired(FakeMerchant(), CartAddTool)
-    result = add.execute(item_id="unicorn-frappe", options={}, quantity=1)
+    result = add.execute(variant="ca-phe-den", quantity=1)
     assert result.success is False
-    assert "item_unavailable" in result.content
+    assert "variant_unavailable" in result.content
 
 
 def test_cart_remove_acknowledges_and_cart_view_confirms():
     merchant = FakeMerchant()
     add, remove, view = _wired(merchant, CartAddTool, CartRemoveTool, CartViewTool)
     line_id = json.loads(
-        add.execute(item_id="latte", options={}, quantity=1).content
+        add.execute(variant="ca-phe-den-std", quantity=1).content
     )["line_id"]
 
     removed = json.loads(remove.execute(line_id=line_id).content)
@@ -805,26 +1106,34 @@ class CartAddTool(_MerchantTool):
         return ToolSpec(
             name="cart_add",
             description=(
-                "Add an item to the cart. Returns only whether it was added "
-                "and the new line id -- it does NOT tell you what the cart "
-                "now contains. Call cart_view afterwards to see the real "
-                "cart and check it against what the customer asked for."
+                "Add one variant to the cart. `variant` is a variant slug "
+                "from menu_search or menu_item -- a size with its own price "
+                "-- not a product slug. Anything the merchant does not price "
+                "as a variant (sugar level, ice, 'no straw') goes in `note`, "
+                "which is free text a person at the shop reads. "
+                "Returns only whether it was added and the new line id; it "
+                "does NOT tell you what the cart now contains. Call "
+                "cart_view afterwards and check it against what the "
+                "customer asked for."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "item_id": {"type": "string", "description": "Menu item id."},
-                    "options": {
-                        "type": "object",
-                        "description": (
-                            "Chosen options, e.g. {\"size\": \"L\", "
-                            "\"sugar\": \"50\"}. Use menu_item to see what "
-                            "an item accepts."
-                        ),
+                    "variant": {
+                        "type": "string",
+                        "description": "Variant slug (a specific size).",
                     },
                     "quantity": {"type": "integer", "description": "How many."},
+                    "note": {
+                        "type": "string",
+                        "description": (
+                            "Free text for the shop, e.g. 'ít đường'. Nobody "
+                            "validates it and nothing can verify it was "
+                            "honoured -- a person reads it."
+                        ),
+                    },
                 },
-                "required": ["item_id"],
+                "required": ["variant"],
             },
             category="ordering",
             metadata=dict(MUTATES),
@@ -834,17 +1143,14 @@ class CartAddTool(_MerchantTool):
         unavailable = self._require_merchant()
         if unavailable is not None:
             return unavailable
-        options = params.get("options") or {}
-        if not isinstance(options, dict):
-            return self._fail("cart_add", "options_must_be_an_object")
         try:
             line_id = self._merchant.add_to_cart(
-                str(params.get("item_id", "")),
-                {str(k): str(v) for k, v in options.items()},
+                str(params.get("variant", "")),
                 int(params.get("quantity", 1) or 1),
+                str(params.get("note", "") or ""),
             )
         except (ValueError, TypeError):
-            return self._fail("cart_add", "item_unavailable")
+            return self._fail("cart_add", "variant_unavailable")
         return self._ok("cart_add", {"added": True, "line_id": line_id})
 
 
@@ -983,36 +1289,83 @@ def test_metadata_declares_one_kind_each():
     assert OrderVerifyTool().spec.metadata == {"observes": True}
 
 
+BRANCH = "br-thu-duc"
+
+
 def test_order_place_returns_only_an_order_id():
     merchant = FakeMerchant()
     add, place = _wired(merchant, CartAddTool, OrderPlaceTool)
-    add.execute(item_id="latte", options={}, quantity=1)
+    add.execute(variant="ca-phe-den-std", quantity=1)
 
-    payload = json.loads(place.execute().content)
+    payload = json.loads(place.execute(type="take-out", branch=BRANCH).content)
     assert set(payload) == {"placed", "order_id"}
     assert payload["placed"] is True
 
 
 def test_order_place_refuses_an_empty_cart():
     place, = _wired(FakeMerchant(), OrderPlaceTool)
-    result = place.execute()
+    result = place.execute(type="take-out", branch=BRANCH)
     assert result.success is False
     assert "cart_empty" in result.content
 
 
-def test_order_verify_reports_what_the_merchant_says():
+def test_order_place_requires_a_type_because_the_customer_chose_one():
+    """'Mang đi' is take-out. Defaulting silently would hand a takeaway
+    customer a dine-in order."""
+    merchant = FakeMerchant()
+    add, place = _wired(merchant, CartAddTool, OrderPlaceTool)
+    add.execute(variant="ca-phe-den-std", quantity=1)
+
+    result = place.execute(branch=BRANCH)
+    assert result.success is False
+    assert "order_type_required" in result.content
+
+
+def test_order_place_rejects_an_unknown_type():
+    merchant = FakeMerchant()
+    add, place = _wired(merchant, CartAddTool, OrderPlaceTool)
+    add.execute(variant="ca-phe-den-std", quantity=1)
+
+    result = place.execute(type="teleport", branch=BRANCH)
+    assert result.success is False
+    assert "invalid_order_type" in result.content
+
+
+def test_order_verify_reports_what_the_merchant_recorded():
     merchant = FakeMerchant()
     add, place, verify = _wired(
         merchant, CartAddTool, OrderPlaceTool, OrderVerifyTool
     )
-    add.execute(item_id="latte", options={"size": "L"}, quantity=2)
-    order_id = json.loads(place.execute().content)["order_id"]
+    add.execute(variant="ca-phe-den-std", quantity=2, note="ít đường")
+    order_id = json.loads(
+        place.execute(type="take-out", branch=BRANCH).content
+    )["order_id"]
 
     payload = json.loads(verify.execute(order_id=order_id).content)
     assert payload["order_id"] == order_id
     assert payload["status"] == "placed"
+    assert payload["order_type"] == "take-out"
+    assert payload["branch"] == BRANCH
     assert payload["lines"][0]["quantity"] == 2
-    assert payload["total"] == payload["lines"][0]["line_total"]
+    assert payload["total"] == 70_000
+
+
+def test_verify_echoes_the_note_but_that_is_not_confirmation():
+    """The note reads back because it is the string that was sent. Nothing
+    here confirms the drink will be made that way -- a person reads it.
+    The tool payload therefore says so, so the Agent does not overclaim."""
+    merchant = FakeMerchant()
+    add, place, verify = _wired(
+        merchant, CartAddTool, OrderPlaceTool, OrderVerifyTool
+    )
+    add.execute(variant="ca-phe-den-std", quantity=1, note="ít đường")
+    order_id = json.loads(
+        place.execute(type="take-out", branch=BRANCH).content
+    )["order_id"]
+
+    payload = json.loads(verify.execute(order_id=order_id).content)
+    assert payload["lines"][0]["note"] == "ít đường"
+    assert payload["notes_are_unverified"] is True
 
 
 def test_order_verify_of_an_unknown_order_fails():
@@ -1022,20 +1375,22 @@ def test_order_verify_of_an_unknown_order_fails():
     assert "unknown_order" in result.content
 
 
-def test_a_price_change_behind_the_agent_is_visible_through_verify():
-    """The merchant is the authority. If it disagrees with what the Agent
-    believed, verify is where that surfaces."""
+def test_a_later_price_change_does_not_rewrite_a_placed_order():
+    """The merchant is the authority, and a placed order was priced when
+    placed."""
     merchant = FakeMerchant()
     add, place, verify = _wired(
         merchant, CartAddTool, OrderPlaceTool, OrderVerifyTool
     )
-    add.execute(item_id="latte", options={}, quantity=1)
-    order_id = json.loads(place.execute().content)["order_id"]
+    add.execute(variant="ca-phe-den-std", quantity=1)
+    order_id = json.loads(
+        place.execute(type="take-out", branch=BRANCH).content
+    )["order_id"]
 
-    merchant.set_price("latte", 80_000)
+    merchant.set_price("ca-phe-den-std", 80_000)
 
     payload = json.loads(verify.execute(order_id=order_id).content)
-    assert payload["total"] == 45_000  # the order was priced when placed
+    assert payload["total"] == 35_000
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1059,24 +1414,54 @@ class OrderPlaceTool(_MerchantTool):
         return ToolSpec(
             name="order_place",
             description=(
-                "Place the current cart as an order. Does NOT take payment. "
-                "Returns only the new order id -- it does not tell you what "
+                "Place the current cart as an order at one branch. `type` is "
+                "'at-table', 'take-out' or 'delivery' -- ask the customer, "
+                "never guess: handing a takeaway customer a dine-in order is "
+                "a real mistake. Does NOT take payment. "
+                "Returns only the new order id; it does not tell you what "
                 "the order contains. Call order_verify with that id to read "
-                "back what the merchant actually recorded, and compare it "
-                "with what the customer asked for before going further."
+                "back what the merchant recorded, and compare it with what "
+                "the customer asked for before going further."
             ),
-            parameters={"type": "object", "properties": {}},
+            parameters={
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": ["at-table", "take-out", "delivery"],
+                        "description": "How the customer is taking the order.",
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": "Branch slug from branch_list.",
+                    },
+                },
+                "required": ["type", "branch"],
+            },
             category="ordering",
             metadata=dict(MUTATES),
         )
 
     def execute(self, **params: Any) -> ToolResult:
+        from openjarvis.merchants.port import ORDER_TYPES
+
         unavailable = self._require_merchant()
         if unavailable is not None:
             return unavailable
+        order_type = str(params.get("type", "")).strip()
+        if not order_type:
+            return self._fail("order_place", "order_type_required")
+        if order_type not in ORDER_TYPES:
+            return self._fail("order_place", "invalid_order_type")
+        branch = str(params.get("branch", "")).strip()
+        if not branch:
+            return self._fail("order_place", "branch_required")
         if not self._merchant.read_cart().lines:
             return self._fail("order_place", "cart_empty")
-        order_id = self._merchant.place_order()
+        try:
+            order_id = self._merchant.place_order(order_type, branch)
+        except ValueError:
+            return self._fail("order_place", "unknown_branch")
         return self._ok("order_place", {"placed": True, "order_id": order_id})
 
 
@@ -1092,9 +1477,13 @@ class OrderVerifyTool(_MerchantTool):
             name="order_verify",
             description=(
                 "Read an order back from the merchant by id: its lines, "
-                "total and status, as the merchant records them. This is "
-                "the merchant's answer, not yours -- check it against what "
-                "the customer asked for. Read-only."
+                "total, type, branch and status, as the merchant records "
+                "them. This is the merchant's answer, not yours -- check it "
+                "against what the customer asked for. "
+                "Note fields are echoed, not confirmed: a note reads back "
+                "unchanged whether or not anyone acts on it, so tell the "
+                "customer their request was recorded, never that it is "
+                "guaranteed. Read-only."
             ),
             parameters={
                 "type": "object",
@@ -1122,8 +1511,15 @@ class OrderVerifyTool(_MerchantTool):
             {
                 "order_id": order.order_id,
                 "status": order.status,
+                "order_type": order.order_type,
+                "branch": order.branch_slug,
                 "lines": [asdict(line) for line in order.lines],
                 "total": order.total,
+                # Stated in the payload, not only in the description: the
+                # Agent reads results far more reliably than it re-reads a
+                # tool spec, and overclaiming here means telling a customer
+                # their drink is confirmed less sweet when nothing checked.
+                "notes_are_unverified": True,
             },
         )
 ```
@@ -1208,6 +1604,7 @@ def test_every_tool_in_the_module_is_checked():
     """A new ordering tool is covered automatically; this pins the set so a
     silently emptied list cannot make the parametrized tests vacuous."""
     assert {tool.spec.name for tool in _ordering_tools()} == {
+        "branch_list",
         "menu_search",
         "menu_item",
         "cart_add",
@@ -2002,26 +2399,42 @@ nothing more. They do **not** tell you what the cart or the order now
 contains. To know that, call `cart_view` or `order_verify`. Never describe a
 cart or an order you have not read back in this turn.
 
+## Variants, not options
+
+A size is a **variant** — its own slug, its own price. `cart_add` takes a
+variant slug, never a product slug. There is no sugar or ice option anywhere:
+whatever the merchant does not price as a variant goes in `note`, as free text.
+
+## Notes are requests, not guarantees
+
+`note` is read by a person at the shop. `order_verify` echoes it back because
+it is the string that was sent — that is not confirmation anyone will act on
+it. Say "tôi đã ghi ít đường cho bạn", never "đã xác nhận ít đường".
+
 ## The shape of an order
 
-1. Find out what they want. `menu_search` for recommendations, `menu_item`
-   when you need an item's options before choosing them.
-2. Show what you are recommending: `display_menu` with the two or three items
+1. Know which branch. `branch_list` if you do not already. Menus and orders
+   are per branch, and the wrong branch is the wrong shop.
+2. Find out what they want. `menu_search` for recommendations, `menu_item`
+   when you need a variant slug you have not seen.
+3. Show what you are recommending: `display_menu` with the two or three items
    you are actually suggesting, not everything the search returned. Choosing
    what to show is part of recommending.
-3. Ask only for what is genuinely missing. If they said "a latte", do not
-   interrogate them about size and sugar — offer the default and let them
-   correct it.
-4. `cart_add`, then `cart_view`, then `display_cart` with what you read.
+4. Ask only for what is genuinely missing. If they said "cà phê đen ít đường",
+   you have the drink and the note — do not interrogate them further. If a
+   product has several variants, offer one and let them correct it.
+5. `cart_add`, then `cart_view`, then `display_cart` with what you read.
    Check it against what they asked for before saying it is right.
-5. Read the cart back to them and get a clear yes before `order_place`.
-6. After `order_place`, call `order_verify` and compare the merchant's answer
+6. Ask how they are taking it — in, away, or delivered — and read the cart
+   back to them. Get a clear yes before `order_place`. Never guess the type:
+   handing a takeaway customer a dine-in order is a real mistake.
+7. After `order_place`, call `order_verify` and compare the merchant's answer
    with what the customer asked for. If they disagree, say so plainly and fix
    it — do not report success.
 
 ## Sold out
 
-If an item is unavailable, say so and offer the nearest alternative. Do not
+If a product is unavailable, say so and offer the nearest alternative. Do not
 quietly leave it out.
 """
 ```
@@ -2046,6 +2459,7 @@ import pytest
 
 from openjarvis.merchants.fake import FakeMerchant
 from openjarvis.tools.ordering import (
+    BranchListTool,
     CartAddTool,
     CartViewTool,
     MenuSearchTool,
@@ -2065,16 +2479,17 @@ def _wired(merchant, *classes):
     return tools
 
 
-def test_no_single_tool_can_take_an_order_from_start_to_finish():
-    """Walk the whole flow and count the points where a decision is needed.
+def test_the_real_request_takes_six_observed_steps():
+    """"Chọn cà phê đen ít đường, đặt mang đi" -- the whole flow.
 
-    Each step below is a place the Agent must look at a result before it can
-    choose the next call. There is no shortcut through them, because no tool
-    returns both an effect and its consequence.
+    Each step is a place the Agent must look at a result before it can choose
+    the next call. There is no shortcut through them, because no tool returns
+    both an effect and its consequence.
     """
     merchant = FakeMerchant()
-    search, add, view, place, verify = _wired(
+    branches, search, add, view, place, verify = _wired(
         merchant,
+        BranchListTool,
         MenuSearchTool,
         CartAddTool,
         CartViewTool,
@@ -2082,29 +2497,40 @@ def test_no_single_tool_can_take_an_order_from_start_to_finish():
         OrderVerifyTool,
     )
 
-    # 1. what exists
-    items = json.loads(search.execute(query="latte").content)["items"]
-    assert items[0]["id"] == "latte"
+    # 1. which shop -- nothing is orderable until this is known
+    branch = json.loads(branches.execute().content)["branches"][0]["slug"]
 
-    # 2. change something -- and learn nothing about the result
+    # 2. what exists there, and at what price
+    products = json.loads(
+        search.execute(query="cà phê đen", branch=branch).content
+    )["products"]
+    variant = products[0]["variants"][0]
+    assert variant["slug"] == "ca-phe-den-std"
+    assert variant["price"] == 35_000
+
+    # 3. change something -- and learn nothing about the result
     added = json.loads(
-        add.execute(item_id="latte", options={"size": "L"}, quantity=2).content
+        add.execute(variant=variant["slug"], quantity=1, note="ít đường").content
     )
     assert set(added) == {"added", "line_id"}
 
-    # 3. so the cart has to be read
+    # 4. so the cart has to be read
     cart = json.loads(view.execute().content)
-    assert cart["lines"][0]["quantity"] == 2
-    assert cart["total"] == 102_000
+    assert cart["total"] == 35_000
+    assert cart["lines"][0]["note"] == "ít đường"
 
-    # 4. change something again -- again learning nothing
-    placed = json.loads(place.execute().content)
+    # 5. change something again -- again learning nothing
+    placed = json.loads(place.execute(type="take-out", branch=branch).content)
     assert set(placed) == {"placed", "order_id"}
 
-    # 5. so the order has to be read back from the merchant
+    # 6. so the order has to be read back from the merchant
     order = json.loads(verify.execute(order_id=placed["order_id"]).content)
     assert order["status"] == "placed"
+    assert order["order_type"] == "take-out"
     assert order["total"] == cart["total"]
+
+    # ...and the one thing that is still not confirmed says so.
+    assert order["notes_are_unverified"] is True
 
 
 def test_the_merchant_is_the_authority_when_the_agent_is_wrong():
@@ -2112,8 +2538,8 @@ def test_the_merchant_is_the_authority_when_the_agent_is_wrong():
     merchant = FakeMerchant()
     add, view = _wired(merchant, CartAddTool, CartViewTool)
 
-    merchant.set_price("latte", 80_000)
-    add.execute(item_id="latte", options={}, quantity=1)
+    merchant.set_price("ca-phe-den-std", 80_000)
+    add.execute(variant="ca-phe-den-std", quantity=1)
 
     assert json.loads(view.execute().content)["total"] == 80_000
 
@@ -2149,7 +2575,7 @@ def test_ordering_and_display_tools_never_overlap():
             assert len(kinds) == 1, f"{spec.name} declares {kinds}"
             checked += 1
 
-    assert checked == 10, f"expected 7 ordering + 3 display tools, saw {checked}"
+    assert checked == 11, f"expected 8 ordering + 3 display tools, saw {checked}"
 ```
 
 - [ ] **Step 3: Run it**
@@ -2172,7 +2598,7 @@ max_turns = 30
 backend = "fake"
 
 [tools]
-enabled = "menu_search,menu_item,cart_add,cart_remove,cart_view,order_place,order_verify,display_menu,display_cart,display_clear"
+enabled = "branch_list,menu_search,menu_item,cart_add,cart_remove,cart_view,order_place,order_verify,display_menu,display_cart,display_clear"
 ```
 
 `max_turns` is 30 because a full order is several observation/decision pairs
@@ -2255,8 +2681,8 @@ Do not declare the phase complete on a green test run alone.
 
 - **No payment.** `payment_start`, `payment_verify`, the approval gate and
   `display_qr` are Phase 4, last, because payment is the irreversible step.
-- **No capability store, no `merchant_learn`, no fast path.** Phase 3.
-- **No real merchant.** The fake is the ground truth here; interactive
-  execution against a real site through Playwright MCP is Phase 2.
+- **No capability store, no `merchant_learn`, no fast path.** Phase 2.
+- **No real merchant.** The fake is the ground truth here; discovery against
+  a real API is Phase 2 and browser execution is Phase 3.
 - **No thread scoping of the cart.** One session at a time is a confirmed
   constraint, and the ceiling is marked in `merchants/fake.py`.
