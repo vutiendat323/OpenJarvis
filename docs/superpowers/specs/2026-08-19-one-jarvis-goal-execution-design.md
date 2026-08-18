@@ -1,20 +1,65 @@
 # One Jarvis, Many Surfaces — Goal Execution Design
 
 Date: 2026-08-19
-Status: Approved for planning
+Status: **Sections 1–2 live. Sections 3–5 SUPERSEDED — see below.**
 Branch: `native/runtime`
 Baseline: `a97c64c67bcb9ade1600e0cb39a793d6e15db7af` (`origin/main`)
+
+## Status of this document
+
+**Live and planned:** sections 1 and 2 (shared context composition, runtime
+ownership), the boundaries, and Phase 0. These rest on `OpenJarvis-v2` source
+that was read directly, and the implementation plan for them is at
+`docs/superpowers/plans/2026-08-19-one-jarvis-phase-0.md`.
+
+**Superseded:** sections 3, 4 and 5 (goal execution tools, FAST/INTERACTIVE
+merchant capability, display surface), together with phases 1 through 4.
+
+Why they are superseded, recorded honestly because the mistake cost real work:
+
+The merchant question was answered from a conversation instead of from the
+repository. `git status` at the start of the design session already listed
+`?? trendcoffee-kiosk`, and that directory was not opened until after this
+document had been written and committed four times. It turned out to be a
+repo-local Vite/React kiosk built by this team explicitly for AI browser-agent
+control — full `data-testid` coverage, a documented automation contract, a
+`window.__TREND_KIOSK__` API, and a VietQR canvas it renders itself.
+
+Against that merchant, sections 3 through 5 solve problems that do not exist:
+
+| Section | Why it does not apply |
+|---|---|
+| 5, display surface | The kiosk already renders menu, cart, checkout, VietQR and receipt. `display.html`, the iframe and the display tools would rebuild it. |
+| 4, capability discovery and lifecycle | The `data-testid` table is a hand-written capability record the merchant maintains. There is nothing opaque to discover, quarantine or demote. |
+| 3, semantic ordering tools | The Agent acts on the DOM through the audited Playwright MCP toolset. `cart_add` and friends add a layer over a contract that already exists. |
+
+The mutation/observation doctrine in section 3 survives the supersession as a
+principle — it is already satisfied by the browser toolset, where
+`browser_click` and `browser_type` mutate and `browser_snapshot`,
+`browser_find` and the four `browser_verify_*` tools observe.
+
+The kiosk project has since been deleted from disk and was never tracked in
+git. What was read from it is preserved at
+`docs/superpowers/specs/2026-08-19-trendcoffee-kiosk-observed-contract.md`.
+Goal-execution design cannot resume until a merchant contract exists to design
+against.
+
+Sections 3–5 are left in place rather than deleted: the reasoning in them —
+particularly why a capability is never promoted by being tried, and why an
+irreversible action is never fast — applies to any future opaque merchant.
 
 ## Purpose
 
 Make Chat and Voice share one logical intelligence — same tools, same memory,
-same policy, same conversation thread — and give that intelligence the ability
-to execute multi-step goals (catalog exploration, ordering, payment) with the
-LLM reasoning inside every step.
+same policy, same conversation thread.
 
-Jarvis stays a general assistant. Casual conversation, explanations and
-recommendations run through the same loop as ordering, with no mode switch and
-no routing branch.
+The document originally went further, giving that intelligence the ability to
+execute multi-step goals such as ordering and payment. That half is superseded;
+what survives is the shared foundation it would have stood on.
+
+Jarvis stays a general assistant throughout. Casual conversation, explanations
+and recommendations run through one loop, with no mode switch and no routing
+branch.
 
 ## Confirmed constraints
 
@@ -22,12 +67,16 @@ These were decided during design and are not open in planning.
 
 1. **One conversation session at a time per server process.** The existing
    process-wide serialization is acceptable.
-2. **The first merchant is third-party**, reachable only through its website.
-   There is no partner API.
-3. **Chat and Voice share one thread.** Kiosk is not a conversation surface —
+2. **Chat and Voice share one thread.** Kiosk is not a conversation surface —
    it is a policy layer (microphone gate, vision, FSM) and keeps a fresh thread
    per customer.
-4. **Display is an iframe of plain HTML inside the existing Kiosk page.**
+
+Two further constraints were confirmed during design and are superseded with
+sections 3 through 5: that the first merchant was third-party and reachable
+only through its website, and that display would be an iframe of plain HTML
+inside the Kiosk page. Both were answered about a merchant that turned out to
+be repo-local and has since been deleted. Neither should be carried into a
+future goal-execution design without being asked again.
 
 ## Current architecture, as found
 
@@ -198,6 +247,17 @@ Voice alone. Today only Voice passes a `persistence_key`, and Chat passes
 `None`, so nothing collides. Any future caller that stages a turn must prefix
 its key with a surface identifier, or one surface will settle another's staged
 writes.
+
+---
+
+> ## ⚠ SUPERSEDED — sections 3, 4 and 5
+>
+> Everything from here to the "Kiosk" heading was designed for an opaque
+> third-party merchant. The actual first merchant shipped its own automation
+> contract and its own display, and has since been deleted. Do not implement
+> any of it. See "Status of this document" at the top.
+>
+> Retained for the reasoning, which holds for any future opaque merchant.
 
 ### 3. Goal execution
 
@@ -503,14 +563,14 @@ record, so the display renders immediately instead of waiting for a crawl.
 `image_url` points at the merchant. Images are not downloaded; losing network
 loses thumbnails, not names and prices.
 
+> ## ⚠ END OF SUPERSEDED SECTIONS
+>
+> What follows is live again.
+
 ## Kiosk
 
 Kiosk is unchanged: a pure FSM, three fixed TTS cues, state published on the
 bus. It gains no tools, no intelligence and no view of the Agent.
-
-One property must hold: a cart must never leak between customers. Kiosk creates
-a fresh thread per voice session, and cart and order state are scoped by
-`thread_id`, so cleanup isolates customers with no new code.
 
 Thread policy differs by surface, and this is correct rather than
 contradictory:
@@ -519,6 +579,11 @@ contradictory:
 |---|---|---|
 | Kiosk | new each session | public terminal; state must not leak between customers |
 | Chat and Voice on a personal device | stable and shared | conversational continuity |
+
+When goal execution is designed again, one property must hold that no longer
+has an owner here: state belonging to one customer must never reach the next.
+A fresh thread per kiosk session gives it, provided whatever holds order state
+is scoped by `thread_id`.
 
 ## Boundaries
 
@@ -541,21 +606,12 @@ Each is a deliberate simplification with a known ceiling and an upgrade path.
 |---|---|---|
 | `JarvisSystem.ask()` stays synchronous and outside the shared turn ordering | CLI does not share a thread with Chat and Voice | add an async `ask_stream()` alongside it |
 | `NativeAgentRuntime._lock` stays process-wide | one agent run at a time | must change together with `VoiceSessionService._lease_session_id` and the `_RENDERER` global |
-| `max_turns` is global, not per goal | no per-goal budget | a `ContextVar`, mirroring the existing `_RUN_MODEL` |
 | `agent_runtime` caches on first access | reassigning `system.agent` afterwards leaves a stale runtime | there is one assignment site, and it runs before first use; add invalidation only if a second appears |
-| `merchant_learn` is called by the Agent | a forgotten call costs speed, not correctness | hook the EventBus to browser tool results |
 | One browser context per process | matches one session at a time | changes with the concurrency limits above |
-| Capabilities record request shape only, not conditional multi-step flows | such a step fails correspondence check 5 and stays interactive | this is the intended behaviour |
-| `payment_start` is never fast | payment always costs an interactive round | only a merchant-side idempotency key or a reversal endpoint would change this, and neither exists today |
-| Correspondence checks are structural, not semantic | a recorded request that is well-formed but wrong for a different reason still validates | the mandatory `*_verify` catches it on first use, and reversibility bounds the cost |
-| No capability TTL | a stale capability survives until verification breaks it | add a TTL if sites change more often than orders occur |
-| Thumbnails are hotlinked | no images offline | proxy through `/api/merchants/<id>/image` |
-| Display is output only | no touch selection | a tap must enter the Pipecat context as a user turn; separate work |
 
-Replaying a third-party site's internal API is a relationship between the
-operator and the merchant. This design does not adjudicate it, and the operator
-should confirm it with the merchant before enabling the fast path in
-production.
+The limits that belonged to sections 3 through 5 — the global `max_turns`
+budget, `merchant_learn` being Agent-invoked, capability shape and TTL,
+hotlinked thumbnails, output-only display — are superseded with those sections.
 
 ## Verification
 
@@ -569,7 +625,20 @@ def test_chat_and_voice_compose_identical_context(system):
 ```
 Fails today: Voice lacks identity prompt and facts.
 
-**Goal loop**
+**Boundaries**
+
+```python
+def test_no_second_composition_root():
+    """Only JarvisSystem owns engine, tools and executor together."""
+
+def test_hot_files_unchanged_by_this_work():
+    """Drift boundary checked by git, not by promise."""
+```
+
+> The remaining test groups below belong to the superseded sections. They are
+> kept as a record of what the goal-execution design would have had to prove.
+
+**Goal loop** — superseded
 
 ```python
 def test_no_tool_both_mutates_and_reports():
@@ -580,7 +649,7 @@ def test_order_flow_requires_agent_reasoning_between_steps(fake_merchant):
     One turn would mean a giant tool exists."""
 ```
 
-**Fast path safety**
+**Fast path safety** — superseded
 
 ```python
 def test_candidate_capability_is_never_dispatched(fake_merchant):
@@ -609,7 +678,7 @@ def test_second_order_uses_no_browser_tool(fake_merchant):
     """A validated, reversible action means Playwright is not touched."""
 ```
 
-**Display safety**
+**Display safety** — superseded
 
 ```python
 def test_display_qr_rejects_llm_supplied_payload():
@@ -619,58 +688,30 @@ def test_display_menu_escapes_merchant_content(page):
     """A dish named <script>… renders as text."""
 ```
 
-**Boundaries**
-
-```python
-def test_no_second_composition_root():
-    """Only JarvisSystem owns engine, tools and executor together."""
-
-def test_hot_files_unchanged_by_this_work():
-    """Drift boundary checked by git, not by promise."""
-```
-
 ## Implementation order
 
-Every phase ends with something runnable and verifiable. Payment is last
-because it is the irreversible step.
+**Phase 0 — foundation, no new features.** The only live phase.
 
-**Phase 0 — foundation, no new features**
 `compose_context()` and `agent_runtime` on `JarvisSystem`. Closes the three
-live defects. Gate: chat and voice compose identical context apart from the
-system prompt.
+defects recorded under "Current architecture, as found". Gate: chat and voice
+compose identical context apart from the surface prompt.
 
-**Phase 1 — goal loop against a fake merchant**
-The `ordering` skill, semantic tools over a fake merchant fixture, the
-mutation/observation rule and its test, the raised turn budget, and
-`display_menu` / `display_cart` with the iframe. Display lands early because
-seeing the loop is the cheapest way to debug it. Gate: the reasoning-turn count
-test.
+Planned in detail at
+`docs/superpowers/plans/2026-08-19-one-jarvis-phase-0.md`.
 
-**Phase 2 — interactive execution**
-Playwright MCP available to the Agent. A real order placed through the browser,
-with `order_verify` reading the live site. Gate: a real order, slow but correct.
+It changes no behaviour a user asked for and is the only phase that touches
+upstream composition, so it stands alone and does not depend on any merchant.
 
-**Phase 3 — fast execution**
-`MerchantCapability` store, `merchant_learn` with its correspondence checks,
-the reversibility predicate, capability lookup in the semantic tools, and the
-demotion path. Gates: `test_candidate_capability_is_never_dispatched` and
-`test_broken_capability_never_yields_wrong_order`.
-
-**Phase 4 — payment**
-`payment_start`, `payment_verify`, the approval gate, and `display_qr`.
-
-Phase 0 stands alone: it changes no behaviour a user asked for, closes three
-existing defects, and is the only phase that touches upstream composition. It
-should be planned and landed before phases 1 through 4 are planned in detail,
-so the shared foundation is proven before anything is built on it.
+**Phases 1 through 4 — superseded.** Goal loop, interactive execution, fast
+execution and payment were sequenced against a merchant that no longer exists.
+Resuming them needs a merchant contract to design against, and the sequencing
+should be redone from that contract rather than restored from here.
 
 ## Scope summary
 
 | | New | Upstream edits |
 |---|---|---|
-| Phase 0 | `openjarvis/turn.py` (~40 lines) | `system/core.py` ~+18 (property and snapshot helper); `system/orchestrator.py` −20/+1; `server/app.py` −15; `server/voice/{runtime,llm}.py` ~−20. `system/builder.py` and `cli/serve.py` unchanged |
-| Phases 1–4 | `openjarvis/merchants/`, `ordering` skill, tools, `server/static/display.html`, one iframe in `KioskPage.tsx` | config keys `agent.max_turns`, `merchants.execution_mode`; one `EventType`; one entry in `_AGENT_EVENTS` |
+| Phase 0 | `openjarvis/turn.py` (~40 lines) | `system/core.py` ~+18 (property and snapshot helper); `system/orchestrator.py` −20/+1; `server/app.py` −15; `server/voice/{runtime,llm,routes}.py` ~−20. `system/builder.py` and `cli/serve.py` unchanged |
 
-New drift is concentrated in new modules. Upstream edits are confined to
-`system/*` (three files, roughly thirty net lines) plus small additive changes
-in the server and kiosk layers.
+Upstream edits are confined to `system/*` (two files, roughly twenty net lines)
+plus small subtractive changes in the server and voice layers.
