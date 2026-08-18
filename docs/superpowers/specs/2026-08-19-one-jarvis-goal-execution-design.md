@@ -217,14 +217,16 @@ mutate and report in one call. The doctrine is what structurally prevents it.
 The resulting order flow forces a reasoning step between every action:
 
 ```
-cart_add(item, options)   mutate    → "added, line_id=3"
-cart_view()               observe   → the real cart
-  Agent judges: right item? right price? anything missing?
-order_place()             mutate    → order_id
-order_verify(order_id)    observe   → what the merchant says the order is
-  Agent compares its belief against the merchant's answer
-payment_start(id, method) mutate    → QR reference and amount
-payment_verify(id)        observe   → real payment state
+branch_list()                  observe   → which branches exist
+menu_search(query, branch)     observe   → what is on that branch's menu today
+cart_add(variant, qty, note)   mutate    → "added, line_id=3"
+cart_view()                    observe   → the real cart
+  Agent judges: right variant? right price? anything missing?
+order_place(type, branch)      mutate    → order_id
+order_verify(order_id)         observe   → what the merchant recorded
+  Agent compares its belief against the merchant's record
+payment_start(id, method)      mutate    → QR reference and amount
+payment_verify(id)             observe   → real payment state
   Agent decides: wait, report success, or handle failure
 ```
 
@@ -232,14 +234,28 @@ payment_verify(id)        observe   → real payment state
 
 | Tool | Kind | Notes |
 |---|---|---|
-| `menu_search(query)` | observe | where recommendation happens |
-| `menu_item(id)` | observe | detail, options, price |
-| `cart_add`, `cart_remove` | mutate | acknowledgement only |
+| `branch_list()` | observe | menus and orders are branch-scoped; nothing works without one |
+| `menu_search(query, branch)` | observe | where recommendation happens |
+| `menu_item(product)` | observe | variants, each a separately priced size |
+| `cart_add(variant, quantity, note)` | mutate | acknowledgement only |
+| `cart_remove(line_id)` | mutate | acknowledgement only |
 | `cart_view` | observe | |
-| `order_place` | mutate | does not pay |
+| `order_place(type, branch)` | mutate | `type` is `at-table` / `take-out` / `delivery`; does not pay |
 | `order_verify` | observe | re-reads from the merchant |
 | `payment_start` | mutate | requires approval |
 | `payment_verify` | observe | |
+
+**Variants, not modifiers.** A size is a separate priced SKU (a *variant*),
+not an option on one product. Anything a merchant does not model — sugar level,
+ice, "no straw" — arrives as free text in `note`. Real menus were checked
+before this was written: a Vietnamese coffee chain's public API exposes
+`product → variants[] → {size, price}` and a per-line `note` string, with no
+structured modifier anywhere.
+
+**What `note` costs.** A modelled option can be verified; free text cannot.
+`order_verify` will echo `"ít đường"` back because that is the string that was
+sent — it is confirmation of *transcription*, not of *preparation*. A person
+reads that note and makes the drink. See "Accepted limits".
 
 Tool internals may be fully deterministic — HTTP calls, DOM parsing, browser
 actions. What is forbidden is combining a mutation and its observation.
@@ -271,13 +287,45 @@ Jarvis from becoming a commerce bot.
 
 ### 4. FAST and INTERACTIVE execution
 
-#### Discovery is a by-product of the first interactive run
+#### Discovery is cheapest without a browser
 
-There is no separate crawl phase. The first order at an unknown merchant runs
-interactively through Playwright MCP. The network traffic of that session is
-read afterwards through the MCP server's own `browser_network_requests` and
-recorded. Whether that recording may ever be dispatched is decided by the
-lifecycle below, not by having been recorded.
+Three techniques, tried in this order. The first that yields a schema wins.
+
+**1. Read the client bundle.** Most ordering sites are single-page apps whose
+compiled JavaScript names its own API. Fetching one bundle yields the API base
+URL, every route the client knows, and the call sites that build each request —
+complete, in one request, before any browser starts.
+
+This was measured against a live Vietnamese coffee chain: its homepage is a
+521-byte SPA shell with no menu in it at all, and its 2.4 MB bundle named the
+API base plus roughly ninety routes. The public menu endpoint then returned the
+full catalogue unauthenticated.
+
+**2. Probe the schema through validation errors.** A well-built API rejects an
+incomplete payload by naming what is wrong. Sending deliberately incomplete
+bodies walks the server through its own schema — field by field, in validation
+order — and **creates nothing**, because every request fails validation.
+
+Measured on the same API: five requests established that an order is
+`{type, branch, orderItems: [{variant, quantity, note?}]}`, that `type` is one
+of `at-table` / `take-out` / `delivery`, and that a real branch slug, a real
+variant slug and a free-text `note` were all accepted — the payload was proven
+complete while remaining one invalid field away from creating an order.
+
+This is strictly better than observing traffic. Traffic shows one payload that
+happened to be sent; probing distinguishes **required** from **optional**
+fields, which observation cannot.
+
+**3. Drive the browser.** For a server-rendered site, an obfuscated bundle, or
+an API that fails closed without explaining, the Agent works through Playwright
+MCP and the session's traffic is read afterwards through the MCP server's own
+`browser_network_requests`.
+
+Technique 3 is the fallback, not the default. It is the slowest, needs a real
+run to observe, and reveals only the endpoints that run happened to touch.
+
+Whether any recording may be dispatched is decided by the lifecycle below, not
+by having been recorded, whichever technique produced it.
 
 #### Two tool sets, selected by failure message
 
@@ -372,16 +420,23 @@ All are offline and decidable from the recording alone. They run inside
 `merchant_learn`, so a recording is promoted or quarantined at the moment it is
 made.
 
-1. **Attribution.** The request was observed inside the window of the
-   interactive step it is attributed to, between that browser tool's start and
-   the next observation.
-2. **Verified outcome.** The interactive run that produced it passed its
-   `*_verify` step. A recording from an unverified or failed run is discarded
-   rather than quarantined.
-3. **Parameter coverage.** Every value in the request that varies per call is
-   bound to a named tool parameter. An unexplained literal that carries data —
-   an item id, a quantity, an amount — blocks promotion, because it means the
-   recording baked in one specific order.
+1. **Attribution.** The request is attributed to one action. From a bundle read
+   or a schema probe that is the route itself; from a browser run it is the
+   request observed between that browser tool's start and the next observation.
+2. **Verified outcome.** A recording taken from a browser run requires that run
+   to have passed its `*_verify` step; one from an unverified or failed run is
+   discarded rather than quarantined. A schema established by probing needs no
+   run, because probing never executes the action.
+3. **No unbound identifier literals.** Every value in the template that
+   identifies something — an item id, a variant slug, a branch slug, a price,
+   an amount — must be bound to a named tool parameter. A literal in one of
+   those positions means the recording baked in one specific order.
+
+   Free-text fields are exempt. A `note` carrying `"ít đường"` is a legitimate
+   parameter whose value happens to be prose, not a baked-in identifier.
+   Applying the identifier rule to it would quarantine a correct capability —
+   this exemption exists because the first real API checked would have failed
+   the rule as originally written.
 4. **No inline secrets.** Authentication is carried by `credential_key`. A
    literal token anywhere in the template blocks promotion.
 5. **Single request.** The action maps to exactly one request. A step that
@@ -421,6 +476,11 @@ misuse, demoted to BROKEN, and the flow returns to the browser. The
 verification the Agent must perform anyway is what keeps the fast path honest —
 and the reversibility rule is what bounds the damage in the window before it
 fires.
+
+This holds for everything the merchant models: identifiers, quantities, prices,
+totals, status. It does not extend to free text. A `note` reads back
+unchanged whether or not anyone will act on it, so verification proves the
+order was recorded, never that it will be prepared as asked.
 
 #### merchant_learn
 
@@ -543,6 +603,7 @@ Each is a deliberate simplification with a known ceiling and an upgrade path.
 | `NativeAgentRuntime._lock` stays process-wide | one agent run at a time | must change together with `VoiceSessionService._lease_session_id` and the `_RENDERER` global |
 | `max_turns` is global, not per goal | no per-goal budget | a `ContextVar`, mirroring the existing `_RUN_MODEL` |
 | `agent_runtime` caches on first access | reassigning `system.agent` afterwards leaves a stale runtime | there is one assignment site, and it runs before first use; add invalidation only if a second appears |
+| **A free-text `note` cannot be verified** | `order_verify` echoes `"ít đường"` because that is the string that was sent. Nothing confirms the drink will be made that way — a person reads the note. The Agent must not claim the preparation is confirmed, only that the request was recorded. | none available. It is the merchant's data model, not ours. If a merchant ever models the option, it becomes verifiable like any other field |
 | `merchant_learn` is called by the Agent | a forgotten call costs speed, not correctness | hook the EventBus to browser tool results |
 | One browser context per process | matches one session at a time | changes with the concurrency limits above |
 | Capabilities record request shape only, not conditional multi-step flows | such a step fails correspondence check 5 and stays interactive | this is the intended behaviour |
@@ -646,15 +707,22 @@ mutation/observation rule and its test, the raised turn budget, and
 seeing the loop is the cheapest way to debug it. Gate: the reasoning-turn count
 test.
 
-**Phase 2 — interactive execution**
-Playwright MCP available to the Agent. A real order placed through the browser,
-with `order_verify` reading the live site. Gate: a real order, slow but correct.
-
-**Phase 3 — fast execution**
-`MerchantCapability` store, `merchant_learn` with its correspondence checks,
-the reversibility predicate, capability lookup in the semantic tools, and the
-demotion path. Gates: `test_candidate_capability_is_never_dispatched` and
+**Phase 2 — discovery without a browser**
+Bundle read and validation-error schema probing, the `MerchantCapability`
+store, `merchant_learn` with its correspondence checks, the reversibility
+predicate, capability lookup in the semantic tools, and the demotion path.
+Gates: `test_candidate_capability_is_never_dispatched` and
 `test_broken_capability_never_yields_wrong_order`.
+
+This is second, not third, because it is the cheapest technique that works and
+it needs no live order to produce a capability. Probing establishes a schema
+while creating nothing.
+
+**Phase 3 — interactive execution, the fallback**
+Playwright MCP available to the Agent, for merchants where phase 2 yields
+nothing: server-rendered pages, obfuscated bundles, APIs that fail closed.
+A real order placed through the browser, with `order_verify` reading the live
+site. Gate: a real order, slow but correct.
 
 **Phase 4 — payment**
 `payment_start`, `payment_verify`, the approval gate, and `display_qr`.
