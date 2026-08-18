@@ -152,12 +152,40 @@ composition, and that is what is being removed.
 
 `NativeAgentRuntime` moves from `app.state` into the system it belongs to.
 
-- `system/core.py`: add `agent_runtime: Optional[NativeAgentRuntime] = None`,
-  declared after every pre-existing field so positional construction keeps its
-  meaning.
-- `system/builder.py`: construct it when an agent exists, using the same
-  `DataSourceConfigurationSnapshot` that `server/app.py` builds today.
+`SystemBuilder` cannot construct it. At `build()` time there is no agent to
+wrap: the builder resolves `agent_name` only (`system/builder.py:258,336`), and
+the canonical long-lived Agent is constructed afterwards by the serving
+composition, which assigns it back (`cli/serve.py:320-339`). That assignment is
+the single site where `system.agent` is ever set; `sdk.py` does not use the
+field, constructing per call instead.
+
+Ownership therefore belongs to `JarvisSystem`, but construction follows the
+Agent rather than the builder:
+
+```
+SystemBuilder → JarvisSystem → serving composition
+                                    ↓
+                        construct canonical long-lived Agent
+                                    ↓
+                              system.agent
+                                    ↓
+                          system.agent_runtime
+```
+
+This is expressed as a derived property rather than a second assignment, so the
+runtime cannot disagree with the agent it wraps:
+
+- `system/core.py`: add an `agent_runtime` property that returns `None` when
+  `self.agent` is `None`, and otherwise builds a `NativeAgentRuntime` once and
+  caches it in `self.__dict__`. `JarvisSystem` already uses exactly this idiom
+  for `_get_orchestrator` (`core.py:127-134`) and already exposes derived
+  bundles as properties (`core.py:93-125`).
+- The `DataSourceConfigurationSnapshot` currently assembled in
+  `server/app.py:311-321` moves into a private method on `JarvisSystem`, where
+  its only inputs — `memory_backend`, `config.memory` and
+  `config.agent.context_from_memory` — already live.
 - `server/app.py:306-325`: stop constructing one; read `system.agent_runtime`.
+- `cli/serve.py`: unchanged.
 
 Only the construction site moves. `agents/runtime.py` itself is not edited, and
 the class keeps exactly its four responsibilities: a run lease, a two-phase
@@ -434,6 +462,7 @@ Each is a deliberate simplification with a known ceiling and an upgrade path.
 | `JarvisSystem.ask()` stays synchronous and outside the shared turn ordering | CLI does not share a thread with Chat and Voice | add an async `ask_stream()` alongside it |
 | `NativeAgentRuntime._lock` stays process-wide | one agent run at a time | must change together with `VoiceSessionService._lease_session_id` and the `_RENDERER` global |
 | `max_turns` is global, not per goal | no per-goal budget | a `ContextVar`, mirroring the existing `_RUN_MODEL` |
+| `agent_runtime` caches on first access | reassigning `system.agent` afterwards leaves a stale runtime | there is one assignment site, and it runs before first use; add invalidation only if a second appears |
 | `merchant_learn` is called by the Agent | a forgotten call costs speed, not correctness | hook the EventBus to browser tool results |
 | One browser context per process | matches one session at a time | changes with the concurrency limits above |
 | Capabilities record request shape only, not conditional multi-step flows | a changed site flow fails verification and is relearned | this is the intended behaviour |
@@ -543,7 +572,7 @@ so the shared foundation is proven before anything is built on it.
 
 | | New | Upstream edits |
 |---|---|---|
-| Phase 0 | `openjarvis/turn.py` (~40 lines) | `system/core.py` +1; `system/builder.py` ~+8; `system/orchestrator.py` −20/+1; `server/app.py` −15; `server/voice/{runtime,llm}.py` ~−20 |
+| Phase 0 | `openjarvis/turn.py` (~40 lines) | `system/core.py` ~+18 (property and snapshot helper); `system/orchestrator.py` −20/+1; `server/app.py` −15; `server/voice/{runtime,llm}.py` ~−20. `system/builder.py` and `cli/serve.py` unchanged |
 | Phases 1–4 | `openjarvis/merchants/`, `ordering` skill, tools, `server/static/display.html`, one iframe in `KioskPage.tsx` | config keys `agent.max_turns`, `merchants.execution_mode`; one `EventType`; one entry in `_AGENT_EVENTS` |
 
 New drift is concentrated in new modules. Upstream edits are confined to
