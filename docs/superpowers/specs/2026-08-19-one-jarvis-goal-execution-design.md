@@ -276,17 +276,20 @@ Jarvis from becoming a commerce bot.
 There is no separate crawl phase. The first order at an unknown merchant runs
 interactively through Playwright MCP. The network traffic of that session is
 read afterwards through the MCP server's own `browser_network_requests` and
-recorded as a capability candidate. Subsequent orders use it.
+recorded. Whether that recording may ever be dispatched is decided by the
+lifecycle below, not by having been recorded.
 
 #### Two tool sets, selected by failure message
 
 | | FAST | INTERACTIVE |
 |---|---|---|
 | Tools | semantic tools above | Playwright MCP: `browser_snapshot`, `browser_click`, `browser_type` |
-| Requires | a stored `MerchantCapability` | nothing |
+| Requires | a **VALIDATED** `MerchantCapability`, and a fast-eligible action | nothing |
 | Observation | tool result, then `*_verify` | Agent observes each step |
 
-When no capability exists, the semantic tool returns:
+When no usable capability exists — none recorded, one still in CANDIDATE, one
+marked BROKEN, or an action that is not fast-eligible — the semantic tool
+returns:
 
 ```python
 ToolResult(success=False, content=(
@@ -313,9 +316,14 @@ class MerchantCapability:
     body_template: dict
     credential_key: str          # a key name, never a secret value
     status: Literal["candidate", "validated", "broken"]
+    quarantine_reason: str       # which correspondence check failed; "" when validated
     recorded_at: float
     verified_count: int
 ```
+
+`status` is set once at recording time by the correspondence checks and changes
+afterwards only on demotion to `broken`. There is no path from `candidate` to
+`validated` that involves executing the capability.
 
 Stored as `~/.openjarvis/merchants/<merchant_id>/capability.json`. No schema
 migration, human-inspectable. Credentials are resolved through
@@ -324,28 +332,95 @@ file.
 
 #### Lifecycle
 
+A capability is never promoted by being tried. Trying it *is* the mutation:
+`order_place` with a wrong recorded request has already put a drink on the
+counter by the time `order_verify` reports the mismatch. The
+mutation/observation doctrine prevents Jarvis from *claiming* something false;
+it does not undo a side effect that already happened.
+
+Promotion is therefore decided by static checks over the recording, before any
+fast execution occurs.
+
 ```
-unknown ──interactive run + merchant_learn──▶ candidate
-                                                  │
-                                 next order tries FAST
-                                                  ▼
-                                          order_verify()
-                                        ╱                ╲
-                                   matches            mismatch or HTTP error
-                                      │                        │
-                                      ▼                        ▼
-                                 validated                  broken
-                                                               │
-                                        "capability_broken, use browser tools"
-                                                               │
-                                               interactive again, re-recorded
+UNKNOWN
+  │  interactive execution, whose *_verify step passed
+  ▼
+observed network request + verified resulting state
+  │  merchant_learn records
+  ▼
+CANDIDATE ──correspondence checks fail──▶ stays CANDIDATE
+  │                                        (quarantine — never executed)
+  │  checks pass
+  ▼
+VALIDATED
+  │  FAST allowed only if the action is read-only or reversible
+  ▼
+fast execution
+  │  mandatory independent verify
+  ├── match ──────────▶ stays VALIDATED
+  └── mismatch/error ─▶ BROKEN ──▶ interactive again, re-recorded
 ```
 
-A broken capability cannot silently produce a wrong order, because the
-mutation/observation doctrine makes `order_verify` mandatory after every
-mutation. The verification the Agent must perform anyway is what validates the
-fast path. This coupling is intentional: the doctrine in section 3 is what
-makes section 4 safe.
+**CANDIDATE is a quarantine state, not a trial state.** A capability in
+CANDIDATE is never dispatched. The semantic tool treats it exactly as it treats
+an absent capability, returning `no_capability_for_merchant` so the Agent falls
+back to the browser.
+
+#### Correspondence checks (CANDIDATE → VALIDATED)
+
+All are offline and decidable from the recording alone. They run inside
+`merchant_learn`, so a recording is promoted or quarantined at the moment it is
+made.
+
+1. **Attribution.** The request was observed inside the window of the
+   interactive step it is attributed to, between that browser tool's start and
+   the next observation.
+2. **Verified outcome.** The interactive run that produced it passed its
+   `*_verify` step. A recording from an unverified or failed run is discarded
+   rather than quarantined.
+3. **Parameter coverage.** Every value in the request that varies per call is
+   bound to a named tool parameter. An unexplained literal that carries data —
+   an item id, a quantity, an amount — blocks promotion, because it means the
+   recording baked in one specific order.
+4. **No inline secrets.** Authentication is carried by `credential_key`. A
+   literal token anywhere in the template blocks promotion.
+5. **Single request.** The action maps to exactly one request. A step that
+   needed conditional follow-up requests is not representable as a template and
+   stays interactive.
+
+#### Reversibility rule
+
+Passing validation is necessary but not sufficient. A validated capability can
+still go stale when the site changes, and the cost of that differs by orders of
+magnitude between actions.
+
+**A mutating tool is fast-eligible only if it is read-only, or if its inverse
+exists in the same capability set.**
+
+| Tool | Inverse | Fast-eligible |
+|---|---|---|
+| `menu_search`, `menu_item`, `cart_view`, `order_verify`, `payment_verify` | read-only | yes |
+| `cart_add` | `cart_remove` | yes |
+| `order_place` | `order_cancel`, when the merchant offers one | only then |
+| `payment_start` | none | **never** |
+
+`payment_start` therefore always runs interactively and always through the
+approval gate, whatever its capability status. Payment happens once per order,
+so the latency it costs is bounded and worth paying.
+
+The rule is a predicate over the tool set, so it is checkable rather than
+advisory.
+
+#### Why the doctrine still matters
+
+With promotion decided statically and irreversible actions excluded, the
+remaining risk is a validated capability that has gone stale. The
+mutation/observation doctrine covers exactly that case: `order_verify` is
+mandatory after every mutation, so a stale capability is detected on its first
+misuse, demoted to BROKEN, and the flow returns to the browser. The
+verification the Agent must perform anyway is what keeps the fast path honest —
+and the reversibility rule is what bounds the damage in the window before it
+fires.
 
 #### merchant_learn
 
@@ -354,6 +429,11 @@ makes section 4 safe.
 next order runs interactively — slower, not wrong. That failure mode is
 accepted in order to avoid building an event-correlation subsystem to automate
 one tool call.
+
+`merchant_learn` records the request, runs the correspondence checks, and
+writes the result as `validated` or as `candidate` with a `quarantine_reason`.
+It never executes anything. A recording whose interactive run did not pass
+`*_verify` is refused outright rather than stored.
 
 ### 5. Display surface
 
@@ -465,7 +545,9 @@ Each is a deliberate simplification with a known ceiling and an upgrade path.
 | `agent_runtime` caches on first access | reassigning `system.agent` afterwards leaves a stale runtime | there is one assignment site, and it runs before first use; add invalidation only if a second appears |
 | `merchant_learn` is called by the Agent | a forgotten call costs speed, not correctness | hook the EventBus to browser tool results |
 | One browser context per process | matches one session at a time | changes with the concurrency limits above |
-| Capabilities record request shape only, not conditional multi-step flows | a changed site flow fails verification and is relearned | this is the intended behaviour |
+| Capabilities record request shape only, not conditional multi-step flows | such a step fails correspondence check 5 and stays interactive | this is the intended behaviour |
+| `payment_start` is never fast | payment always costs an interactive round | only a merchant-side idempotency key or a reversal endpoint would change this, and neither exists today |
+| Correspondence checks are structural, not semantic | a recorded request that is well-formed but wrong for a different reason still validates | the mandatory `*_verify` catches it on first use, and reversibility bounds the cost |
 | No capability TTL | a stale capability survives until verification breaks it | add a TTL if sites change more often than orders occur |
 | Thumbnails are hotlinked | no images offline | proxy through `/api/merchants/<id>/image` |
 | Display is output only | no touch selection | a tap must enter the Pipecat context as a user turn; separate work |
@@ -501,17 +583,30 @@ def test_order_flow_requires_agent_reasoning_between_steps(fake_merchant):
 **Fast path safety**
 
 ```python
+def test_candidate_capability_is_never_dispatched(fake_merchant):
+    """A quarantined recording must not cause a real mutation.
+    The tool reports no capability and the Agent uses the browser."""
+
+def test_irreversible_action_never_runs_fast(fake_merchant):
+    """payment_start has no inverse, so it stays interactive even when
+    a validated capability for it exists."""
+
+def test_merchant_learn_refuses_unverified_run(fake_merchant):
+    """A recording from an interactive run whose *_verify failed is not
+    stored at all."""
+
 def test_broken_capability_never_yields_wrong_order(fake_merchant):
-    """The merchant changes a price behind the cached capability.
+    """The merchant changes a price behind a validated capability.
     Verification catches it, the capability is demoted, and the Agent
     reports the real price."""
 ```
-This is the most important test in the design: it proves the speed
-optimization is not paid for with correctness.
+The last is the most important test in the design: it proves the speed
+optimization is not paid for with correctness. The first two prove the damage
+window before it fires is bounded.
 
 ```python
 def test_second_order_uses_no_browser_tool(fake_merchant):
-    """A validated capability means Playwright is not touched."""
+    """A validated, reversible action means Playwright is not touched."""
 ```
 
 **Display safety**
@@ -556,8 +651,9 @@ Playwright MCP available to the Agent. A real order placed through the browser,
 with `order_verify` reading the live site. Gate: a real order, slow but correct.
 
 **Phase 3 — fast execution**
-`MerchantCapability` store, `merchant_learn`, capability lookup in the semantic
-tools, and the demotion path. Gate:
+`MerchantCapability` store, `merchant_learn` with its correspondence checks,
+the reversibility predicate, capability lookup in the semantic tools, and the
+demotion path. Gates: `test_candidate_capability_is_never_dispatched` and
 `test_broken_capability_never_yields_wrong_order`.
 
 **Phase 4 — payment**
