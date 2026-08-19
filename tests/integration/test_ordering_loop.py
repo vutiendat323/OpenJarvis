@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
+from openjarvis.core.config import load_config
 from openjarvis.merchants.fake import FakeMerchant
+from openjarvis.system.builder import SystemBuilder
 from openjarvis.tools.ordering import (
     BranchListTool,
     CartAddTool,
@@ -134,6 +137,70 @@ def test_ordering_and_display_tools_never_overlap():
             checked += 1
 
     assert checked == 11, f"expected 8 ordering + 3 display tools, saw {checked}"
+
+
+def test_the_real_build_wires_one_shared_merchant_into_every_ordering_tool():
+    """Phase 1 rests on one merchant instance per built system -- the fake
+    merchant holds a single cart because one session at a time is a
+    confirmed constraint.
+
+    The other tests in this file, and ``tests/system/test_ordering_wiring.py``,
+    exercise the injection helpers directly against a hand-built tool list.
+    Neither goes through ``SystemBuilder._resolve_tools`` -- the
+    ``config.merchants`` check, the ``FakeMerchant()`` construction, and the
+    injection loop -- so a regression there (e.g. a merchant built per tool)
+    could pass every other test in this file and still break Phase 1. Build
+    a real system from the preset to close that gap.
+    """
+    config = load_config(PRESET_PATH)
+    # tests/conftest.py clears EngineRegistry before every test, so engine
+    # discovery would find nothing regardless of what is running on this
+    # box. Inject through the builder's public seam instead -- no model is
+    # ever called here, we only care how tools get wired.
+    engine = MagicMock()
+    engine.health.return_value = True
+    engine.list_models.return_value = [config.intelligence.default_model]
+
+    # tests/conftest.py also clears ToolRegistry before every test. The
+    # ordering/display modules only register their tools with the decorator
+    # the first time they are imported in this process, so by the time this
+    # test runs the registry may already be empty again -- and
+    # SystemBuilder._resolve_tools's internal MCPServer falls back to
+    # ToolRegistry for exactly these tools. Re-register from the modules
+    # (same idiom as
+    # test_ordering_and_display_tools_never_overlap, above) rather than
+    # trusting whatever state an earlier test left behind.
+    import inspect
+
+    from openjarvis.core.registry import ToolRegistry
+    from openjarvis.tools import display, ordering
+    from openjarvis.tools._stubs import BaseTool
+
+    for module in (ordering, display):
+        for _, member in inspect.getmembers(module, inspect.isclass):
+            if (
+                not issubclass(member, BaseTool)
+                or member.__module__ != module.__name__
+                or inspect.isabstract(member)
+            ):
+                continue
+            name = member().spec.name
+            if not ToolRegistry.contains(name):
+                ToolRegistry.register_value(name, member)
+
+    system = SystemBuilder(config).engine_instance(engine, key="ollama").build()
+    try:
+        ordering_tools = [t for t in system.tools if t.spec.category == "ordering"]
+        display_tools = [t for t in system.tools if t.spec.category == "display"]
+
+        assert len(ordering_tools) == 8, sorted(
+            t.spec.name for t in ordering_tools
+        )
+        assert len({id(t._merchant) for t in ordering_tools}) == 1
+        assert len(display_tools) == 3
+        assert all(t._bus is not None for t in display_tools)
+    finally:
+        system.close()
 
 
 def test_agent_system_prompt_carries_the_notes_are_not_guarantees_rule():
