@@ -8,6 +8,7 @@ commerce_checkout() this design exists to prevent.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +23,9 @@ from openjarvis.tools.ordering import (
 )
 
 pytestmark = pytest.mark.integration
+
+PRESET_PATH = Path("configs/openjarvis/examples/ordering-kiosk.toml")
+PROMPT_PATH = Path("configs/openjarvis/prompts/ordering-kiosk.md")
 
 
 def _wired(merchant, *classes):
@@ -130,3 +134,35 @@ def test_ordering_and_display_tools_never_overlap():
             checked += 1
 
     assert checked == 11, f"expected 8 ordering + 3 display tools, saw {checked}"
+
+
+def test_agent_system_prompt_carries_the_notes_are_not_guarantees_rule():
+    """The doctrine's most violable rule has to reach the Agent, and the only
+    live path for that is the system prompt.
+
+    `src/openjarvis/skills/data/ordering.toml` used to carry this guidance,
+    but it was inert: `load_skill()` never populates `markdown_content` for a
+    flat TOML, the default `skills_dir` does not discover
+    `skills/data/` at all, and even a loaded skill only surfaces its text when
+    the model chooses to call it -- the wrong mechanism for a rule the model
+    must never violate. That file is gone; this test fails if the prompt path
+    that replaced it ever stops being wired up, or if the prompt text is
+    edited down and loses the rule.
+    """
+    from openjarvis.core.config import load_config
+    from openjarvis.system.agent_construction import resolve_agent_system_prompt
+
+    config = load_config(PRESET_PATH)
+    assert config.agent.system_prompt_path == str(PROMPT_PATH), (
+        "the preset must point at the prompt file carrying the ordering "
+        "doctrine -- system_prompt_path drifted or was removed"
+    )
+
+    prompt = resolve_agent_system_prompt(config.agent)
+    assert prompt is not None, "system_prompt_path resolved to no prompt text"
+    assert "requests, not guarantees" in prompt
+    assert "echoes it back" in prompt
+    # The rule names both what to say and what never to say -- either one
+    # disappearing is the rule getting softened, not just reworded.
+    assert "tôi đã ghi ít đường cho bạn" in prompt
+    assert "đã xác nhận ít đường" in prompt

@@ -1,11 +1,3 @@
-[skill]
-name = "ordering"
-version = "0.1.0"
-description = "Take a food and drink order: explore the menu, recommend, confirm, place, verify."
-tags = ["ordering", "commerce"]
-user_invocable = false
-
-markdown_content = """
 # Taking an order
 
 You are helping a customer order. Talk normally. Only reach for a tool when
@@ -55,4 +47,3 @@ it. Say "tôi đã ghi ít đường cho bạn", never "đã xác nhận ít đ�
 
 If a product is unavailable, say so and offer the nearest alternative. Do not
 quietly leave it out.
-"""

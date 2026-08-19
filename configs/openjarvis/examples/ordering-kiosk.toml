@@ -6,8 +6,8 @@
 # single call both changes an order and reports what it became.
 #
 # No real merchant, no network, no payment: the fake merchant is the ground
-# truth here. See src/openjarvis/skills/data/ordering.toml for how the Agent
-# is expected to use these tools.
+# truth here. See configs/openjarvis/prompts/ordering-kiosk.md for how the
+# Agent is expected to use these tools.
 #
 # max_turns is 30, not the default 10 -- a full order is several
 # observation/decision pairs and the default would strand it mid-flow.
@@ -24,6 +24,7 @@ default_model = "qwen3.5:9b"        # needs reliable function calling
 
 [agent]
 default_agent = "orchestrator"
+system_prompt_path = "configs/openjarvis/prompts/ordering-kiosk.md"
 max_turns = 30
 
 [merchants]
