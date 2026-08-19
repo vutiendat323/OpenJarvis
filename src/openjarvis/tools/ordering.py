@@ -312,3 +312,124 @@ class CartViewTool(_MerchantTool):
                 "total": cart.total,
             },
         )
+
+
+@ToolRegistry.register("order_place")
+class OrderPlaceTool(_MerchantTool):
+    """Place the order. Does not pay, and does not say what was placed."""
+
+    tool_id = "order_place"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="order_place",
+            description=(
+                "Place the current cart as an order at one branch. `type` is "
+                "'at-table', 'take-out' or 'delivery' -- ask the customer, "
+                "never guess: handing a takeaway customer a dine-in order is "
+                "a real mistake. Does NOT take payment. "
+                "Returns only the new order id; it does not tell you what "
+                "the order contains. Call order_verify with that id to read "
+                "back what the merchant recorded, and compare it with what "
+                "the customer asked for before going further."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": ["at-table", "take-out", "delivery"],
+                        "description": "How the customer is taking the order.",
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": "Branch slug from branch_list.",
+                    },
+                },
+                "required": ["type", "branch"],
+            },
+            category="ordering",
+            metadata=dict(MUTATES),
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        from openjarvis.merchants.port import ORDER_TYPES
+
+        unavailable = self._require_merchant()
+        if unavailable is not None:
+            return unavailable
+        order_type = str(params.get("type", "")).strip()
+        if not order_type:
+            return self._fail("order_place", "order_type_required")
+        if order_type not in ORDER_TYPES:
+            return self._fail("order_place", "invalid_order_type")
+        branch = str(params.get("branch", "")).strip()
+        if not branch:
+            return self._fail("order_place", "branch_required")
+        if not self._merchant.read_cart().lines:
+            return self._fail("order_place", "cart_empty")
+        try:
+            order_id = self._merchant.place_order(order_type, branch)
+        except ValueError:
+            return self._fail("order_place", "unknown_branch")
+        return self._ok("order_place", {"placed": True, "order_id": order_id})
+
+
+@ToolRegistry.register("order_verify")
+class OrderVerifyTool(_MerchantTool):
+    """Read the order back from the merchant."""
+
+    tool_id = "order_verify"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="order_verify",
+            description=(
+                "Read an order back from the merchant by id: its lines, "
+                "total, type, branch and status, as the merchant records "
+                "them. This is the merchant's answer, not yours -- check it "
+                "against what the customer asked for. "
+                "Note fields are echoed, not confirmed: a note reads back "
+                "unchanged whether or not anyone acts on it, so tell the "
+                "customer their request was recorded, never that it is "
+                "guaranteed. Read-only."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "Order id returned by order_place.",
+                    }
+                },
+                "required": ["order_id"],
+            },
+            category="ordering",
+            metadata=dict(OBSERVES),
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        unavailable = self._require_merchant()
+        if unavailable is not None:
+            return unavailable
+        order = self._merchant.read_order(str(params.get("order_id", "")))
+        if order is None:
+            return self._fail("order_verify", "unknown_order")
+        return self._ok(
+            "order_verify",
+            {
+                "order_id": order.order_id,
+                "status": order.status,
+                "order_type": order.order_type,
+                "branch": order.branch_slug,
+                "lines": [asdict(line) for line in order.lines],
+                "total": order.total,
+                # Stated in the payload, not only in the description: the
+                # Agent reads results far more reliably than it re-reads a
+                # tool spec, and overclaiming here means telling a customer
+                # their drink is confirmed less sweet when nothing checked.
+                "notes_are_unverified": True,
+            },
+        )
