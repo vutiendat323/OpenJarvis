@@ -1085,6 +1085,19 @@ class CloudEngine(InferenceEngine):
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        # Forward tools / tool_choice (DeepSeek is OpenAI-compatible). Without
+        # this the request carries no schema, so the model cannot emit a
+        # tool_call and instead writes prose describing one -- observed live as
+        # literal `<tool_calls><tool_call name="...">` text that the agent loop
+        # cannot dispatch. The tool_calls parsing below is only reachable
+        # because of these two lines. `stream_full`'s DeepSeek branch already
+        # forwards them via **kwargs; this is the non-streaming twin.
+        tools = kwargs.pop("tools", None)
+        if tools:
+            create_kwargs["tools"] = tools
+        tool_choice = kwargs.pop("tool_choice", None)
+        if tool_choice is not None:
+            create_kwargs["tool_choice"] = tool_choice
         t0 = time.monotonic()
         resp = self._deepseek_client.chat.completions.create(**create_kwargs)
         elapsed = time.monotonic() - t0

@@ -655,3 +655,72 @@ class TestCloudEngineDeepSeek:
 
         assert chunks == ["Ha Noi ", "dang mua."]
         completions.create.assert_awaited_once()
+
+
+class TestDeepSeekToolForwarding:
+    """The DeepSeek path must send the tool schema, not just read replies back.
+
+    ``_generate_deepseek`` parses ``choice.message.tool_calls`` off the
+    response, so it looks tool-capable. It is only capable if the request
+    carried ``tools`` in the first place: without them DeepSeek has nothing to
+    call and answers with prose that *describes* a call, which the agent loop
+    cannot dispatch. Observed live as literal
+    ``<tool_calls><tool_call name="branch_list">`` text in an ordering session
+    where no tool ever ran.
+    """
+
+    @staticmethod
+    def _engine_with_recorder() -> tuple[CloudEngine, dict]:
+        recorded: dict = {}
+
+        def create(**kwargs: object) -> SimpleNamespace:
+            recorded.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="ok", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=1, completion_tokens=1, total_tokens=2
+                ),
+                model="deepseek-v4-pro",
+            )
+
+        eng = CloudEngine.__new__(CloudEngine)
+        eng._deepseek_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+        return eng, recorded
+
+    def _generate(self, **extra: object) -> dict:
+        eng, recorded = self._engine_with_recorder()
+        eng._generate_deepseek(
+            [Message(role=Role.USER, content="cho minh 2 ly latte")],
+            model="deepseek-v4-pro",
+            temperature=0.2,
+            max_tokens=256,
+            **extra,
+        )
+        return recorded
+
+    def test_tools_reach_the_provider(self) -> None:
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "branch_list", "parameters": {}},
+            }
+        ]
+        recorded = self._generate(tools=tools)
+        assert recorded.get("tools") == tools
+
+    def test_tool_choice_reaches_the_provider(self) -> None:
+        recorded = self._generate(tools=[], tool_choice="auto")
+        assert recorded.get("tool_choice") == "auto"
+
+    def test_no_tools_sends_no_tools_key(self) -> None:
+        """An ordinary chat turn must not grow an empty tools field."""
+        recorded = self._generate()
+        assert "tools" not in recorded
+        assert "tool_choice" not in recorded
