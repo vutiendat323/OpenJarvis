@@ -1587,6 +1587,18 @@ class DigestConfig:
     )
 
 
+@dataclass(slots=True)
+class MerchantsConfig:
+    """Which merchant the ordering tools talk to.
+
+    ``fake`` is an in-process merchant with a fixed menu, which is what the
+    goal loop is proven against. ``none`` leaves the tools without a merchant,
+    so each one fails with ``merchant_unavailable`` rather than guessing.
+    """
+
+    backend: str = "fake"
+
+
 @dataclass
 class JarvisConfig:
     """Top-level configuration for OpenJarvis."""
@@ -1621,6 +1633,7 @@ class JarvisConfig:
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     digest: DigestConfig = field(default_factory=DigestConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
+    merchants: MerchantsConfig = field(default_factory=MerchantsConfig)
     mining: Optional["MiningConfig"] = None
 
     @property

@@ -473,6 +473,16 @@ class SystemBuilder:
         for tool in internal_server.get_tools():
             self._inject_tool_deps(tool, engine, model, memory_backend, channel_backend)
 
+        merchant = None
+        if getattr(config, "merchants", None) is not None:
+            if config.merchants.backend == "fake":
+                from openjarvis.merchants.fake import FakeMerchant
+
+                merchant = FakeMerchant()
+        if merchant is not None:
+            for tool in internal_server.get_tools():
+                self._inject_ordering_merchant(tool, merchant)
+
         tool_names = self._tool_names
         if tool_names is None:
             raw = config.tools.enabled or config.agent.tools
@@ -544,6 +554,16 @@ class SystemBuilder:
             "cancel_scheduled_task",
         ):
             pass  # scheduler injection handled post-build
+
+    @staticmethod
+    def _inject_ordering_merchant(tool, merchant) -> None:
+        """Hand the merchant to every ordering tool.
+
+        Keyed on category rather than on each tool name, so adding an eighth
+        ordering tool does not mean remembering to edit this method.
+        """
+        if tool.spec.category == "ordering" and hasattr(tool, "_merchant"):
+            tool._merchant = merchant
 
     def _setup_sandbox(self, config):
         sandbox_enabled = (
