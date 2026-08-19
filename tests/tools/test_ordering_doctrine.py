@@ -12,7 +12,6 @@ import inspect
 import pytest
 
 from openjarvis.tools import ordering
-from openjarvis.tools.ordering import _MerchantTool
 
 
 def _ordering_tools():
@@ -22,14 +21,36 @@ def _ordering_tools():
     before every test, so a registry walk here would iterate nothing and every
     assertion below would pass vacuously -- a silent hole in the one test that
     guards the doctrine.
+
+    The base class is looked up on the module object at call time
+    (`getattr(ordering, "_MerchantTool")`), not imported once at module load.
+    `tool_resolver.py` reloads every `openjarvis.tools.*` module whenever
+    `ToolRegistry.keys()` is empty -- which the autouse `clear()` above
+    guarantees before every test in a whole-suite run. A reload re-executes
+    `ordering.py` into the same module dict, producing a *new* `_MerchantTool`
+    class object. A stale module-level `from ... import _MerchantTool` would
+    then hold the *old* class, `issubclass` would be False for every tool, and
+    this function would silently return `[]`.
+
+    That emptiness is asserted below rather than just returned, because an
+    empty list here does not fail loudly on its own: `all(... for t in [])` is
+    `True`, so a test built on `all()` over an empty `_ordering_tools()` would
+    pass while checking nothing -- exactly the silent hole this doctrine test
+    exists to prevent.
     """
-    return [
+    base = getattr(ordering, "_MerchantTool")
+    tools = [
         member()
         for _, member in inspect.getmembers(ordering, inspect.isclass)
-        if issubclass(member, _MerchantTool)
-        and member is not _MerchantTool
+        if issubclass(member, base)
+        and member is not base
         and member.__module__ == ordering.__name__
     ]
+    assert tools, (
+        "_ordering_tools() enumerated no tools -- this must fail loudly "
+        "rather than let every doctrine assertion below pass vacuously"
+    )
+    return tools
 
 
 def test_every_tool_in_the_module_is_checked():
