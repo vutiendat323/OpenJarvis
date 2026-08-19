@@ -220,6 +220,24 @@ class TestTraceCollector:
         assert trace.steps[0].step_type == StepType.RESPOND
         store.close()
 
+    def test_a_store_save_failure_does_not_lose_the_completed_answer(self) -> None:
+        """The agent has already produced a result by the time save() runs --
+        a persistence bug (e.g. an unserializable field the json.dumps
+        default= fallback doesn't catch) must not turn that into a 500 for
+        the caller."""
+
+        class _ExplodingStore:
+            def save(self, trace: Any) -> None:
+                raise TypeError("boom")
+
+        bus = EventBus()
+        agent = _FakeAgent(response="ok", bus=bus)
+        collector = TraceCollector(agent, store=_ExplodingStore(), bus=bus)
+
+        result = collector.run("test")  # must not raise
+
+        assert result.content == "ok"
+
     def test_timing(self, tmp_path: Path) -> None:
         bus = EventBus()
         store = TraceStore(tmp_path / "test.db")

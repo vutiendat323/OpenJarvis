@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Dict, List, Optional
 
@@ -100,7 +101,19 @@ class TraceCollector:
         self._last_trace = trace
 
         if self._store is not None:
-            self._store.save(trace)
+            # The agent has already produced `result` above -- a trace-store
+            # failure (e.g. a still-unserializable field) must not turn a
+            # completed answer into a 500 from the caller. Log loudly rather
+            # than swallowing it; see traces/store.py's _json_default for
+            # the fix to the actual bytes-in-output cause.
+            try:
+                self._store.save(trace)
+            except Exception:
+                logging.getLogger("openjarvis.traces").exception(
+                    "trace persistence failed for trace_id=%s; continuing "
+                    "without it",
+                    trace.trace_id,
+                )
 
         if self._bus is not None:
             self._bus.publish(EventType.TRACE_COMPLETE, {"trace": trace})

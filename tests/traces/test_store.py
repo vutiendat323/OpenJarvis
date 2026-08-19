@@ -170,6 +170,27 @@ class TestTraceStore:
             assert orig.output == retr.output
         store.close()
 
+    def test_save_step_with_bytes_output_does_not_raise(self, tmp_path: Path) -> None:
+        """A tool that puts raw bytes into a step's output must not turn a
+        completed answer into a persistence-layer TypeError.
+
+        json.dumps has no idea how to serialize bytes; the store's
+        default= fallback must render it (as a repr) instead of raising.
+        """
+        store = TraceStore(tmp_path / "test.db")
+        trace = _make_trace(num_steps=1)
+        trace.steps[0].output = {"raw": b"\x00\x01binary"}
+        trace.steps[0].input = {"payload": b"also-bytes"}
+        trace.steps[0].metadata = {"blob": b"meta-bytes"}
+
+        store.save(trace)  # must not raise
+
+        retrieved = store.get(trace.trace_id)
+        assert retrieved is not None
+        assert "raw" in retrieved.steps[0].output
+        assert "binary" in retrieved.steps[0].output["raw"]
+        store.close()
+
     def test_close_and_reopen(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
         store = TraceStore(db_path)

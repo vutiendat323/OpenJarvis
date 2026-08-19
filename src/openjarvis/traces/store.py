@@ -77,6 +77,21 @@ INSERT INTO trace_steps (
 """
 
 
+def _json_default(value: Any) -> str:
+    """Render a value ``json.dumps`` cannot serialize (e.g. raw ``bytes``
+    a tool put into a step's input/output/metadata).
+
+    Trace persistence must never fail because of what a tool happened to
+    put in a dict -- losing the row would also lose whatever answer the
+    agent already produced this turn. A repr keeps the row useful for
+    debugging instead of silently dropping the field.
+    """
+    try:
+        return repr(value)
+    except Exception:
+        return f"<unrepresentable {type(value).__name__}>"
+
+
 class TraceStore:
     """Append-only SQLite store for interaction traces."""
 
@@ -145,9 +160,9 @@ class TraceStore:
                     else step.step_type,
                     step.timestamp,
                     step.duration_seconds,
-                    json.dumps(step.input),
-                    json.dumps(step.output),
-                    json.dumps(step.metadata),
+                    json.dumps(step.input, default=_json_default),
+                    json.dumps(step.output, default=_json_default),
+                    json.dumps(step.metadata, default=_json_default),
                 ),
             )
         self._conn.commit()
