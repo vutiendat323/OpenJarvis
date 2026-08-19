@@ -291,7 +291,7 @@ class CartViewTool(_MerchantTool):
         return ToolSpec(
             name="cart_view",
             description=(
-                "Read the current cart: every line with its options, "
+                "Read the current cart: every line with its size, note, "
                 "quantity and price, plus the total. This is the only way "
                 "to know what the cart contains. Read-only."
             ),

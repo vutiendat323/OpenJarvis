@@ -68,10 +68,8 @@
       const row = el("li");
       const left = el("div");
       left.append(el("span", `${line.quantity || 1}× ${line.name || ""}`, "name"));
-      const options = Object.entries(line.options || {})
-        .map(([key, value]) => `${key}: ${value}`)
-        .join(" · ");
-      if (options) left.append(el("span", options, "options"));
+      if (line.size) left.append(el("span", line.size, "options"));
+      if (line.note) left.append(el("span", line.note, "note"));
       row.append(left, el("span", money(line.line_total), "price"));
       list.append(row);
     }

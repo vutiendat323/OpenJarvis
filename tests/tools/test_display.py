@@ -77,6 +77,31 @@ def test_display_cart_publishes_lines_and_total():
     assert data["lines"][0]["quantity"] == 2
 
 
+def test_display_cart_keeps_size_and_note_but_drops_invented_fields():
+    """The screen is what a person at the shop reads to make the drink --
+    size and note must survive, and a model-invented key must not."""
+    tool, recorder = _wired(DisplayCartTool)
+    tool.execute(
+        lines=[
+            {
+                "name": "Latte",
+                "size": "Lớn",
+                "note": "ít đường",
+                "quantity": 2,
+                "line_total": 122000,
+                "html": "<b>x</b>",
+            }
+        ],
+        total=122000,
+    )
+
+    line = recorder.events[0].data["lines"][0]
+    assert line["size"] == "Lớn"
+    assert line["note"] == "ít đường"
+    assert set(line) <= {"name", "size", "note", "quantity", "line_total"}
+    assert "html" not in line
+
+
 def test_display_clear_publishes_an_empty_view():
     tool, recorder = _wired(DisplayClearTool)
     tool.execute()

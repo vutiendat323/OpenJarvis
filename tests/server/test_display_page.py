@@ -34,3 +34,12 @@ def test_the_page_loads_nothing_from_a_third_party():
     source = PAGE.read_text(encoding="utf-8")
     assert "http://" not in source.replace("http://localhost", "")
     assert "https://" not in source
+
+
+def test_the_page_renders_cart_line_size_and_note():
+    """A cart line carries a size (variant) and a free-text note -- both
+    must reach the screen, not a generic ``options`` map that no longer
+    exists on a cart line."""
+    source = PAGE.read_text(encoding="utf-8")
+    assert "line.size" in source
+    assert "line.note" in source

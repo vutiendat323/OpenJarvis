@@ -24,7 +24,7 @@ DISPLAYS = {"displays": True}
 # Only these reach the page. A model that invents an "html" or "onclick" field
 # gets it dropped here rather than at render time.
 _ITEM_FIELDS = ("id", "name", "price", "available", "image_url", "note")
-_LINE_FIELDS = ("name", "options", "quantity", "line_total")
+_LINE_FIELDS = ("name", "size", "note", "quantity", "line_total")
 
 
 class _DisplayTool(BaseTool):
