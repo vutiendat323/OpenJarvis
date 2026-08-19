@@ -1,0 +1,38 @@
+# Ordering Kiosk — FakeMerchant-backed voice ordering demo, Phase 1.
+#
+# Text and Voice both reach the same orchestrator Agent. The Agent explores
+# the fake merchant's menu, recommends, confirms with the customer, places
+# the order, and reads it back -- each step a separate tool call, so no
+# single call both changes an order and reports what it became.
+#
+# No real merchant, no network, no payment: the fake merchant is the ground
+# truth here. See src/openjarvis/skills/data/ordering.toml for how the Agent
+# is expected to use these tools.
+#
+# max_turns is 30, not the default 10 -- a full order is several
+# observation/decision pairs and the default would strand it mid-flow.
+# LoopGuard remains the real brake against a runaway loop.
+#
+# Usage:
+#   OPENJARVIS_CONFIG=configs/openjarvis/examples/ordering-kiosk.toml jarvis serve
+
+[engine]
+default = "ollama"
+
+[intelligence]
+default_model = "qwen3.5:9b"        # needs reliable function calling
+
+[agent]
+default_agent = "orchestrator"
+max_turns = 30
+
+[merchants]
+backend = "fake"
+
+[tools]
+enabled = "branch_list,menu_search,menu_item,cart_add,cart_remove,cart_view,order_place,order_verify,display_menu,display_cart,display_clear"
+
+[server]
+host = "127.0.0.1"
+port = 8000
+agent = "orchestrator"
