@@ -181,3 +181,134 @@ class MenuItemTool(_MerchantTool):
         if product is None:
             return self._fail("menu_item", "unknown_product")
         return self._ok("menu_item", asdict(product))
+
+
+@ToolRegistry.register("cart_add")
+class CartAddTool(_MerchantTool):
+    """Add one item. Returns an acknowledgement, never the cart."""
+
+    tool_id = "cart_add"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="cart_add",
+            description=(
+                "Add one variant to the cart. `variant` is a variant slug "
+                "from menu_search or menu_item -- a size with its own price "
+                "-- not a product slug. Anything the merchant does not price "
+                "as a variant (sugar level, ice, 'no straw') goes in `note`, "
+                "which is free text a person at the shop reads. "
+                "Returns only whether it was added and the new line id; it "
+                "does NOT tell you what the cart now contains. Call "
+                "cart_view afterwards and check it against what the "
+                "customer asked for."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "variant": {
+                        "type": "string",
+                        "description": "Variant slug (a specific size).",
+                    },
+                    "quantity": {"type": "integer", "description": "How many."},
+                    "note": {
+                        "type": "string",
+                        "description": (
+                            "Free text for the shop, e.g. 'ít đường'. Nobody "
+                            "validates it and nothing can verify it was "
+                            "honoured -- a person reads it."
+                        ),
+                    },
+                },
+                "required": ["variant"],
+            },
+            category="ordering",
+            metadata=dict(MUTATES),
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        unavailable = self._require_merchant()
+        if unavailable is not None:
+            return unavailable
+        try:
+            line_id = self._merchant.add_to_cart(
+                str(params.get("variant", "")),
+                int(params.get("quantity", 1) or 1),
+                str(params.get("note", "") or ""),
+            )
+        except (ValueError, TypeError):
+            return self._fail("cart_add", "variant_unavailable")
+        return self._ok("cart_add", {"added": True, "line_id": line_id})
+
+
+@ToolRegistry.register("cart_remove")
+class CartRemoveTool(_MerchantTool):
+    """Remove one line. Returns an acknowledgement, never the cart."""
+
+    tool_id = "cart_remove"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="cart_remove",
+            description=(
+                "Remove one line from the cart by its line id. Returns only "
+                "whether it was removed. Call cart_view afterwards to see "
+                "what the cart now contains."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "line_id": {
+                        "type": "string",
+                        "description": "Line id returned by cart_add or cart_view.",
+                    }
+                },
+                "required": ["line_id"],
+            },
+            category="ordering",
+            metadata=dict(MUTATES),
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        unavailable = self._require_merchant()
+        if unavailable is not None:
+            return unavailable
+        if not self._merchant.remove_from_cart(str(params.get("line_id", ""))):
+            return self._fail("cart_remove", "unknown_line")
+        return self._ok("cart_remove", {"removed": True})
+
+
+@ToolRegistry.register("cart_view")
+class CartViewTool(_MerchantTool):
+    """Read the real cart. This is the only thing that says what is in it."""
+
+    tool_id = "cart_view"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="cart_view",
+            description=(
+                "Read the current cart: every line with its options, "
+                "quantity and price, plus the total. This is the only way "
+                "to know what the cart contains. Read-only."
+            ),
+            parameters={"type": "object", "properties": {}},
+            category="ordering",
+            metadata=dict(OBSERVES),
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        unavailable = self._require_merchant()
+        if unavailable is not None:
+            return unavailable
+        cart = self._merchant.read_cart()
+        return self._ok(
+            "cart_view",
+            {
+                "lines": [asdict(line) for line in cart.lines],
+                "total": cart.total,
+            },
+        )
