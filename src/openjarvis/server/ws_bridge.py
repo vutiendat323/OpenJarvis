@@ -29,6 +29,7 @@ _AGENT_EVENTS = {
     EventType.INFERENCE_START,
     EventType.INFERENCE_END,
     EventType.KIOSK_STATE_CHANGED,
+    EventType.DISPLAY_UPDATE,
 }
 
 

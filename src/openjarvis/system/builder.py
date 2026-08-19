@@ -215,6 +215,7 @@ class SystemBuilder:
             model,
             memory_backend,
             channel_backend,
+            bus,
         )
         # The policy has to travel with the executor: ToolExecutor.execute()
         # consults it before dispatch, and a None policy silently disables the
@@ -464,7 +465,7 @@ class SystemBuilder:
             return None
 
     def _resolve_tools(
-        self, config, engine, model, memory_backend, channel_backend=None
+        self, config, engine, model, memory_backend, channel_backend=None, bus=None
     ):
         """Resolve tool instances via MCPServer (primary) + external MCP servers."""
         from openjarvis.mcp.server import MCPServer
@@ -479,9 +480,10 @@ class SystemBuilder:
                 from openjarvis.merchants.fake import FakeMerchant
 
                 merchant = FakeMerchant()
-        if merchant is not None:
-            for tool in internal_server.get_tools():
+        for tool in internal_server.get_tools():
+            if merchant is not None:
                 self._inject_ordering_merchant(tool, merchant)
+            self._inject_display_bus(tool, bus)
 
         tool_names = self._tool_names
         if tool_names is None:
@@ -564,6 +566,12 @@ class SystemBuilder:
         """
         if tool.spec.category == "ordering" and hasattr(tool, "_merchant"):
             tool._merchant = merchant
+
+    @staticmethod
+    def _inject_display_bus(tool, bus) -> None:
+        """Hand the event bus to every display tool."""
+        if tool.spec.category == "display" and hasattr(tool, "_bus"):
+            tool._bus = bus
 
     def _setup_sandbox(self, config):
         sandbox_enabled = (

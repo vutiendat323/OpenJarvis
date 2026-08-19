@@ -73,6 +73,7 @@ class EventType(str, Enum):
     AGENT_MESSAGE_RECEIVED = "agent_message_received"
     AGENT_CHECKPOINT_SAVED = "agent_checkpoint_saved"
     KIOSK_STATE_CHANGED = "kiosk_state_changed"
+    DISPLAY_UPDATE = "display_update"
     # Phase 25 — Configuration Optimization
     OPTIMIZE_RUN_START = "optimize_run_start"
     OPTIMIZE_TRIAL_START = "optimize_trial_start"
