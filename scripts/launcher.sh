@@ -23,7 +23,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${OPENJARVIS_ENV_FILE:-/home/robber/Work/jarvis/OpenJarvis/.env}"
 VISION_DIR="${OPENJARVIS_VISION_DIR:-/home/robber/Work/jarvis/vision}"
 ARTIFACT_DIR="${OPENJARVIS_LOCAL_TTS_ARTIFACT_DIR:-$HOME/.cache/openjarvis/vieneu-3.2.3-onnx}"
-MCP_CONFIG="configs/openjarvis/examples/browser-agent-playwright-mcp.toml"
+MCP_CONFIG="${OPENJARVIS_CONFIG:-configs/openjarvis/examples/browser-agent-playwright-mcp.toml}"
 MODEL="${OPENJARVIS_MODEL:-deepseek-v4-pro}"
 THREADS="${OPENJARVIS_VIENEU_THREADS:-4}"
 
