@@ -121,7 +121,9 @@ class StructuredSnapshotStore:
                     )
                 elif len(rows) == 1 and rows[0]["version"] == 1:
                     self._conn.execute("UPDATE data_plane_schema SET version = 2")
-                elif len(rows) != 1 or rows[0]["version"] != 2:
+                elif len(rows) == 1 and rows[0]["version"] in (2, 3):
+                    pass
+                else:
                     raise RuntimeError("unsupported data-plane schema version")
                 self._conn.execute(_CREATE_SNAPSHOT_VERSIONS)
                 self._conn.execute(_CREATE_SNAPSHOT_RESOURCES)

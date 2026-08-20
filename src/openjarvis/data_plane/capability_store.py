@@ -72,6 +72,7 @@ class SQLiteCapabilityStore:
     """WAL-backed, thread-safe persistence for source capabilities."""
 
     def __init__(self, db_path: str | Path) -> None:
+        self._db_path = str(db_path)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
@@ -89,7 +90,7 @@ class SQLiteCapabilityStore:
                 self._conn.execute(
                     "INSERT INTO data_plane_schema (version) VALUES (?)", (1,)
                 )
-            elif len(rows) != 1 or rows[0][0] not in (1, 2):
+            elif len(rows) != 1 or rows[0][0] not in (1, 2, 3):
                 raise RuntimeError("unsupported data-plane schema version")
             self._conn.execute(_CREATE_CAPABILITY_TABLE)
 
@@ -187,6 +188,11 @@ class SQLiteCapabilityStore:
         """Close the SQLite connection."""
         with self._lock:
             self._conn.close()
+
+    @property
+    def db_path(self) -> str:
+        """Return the shared structured-database path for sibling owners."""
+        return self._db_path
 
 
 __all__ = ["SQLiteCapabilityStore"]

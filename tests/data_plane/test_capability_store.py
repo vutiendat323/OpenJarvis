@@ -155,11 +155,11 @@ def test_capability_store_remains_compatible_after_snapshot_migrates_to_v2(
     reopened.close()
 
 
-def test_capability_store_rejects_schema_versions_above_two(tmp_path):
+def test_capability_store_rejects_schema_versions_above_three(tmp_path):
     path = tmp_path / "structured.db"
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE data_plane_schema (version INTEGER NOT NULL)")
-        connection.execute("INSERT INTO data_plane_schema (version) VALUES (3)")
+        connection.execute("INSERT INTO data_plane_schema (version) VALUES (4)")
 
     with pytest.raises(RuntimeError, match="unsupported data-plane schema version"):
         SQLiteCapabilityStore(path)
