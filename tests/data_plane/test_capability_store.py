@@ -135,3 +135,31 @@ def test_empty_database_migrates_to_version_one_idempotently(tmp_path):
             "SELECT version FROM data_plane_schema"
         ).fetchall() == [(1,)]
     second.close()
+
+
+def test_capability_store_remains_compatible_after_snapshot_migrates_to_v2(
+    tmp_path, trend_capability
+):
+    from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
+
+    path = tmp_path / "structured.db"
+    capability_store = SQLiteCapabilityStore(path)
+    capability_store.close()
+    snapshot_store = StructuredSnapshotStore(path)
+    snapshot_store.close()
+
+    reopened = SQLiteCapabilityStore(path)
+    reopened.save(trend_capability)
+
+    assert reopened.get(trend_capability.source_id) == trend_capability
+    reopened.close()
+
+
+def test_capability_store_rejects_schema_versions_above_two(tmp_path):
+    path = tmp_path / "structured.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE data_plane_schema (version INTEGER NOT NULL)")
+        connection.execute("INSERT INTO data_plane_schema (version) VALUES (3)")
+
+    with pytest.raises(RuntimeError, match="unsupported data-plane schema version"):
+        SQLiteCapabilityStore(path)

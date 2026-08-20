@@ -89,7 +89,7 @@ class SQLiteCapabilityStore:
                 self._conn.execute(
                     "INSERT INTO data_plane_schema (version) VALUES (?)", (1,)
                 )
-            elif len(rows) != 1 or rows[0][0] != 1:
+            elif len(rows) != 1 or rows[0][0] not in (1, 2):
                 raise RuntimeError("unsupported data-plane schema version")
             self._conn.execute(_CREATE_CAPABILITY_TABLE)
 
