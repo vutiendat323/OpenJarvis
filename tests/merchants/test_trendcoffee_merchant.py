@@ -29,6 +29,14 @@ def _runtime(tmp_path) -> DataPlaneRuntime:
                             "available": True,
                         },
                     ),
+                    ResourceRecord(
+                        "other-branch",
+                        {
+                            "slug": "other-branch",
+                            "name": "Other Trend Coffee",
+                            "available": True,
+                        },
+                    ),
                 ),
                 synced_at="2026-08-20T00:00:00+00:00",
             ),
@@ -42,6 +50,7 @@ def _runtime(tmp_path) -> DataPlaneRuntime:
                             "slug": "23f99adf51",
                             "name": "Cà phê đen",
                             "category": "coffee",
+                            "branch": "ba9355f797",
                             "available": True,
                             "variants": [
                                 {
@@ -177,6 +186,121 @@ def test_place_order_preserves_an_empty_free_text_note(runtime):
     assert merchant.read_cart().lines[0].note == ""
 
 
+@pytest.mark.parametrize(
+    ("quantity", "note"),
+    ((1.0, ""), (True, ""), (1, None), (1, object())),
+)
+def test_cart_rejects_non_port_quantity_or_note_types(runtime, quantity, note):
+    from openjarvis.merchants.trendcoffee import TrendCoffeeMerchant
+
+    with pytest.raises(ValueError, match="variant_unavailable"):
+        TrendCoffeeMerchant(runtime).add_to_cart("d5de540d4c", quantity, note)
+
+
+def test_place_order_revalidates_cart_line_membership_for_requested_branch(runtime):
+    from openjarvis.merchants.trendcoffee import TrendCoffeeMerchant
+
+    merchant = TrendCoffeeMerchant(runtime)
+    merchant.add_to_cart("d5de540d4c", 1, "ít đá")
+
+    with pytest.raises(ValueError):
+        merchant.place_order("take-out", "other-branch")
+
+    assert runtime.direct.execute.call_count == 0
+    assert [line.variant_slug for line in merchant.read_cart().lines] == ["d5de540d4c"]
+
+
+def test_place_order_treats_a_branchless_menu_record_as_global(runtime):
+    from openjarvis.merchants.trendcoffee import TrendCoffeeMerchant
+
+    runtime.snapshots.upsert(
+        NormalizedBatch(
+            source_id="trend-coffee",
+            resource_type="menu_item",
+            records=(
+                _menu_record(
+                    slug="global-product", variant_slug="global-variant", branch=None
+                ),
+            ),
+            synced_at="2026-08-20T00:01:00+00:00",
+        )
+    )
+    merchant = TrendCoffeeMerchant(runtime)
+    merchant.add_to_cart("global-variant", 1, "ít đá")
+
+    with pytest.raises(DataPlaneError) as raised:
+        merchant.place_order("take-out", "other-branch")
+
+    assert raised.value.code is DataPlaneErrorCode.CAPABILITY_QUARANTINED
+    assert runtime.direct.execute.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("available", "variant_available"), ((False, True), (True, False))
+)
+def test_place_order_rejects_a_line_that_became_unavailable(
+    runtime, available, variant_available
+):
+    from openjarvis.merchants.trendcoffee import TrendCoffeeMerchant
+
+    merchant = TrendCoffeeMerchant(runtime)
+    merchant.add_to_cart("d5de540d4c", 1, "ít đá")
+    runtime.snapshots.upsert(
+        NormalizedBatch(
+            source_id="trend-coffee",
+            resource_type="menu_item",
+            records=(
+                _menu_record(available=available, variant_available=variant_available),
+            ),
+            synced_at="2026-08-20T00:01:00+00:00",
+        )
+    )
+
+    with pytest.raises(ValueError):
+        merchant.place_order("take-out", "ba9355f797")
+
+    assert runtime.direct.execute.call_count == 0
+    assert merchant.read_cart().lines[0].line_total == 35_000
+
+
+def test_place_order_rejects_price_drift_since_cart_add(runtime):
+    from openjarvis.merchants.trendcoffee import TrendCoffeeMerchant
+
+    merchant = TrendCoffeeMerchant(runtime)
+    merchant.add_to_cart("d5de540d4c", 2, "ít đá")
+    runtime.snapshots.upsert(
+        NormalizedBatch(
+            source_id="trend-coffee",
+            resource_type="menu_item",
+            records=(_menu_record(price=40_000),),
+            synced_at="2026-08-20T00:01:00+00:00",
+        )
+    )
+
+    with pytest.raises(ValueError):
+        merchant.place_order("take-out", "ba9355f797")
+
+    assert runtime.direct.execute.call_count == 0
+    assert merchant.read_cart().lines[0].line_total == 70_000
+
+
+def test_snapshot_menu_reads_do_not_truncate_after_one_hundred_records(runtime):
+    from openjarvis.merchants.trendcoffee import TrendCoffeeMerchant
+
+    runtime.snapshots.upsert(
+        NormalizedBatch(
+            source_id="trend-coffee",
+            resource_type="menu_item",
+            records=tuple(
+                _menu_record(slug=f"item-{index:03d}") for index in range(101)
+            ),
+            synced_at="2026-08-20T00:01:00+00:00",
+        )
+    )
+
+    assert TrendCoffeeMerchant(runtime).get_product("item-100", "ba9355f797")
+
+
 def test_read_order_uses_authoritative_order_snapshot_only(runtime):
     from openjarvis.merchants.trendcoffee import TrendCoffeeMerchant
 
@@ -186,3 +310,32 @@ def test_read_order_uses_authoritative_order_snapshot_only(runtime):
     assert order.lines[0].note == "ít đá"
     assert order.total == 70_000
     assert TrendCoffeeMerchant(runtime).read_order("not-in-snapshot") is None
+
+
+def _menu_record(
+    *,
+    slug: str = "23f99adf51",
+    variant_slug: str = "d5de540d4c",
+    branch: str | None = "ba9355f797",
+    available: bool = True,
+    variant_available: bool = True,
+    price: int = 35_000,
+) -> ResourceRecord:
+    return ResourceRecord(
+        slug,
+        {
+            "slug": slug,
+            "name": "Cà phê đen",
+            "category": "coffee",
+            "branch": branch,
+            "available": available,
+            "variants": [
+                {
+                    "slug": variant_slug,
+                    "size": "tiêu chuẩn",
+                    "price": price,
+                    "available": variant_available,
+                }
+            ],
+        },
+    )

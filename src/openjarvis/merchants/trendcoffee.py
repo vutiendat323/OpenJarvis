@@ -82,7 +82,7 @@ class TrendCoffeeMerchant:
 
     def add_to_cart(self, variant_slug: str, quantity: int, note: str) -> str:
         with self._lock:
-            if isinstance(quantity, bool) or quantity < 1:
+            if type(quantity) is not int or quantity < 1 or not isinstance(note, str):
                 raise ValueError("variant_unavailable")
             found = self._available_variant(variant_slug)
             if found is None:
@@ -118,6 +118,7 @@ class TrendCoffeeMerchant:
             cart = self.read_cart()
             if not cart.lines:
                 raise ValueError("cart_empty")
+            lines = self._validated_order_lines(cart.lines, branch_slug)
             TrendCoffeeAdapter().build_request(
                 "order.place",
                 {
@@ -129,7 +130,7 @@ class TrendCoffeeMerchant:
                             "variant_slug": line.variant_slug,
                             "note": line.note,
                         }
-                        for line in cart.lines
+                        for line in lines
                     ],
                 },
             )
@@ -147,9 +148,13 @@ class TrendCoffeeMerchant:
     def _branch_exists(self, branch_slug: str) -> bool:
         return any(branch.slug == branch_slug for branch in self.list_branches())
 
-    def _available_variant(self, variant_slug: str) -> tuple[Product, Variant] | None:
+    def _available_variant(
+        self, variant_slug: str, branch_slug: str | None = None
+    ) -> tuple[Product, Variant] | None:
         for record in self._records("menu_item"):
-            if not _available(record.payload):
+            if not _available(record.payload) or (
+                branch_slug is not None and not _on_branch(record.payload, branch_slug)
+            ):
                 continue
             product = _product(record.resource_id, record.payload)
             if product is None:
@@ -166,9 +171,32 @@ class TrendCoffeeMerchant:
                     return product, variant
         return None
 
+    def _validated_order_lines(
+        self, lines: tuple[CartLine, ...], branch_slug: str
+    ) -> tuple[CartLine, ...]:
+        for line in lines:
+            if (
+                type(line.quantity) is not int
+                or line.quantity < 1
+                or not isinstance(line.note, str)
+            ):
+                raise ValueError("cart_line_invalid")
+            found = self._available_variant(line.variant_slug, branch_slug)
+            if found is None:
+                raise ValueError("cart_line_unavailable")
+            _, variant = found
+            if (
+                variant.slug != line.variant_slug
+                or variant.price * line.quantity != line.line_total
+            ):
+                raise ValueError("cart_line_price_changed")
+        return lines
+
     def _records(self, resource_type: str):
         return self._runtime.snapshots.query(
-            StructuredQuery(source_id=self._source_id, resource_type=resource_type)
+            StructuredQuery(
+                source_id=self._source_id, resource_type=resource_type, limit=0
+            )
         ).items
 
 
