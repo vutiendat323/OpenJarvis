@@ -1923,6 +1923,7 @@ def load_config(path: Optional[Path] = None) -> JarvisConfig:
             "system_prompt",
             "compression",
             "skills",
+            "merchants",
         )
         for section_name in top_sections:
             if section_name in data:

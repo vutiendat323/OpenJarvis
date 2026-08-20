@@ -216,6 +216,57 @@ def test_the_preset_disables_parallel_tool_dispatch():
     assert config.agent.parallel_tools is False
 
 
+def test_merchants_backend_none_leaves_ordering_tools_without_a_merchant(tmp_path):
+    """``[merchants] backend = "none"`` must survive config load and reach
+    the built system -- both the ``top_sections`` round-trip and the
+    builder's ``FakeMerchant``-or-nothing branch are on the hook here.
+    """
+    import inspect
+
+    from openjarvis.core.registry import ToolRegistry
+    from openjarvis.tools import display, ordering
+    from openjarvis.tools._stubs import BaseTool
+
+    for module in (ordering, display):
+        for _, member in inspect.getmembers(module, inspect.isclass):
+            if (
+                not issubclass(member, BaseTool)
+                or member.__module__ != module.__name__
+                or inspect.isabstract(member)
+            ):
+                continue
+            name = member().spec.name
+            if not ToolRegistry.contains(name):
+                ToolRegistry.register_value(name, member)
+
+    preset_text = PRESET_PATH.read_text()
+    none_preset = preset_text.replace('backend = "fake"', 'backend = "none"')
+    assert 'backend = "none"' in none_preset  # the replace actually matched
+
+    config_path = tmp_path / "ordering-kiosk-none.toml"
+    config_path.write_text(none_preset)
+
+    config = load_config(config_path)
+    assert config.merchants.backend == "none"
+
+    engine = MagicMock()
+    engine.health.return_value = True
+    engine.list_models.return_value = [config.intelligence.default_model]
+
+    system = SystemBuilder(config).engine_instance(engine, key="ollama").build()
+    try:
+        ordering_tools = [t for t in system.tools if t.spec.category == "ordering"]
+        assert ordering_tools, "expected the preset's ordering tools to still load"
+        assert all(t._merchant is None for t in ordering_tools)
+
+        view = next(t for t in ordering_tools if t.spec.name == "cart_view")
+        result = view.execute()
+        assert result.success is False
+        assert "merchant_unavailable" in result.content
+    finally:
+        system.close()
+
+
 def test_agent_system_prompt_carries_the_notes_are_not_guarantees_rule():
     """The doctrine's most violable rule has to reach the Agent, and the only
     live path for that is the system prompt.
