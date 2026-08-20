@@ -95,7 +95,11 @@ esac
 [ -x "$ROOT_DIR/.venv/bin/jarvis" ] || { echo "missing $ROOT_DIR/.venv/bin/jarvis" >&2; exit 1; }
 [ -f "$ENV_FILE" ]                  || { echo "missing env file: $ENV_FILE" >&2; exit 1; }
 [ -d "$ARTIFACT_DIR" ]              || { echo "missing VieNeu artifact: $ARTIFACT_DIR" >&2; exit 1; }
-[ -f "$ROOT_DIR/$MCP_CONFIG" ]      || { echo "missing browser config: $MCP_CONFIG" >&2; exit 1; }
+case "$MCP_CONFIG" in
+    /*) MCP_CONFIG_PATH="$MCP_CONFIG" ;;
+    *)  MCP_CONFIG_PATH="$ROOT_DIR/$MCP_CONFIG" ;;
+esac
+[ -f "$MCP_CONFIG_PATH" ]           || { echo "missing config: $MCP_CONFIG" >&2; exit 1; }
 
 set -a
 . "$ENV_FILE"
@@ -156,7 +160,7 @@ fi
 # ---------- verify the things that broke before ----------
 echo
 echo "Verification:"
-tools=$(grep -o 'Agent tools:.*' "$BACKEND_LOG" | tr ',' '\n' | grep -c 'browser_' || echo 0)
+tools=$(grep -o 'Agent tools:.*' "$BACKEND_LOG" | tr ',' '\n' | grep -c 'browser_' || true)
 printf '  browser tools   %s %s\n' "$tools" "$([ "$tools" -ge 21 ] && echo OK || echo 'FAIL (check OPENJARVIS_CONFIG)')"
 
 mcp=$(pgrep -f '@playwright/mcp' | wc -l)

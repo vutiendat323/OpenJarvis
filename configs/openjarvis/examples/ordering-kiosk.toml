@@ -21,6 +21,11 @@ default = "ollama"
 
 [intelligence]
 default_model = "qwen3.5:9b"        # needs reliable function calling
+# Not yet exercised end to end. `scripts/launcher.sh` passes
+# `--engine cloud --model "$MODEL"` on the CLI (default deepseek-v4-pro),
+# which overrides both keys above -- that combination is what the manual
+# ordering run has actually verified calls these tools. The local ollama
+# target above is the intended one; it just hasn't been proven yet.
 
 [agent]
 default_agent = "orchestrator"
