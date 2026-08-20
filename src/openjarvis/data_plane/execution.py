@@ -287,7 +287,7 @@ class DirectExecutionEngine:
         )
         verification_claim: dict[str, str] = {}
         try:
-            adapter = self._adapter_for(capability)
+            adapter = self._normalization_adapter(capability)
             provider_arguments = self._provider_request(adapter, operation, arguments)
             self._validate_request(operation, provider_arguments)
             verification_claim = self._verification_claim(
@@ -609,6 +609,15 @@ class DirectExecutionEngine:
         except KeyError:
             return None
 
+    def _normalization_adapter(self, capability: SourceCapability) -> object | None:
+        adapter = self._adapter_for(capability)
+        if adapter is None and capability.provider != "generic":
+            raise DataPlaneError(
+                DataPlaneErrorCode.CAPABILITY_MISSING,
+                "Provider adapter is unavailable",
+            )
+        return adapter
+
     @staticmethod
     def _provider_request(
         adapter: object | None,
@@ -681,6 +690,7 @@ class DirectExecutionEngine:
         operation: OperationContract,
         arguments: dict[str, object],
     ) -> NormalizedBatch:
+        self._normalization_adapter(capability)
         pages: list[NormalizedBatch] = []
         page = 1
         while True:
@@ -849,14 +859,9 @@ class DirectExecutionEngine:
         operation: OperationContract,
         payload: object,
     ) -> NormalizedBatch:
-        adapter = self._adapter_for(capability)
+        adapter = self._normalization_adapter(capability)
         if adapter is None:
-            if capability.provider == "generic":
-                return _generic_batch(capability, operation, payload)
-            raise DataPlaneError(
-                DataPlaneErrorCode.CAPABILITY_MISSING,
-                "Provider adapter is unavailable",
-            )
+            return _generic_batch(capability, operation, payload)
         try:
             batch = adapter.normalize(operation.resource_type, payload)  # type: ignore[union-attr]
         except (TypeError, ValueError, KeyError) as exc:

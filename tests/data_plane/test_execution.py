@@ -988,6 +988,7 @@ def test_unknown_provider_does_not_use_generic_normalization(runtime):
 
     assert receipt.status is ReceiptStatus.FAILED
     assert receipt.error_code == "capability_missing"
+    assert runtime.transport.calls == []
 
 
 @respx.mock
