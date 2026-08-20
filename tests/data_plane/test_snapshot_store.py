@@ -119,6 +119,40 @@ def test_failed_batch_keeps_last_complete_version(tmp_path):
     store.close()
 
 
+def test_query_requires_present_type_matched_payload_filters(tmp_path):
+    store = StructuredSnapshotStore(tmp_path / "structured.db")
+    store.upsert(
+        menu_batch(
+            35_000,
+            records=(
+                ResourceRecord(resource_id="boolean", payload={"value": True}),
+                ResourceRecord(resource_id="integer", payload={"value": 1}),
+                ResourceRecord(resource_id="missing", payload={"name": "missing"}),
+                ResourceRecord(resource_id="null", payload={"value": None}),
+            ),
+        )
+    )
+
+    null_matches = store.query(
+        StructuredQuery(
+            source_id="trend-coffee",
+            resource_type="menu_item",
+            filters={"value": None},
+        )
+    )
+    integer_matches = store.query(
+        StructuredQuery(
+            source_id="trend-coffee",
+            resource_type="menu_item",
+            filters={"value": 1},
+        )
+    )
+
+    assert [record.resource_id for record in null_matches.items] == ["null"]
+    assert [record.resource_id for record in integer_matches.items] == ["integer"]
+    store.close()
+
+
 def test_get_history_and_diff_preserve_snapshot_metadata(tmp_path):
     store = StructuredSnapshotStore(tmp_path / "structured.db")
     first = store.upsert(menu_batch(price=35_000))

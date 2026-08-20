@@ -179,7 +179,9 @@ class StructuredSnapshotStore:
             record
             for record in snapshot.records
             if all(
-                record.payload.get(key) == value
+                key in record.payload
+                and type(record.payload[key]) is type(value)
+                and record.payload[key] == value
                 for key, value in query.filters.items()
             )
         )
