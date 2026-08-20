@@ -692,6 +692,26 @@ class StructuredSourceAdapter(Protocol):
     ) -> NormalizedBatch: ...
 
 
+class VerificationClaimAdapter(Protocol):
+    """Provider-specific correlation for unsafe receipt verification."""
+
+    def build_request(
+        self, operation: OperationName, arguments: dict[str, object]
+    ) -> dict[str, object]: ...
+
+    def create_verification_claim(
+        self, operation: OperationName, request: dict[str, object]
+    ) -> dict[str, str]: ...
+
+    def verify_verification_claim(
+        self,
+        operation: OperationName,
+        claim: dict[str, str],
+        candidate: NormalizedBatch,
+        observed: NormalizedBatch,
+    ) -> bool: ...
+
+
 __all__ = [
     "ConsistencyMode",
     "DiscoveryConstraints",
@@ -720,5 +740,6 @@ __all__ = [
     "SyncReceipt",
     "TransportKind",
     "TrustState",
+    "VerificationClaimAdapter",
     "VerificationResult",
 ]

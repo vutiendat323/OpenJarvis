@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,7 @@ import pytest
 import respx
 
 from openjarvis.core.events import EventBus, EventType
+from openjarvis.data_plane.adapters import TrendCoffeeAdapter
 from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
 from openjarvis.data_plane.execution import DirectExecutionEngine, ExecutionTransport
 from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
@@ -41,6 +43,67 @@ class FixtureAdapter:
             ),
             synced_at="2026-08-20T00:00:00+00:00",
         )
+
+    def build_request(
+        self, operation: str, arguments: dict[str, object]
+    ) -> dict[str, object]:
+        return dict(arguments)
+
+    def create_verification_claim(
+        self, operation: str, request: dict[str, object]
+    ) -> dict[str, str]:
+        if operation == "order.place":
+            return {"projection_hash": _claim_hash({"item": request.get("item")})}
+        if operation == "payment.initiate" and isinstance(request.get("order"), str):
+            return {
+                "projection_hash": _claim_hash({"order": request["order"]}),
+                "order_ref": request["order"],
+            }
+        raise ValueError("fixture operation has no verification claim")
+
+    def verify_verification_claim(
+        self,
+        operation: str,
+        claim: dict[str, str],
+        candidate: NormalizedBatch,
+        observed: NormalizedBatch,
+    ) -> bool:
+        if operation == "order.place":
+            candidate_ref = (
+                candidate.records[0].resource_id if candidate.records else ""
+            )
+            observed_record = next(
+                (
+                    record
+                    for record in observed.records
+                    if record.resource_id == candidate_ref
+                ),
+                None,
+            )
+            return observed_record is not None and claim.get(
+                "projection_hash"
+            ) == _claim_hash({"item": observed_record.payload.get("item")})
+        if operation == "payment.initiate":
+            order_ref = claim.get("order_ref")
+            return (
+                isinstance(order_ref, str)
+                and any(
+                    record.payload.get("order") == order_ref
+                    for record in candidate.records
+                )
+                and any(record.resource_id == order_ref for record in observed.records)
+                and claim.get("projection_hash") == _claim_hash({"order": order_ref})
+            )
+        return False
+
+
+def _claim_hash(value: object) -> str:
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
 
 
 class RecordingTransport(ExecutionTransport):
@@ -206,7 +269,7 @@ def test_verify_does_not_promote_an_ambiguous_mutation(runtime):
 def test_verify_is_a_separate_get_and_only_then_promotes_candidate(runtime):
     runtime.transport.responses = [
         _response({"id": "order-1", "status": "created"}),
-        _response({"id": "order-1", "status": "paid"}),
+        _response({"id": "order-1", "status": "paid", "item": "coffee"}),
     ]
     receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
 
@@ -700,6 +763,107 @@ def test_payment_candidate_requires_matching_observed_order_reference(runtime):
     )
 
 
+def test_verify_rejects_provider_candidate_and_observation_for_other_request(runtime):
+    runtime.transport.responses = [
+        _response({"id": "order-1", "item": "tea"}),
+        _response({"id": "order-1", "item": "tea", "status": "paid"}),
+    ]
+
+    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    result = runtime.direct.verify(receipt.receipt_id)
+
+    assert result.status is ReceiptStatus.FAILED
+    assert result.error_code == "verification_failed"
+
+
+def test_verify_fails_closed_when_adapter_has_no_correlation_seam(runtime):
+    class NoClaimAdapter:
+        normalize = FixtureAdapter.normalize
+
+    runtime.direct._adapters["fixture"] = NoClaimAdapter()
+    runtime.transport.responses = [
+        _response({"id": "order-1"}),
+        _response({"id": "order-1", "item": "coffee"}),
+    ]
+
+    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    result = runtime.direct.verify(receipt.receipt_id)
+
+    assert result.status is ReceiptStatus.FAILED
+    assert len(runtime.transport.calls) == 1
+
+
+def test_trend_execution_dispatches_adapter_built_provider_request(runtime):
+    capability_data = _capability().to_dict()
+    capability_data.update(
+        {
+            "source_id": "trendcoffee",
+            "provider": "trendcoffee",
+            "base_url": "https://fixture.test/api/latest",
+            "revision": 1,
+        }
+    )
+    runtime.capabilities.save(SourceCapability.from_dict(capability_data))
+    runtime.direct._adapters["trendcoffee"] = TrendCoffeeAdapter()
+    runtime.transport.responses = [
+        {
+            "statusCode": 200,
+            "result": {"slug": "order-1"},
+        }
+    ]
+
+    receipt = runtime.direct.execute(
+        "trendcoffee",
+        "order.place",
+        {
+            "order_type": "take-out",
+            "branch_slug": "branch-1",
+            "items": [{"quantity": 1, "variant_slug": "variant-1", "note": "ít đá"}],
+        },
+    )
+
+    assert receipt.status is ReceiptStatus.SUCCEEDED
+    assert runtime.transport.calls[0]["arguments"] == {
+        "type": "take-out",
+        "timeLeftTakeOut": 0,
+        "deliveryTo": "",
+        "deliveryPhone": "",
+        "table": "",
+        "branch": "branch-1",
+        "owner": "",
+        "approvalBy": "",
+        "orderItems": [
+            {"quantity": 1, "variant": "variant-1", "promotion": None, "note": "ít đá"}
+        ],
+        "voucher": None,
+        "description": "",
+    }
+
+
+@pytest.mark.parametrize(
+    "path_argument", ["a/b", r"a\\b", "a?b", "a#b", "a\nb", ".", ".."]
+)
+def test_path_placeholder_rejects_non_segment_values_before_dispatch(
+    runtime, path_argument
+):
+    capability_data = _capability().to_dict()
+    operations = dict(capability_data["operations"])
+    order = dict(operations["order.place"])
+    order["path"] = "/orders/{order_id}"
+    operations["order.place"] = order
+    capability_data["operations"] = operations
+    runtime.capabilities.save(SourceCapability.from_dict(capability_data))
+    runtime.transport.responses = [_response({"id": "order-1"})]
+
+    receipt = runtime.direct.execute(
+        "fixture", "order.place", {"item": "coffee", "order_id": path_argument}
+    )
+
+    assert receipt.status is ReceiptStatus.FAILED
+    assert receipt.error_code == "schema_mismatch"
+    assert runtime.transport.calls == []
+
+
 @respx.mock
 def test_generic_graphql_sync_posts_discovered_query_template(tmp_path):
     path = tmp_path / "structured.db"
@@ -761,6 +925,69 @@ def test_generic_graphql_sync_posts_discovered_query_template(tmp_path):
     direct.close()
     snapshots.close()
     capabilities.close()
+
+
+@respx.mock
+def test_generic_graphql_scalar_result_normalizes_to_deterministic_record(tmp_path):
+    path = tmp_path / "structured.db"
+    capabilities = SQLiteCapabilityStore(path)
+    capabilities.save(
+        SourceCapability(
+            source_id="generic",
+            provider="generic",
+            origin="https://generic.test",
+            base_url="https://generic.test/graphql",
+            auth_mode="none",
+            credential_ref="",
+            transport=TransportKind.GRAPHQL,
+            operations={
+                "graphql.status": OperationContract(
+                    "graphql.status",
+                    "GET",
+                    "/graphql",
+                    "structured_record",
+                    TrustState.READ_VALIDATED,
+                    True,
+                    request_schema={"query_template": "query { status }"},
+                )
+            },
+            fingerprint="sha256:fixture",
+            schema_hash="sha256:schema",
+            evidence=(),
+            validated_at="2026-08-20T00:00:00+00:00",
+            expires_at="2030-08-20T00:00:00+00:00",
+            revision=1,
+        )
+    )
+    snapshots = StructuredSnapshotStore(path)
+    direct = DirectExecutionEngine(capabilities, snapshots)
+    respx.post("https://generic.test/graphql").mock(
+        return_value=httpx.Response(200, json={"data": {"status": "ready"}})
+    )
+
+    receipt = direct.sync("generic", ["structured_record"])
+    record = snapshots.query(
+        StructuredQuery(source_id="generic", resource_type="structured_record")
+    ).items[0]
+
+    assert receipt.status is ReceiptStatus.SUCCEEDED
+    assert record.payload == {"value": "ready"}
+    assert record.resource_id == _claim_hash({"value": "ready"}).removeprefix("sha256:")
+    direct.close()
+    snapshots.close()
+    capabilities.close()
+
+
+def test_unknown_provider_does_not_use_generic_normalization(runtime):
+    capability_data = _capability().to_dict()
+    capability_data["provider"] = "unknown-provider"
+    runtime.capabilities.save(SourceCapability.from_dict(capability_data))
+    runtime.transport.responses = [_response({"id": "record-1"})]
+
+    receipt = runtime.direct.sync("fixture", ["branch"])
+
+    assert receipt.status is ReceiptStatus.FAILED
+    assert receipt.error_code == "capability_missing"
 
 
 @respx.mock

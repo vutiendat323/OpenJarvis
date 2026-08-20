@@ -285,9 +285,15 @@ class DirectExecutionEngine:
             operation=operation_name,
             capability_revision=capability.revision,
         )
+        verification_claim: dict[str, str] = {}
         try:
-            self._validate_request(operation, arguments)
-            payload = self._dispatch(capability, operation, arguments)
+            adapter = self._adapter_for(capability)
+            provider_arguments = self._provider_request(adapter, operation, arguments)
+            self._validate_request(operation, provider_arguments)
+            verification_claim = self._verification_claim(
+                adapter, operation, provider_arguments
+            )
+            payload = self._dispatch(capability, operation, provider_arguments)
             self._validate_response(operation, payload)
             candidate = _redact_batch(self._normalize(capability, operation, payload))
             provider_ref = _provider_ref(candidate)
@@ -323,7 +329,7 @@ class DirectExecutionEngine:
                 ReceiptStatus.FAILED,
                 error_code=exc.code.value,
             )
-        self._save_receipt(receipt)
+        self._save_receipt(receipt, verification_claim)
         self._publish(
             EventType.SOURCE_EXECUTE_RECEIPT_CREATED,
             source_id=source_id,
@@ -374,6 +380,13 @@ class DirectExecutionEngine:
             )
         try:
             candidate = _candidate_batch(receipt)
+            adapter = self._adapter_for(capability)
+            claim = _candidate_claim(receipt)
+            if not self._claim_adapter_available(adapter):
+                raise DataPlaneError(
+                    DataPlaneErrorCode.VERIFICATION_FAILED,
+                    "Provider has no verification correlation",
+                )
             observed = self._read_batch(
                 capability,
                 verify_operation,
@@ -385,6 +398,13 @@ class DirectExecutionEngine:
                 raise DataPlaneError(
                     DataPlaneErrorCode.VERIFICATION_FAILED,
                     "Provider observation does not match receipt reference",
+                )
+            if not self._verification_claim_matches(
+                adapter, receipt.operation, claim, candidate, observed
+            ):
+                raise DataPlaneError(
+                    DataPlaneErrorCode.VERIFICATION_FAILED,
+                    "Provider observation does not match receipt claim",
                 )
             refs = tuple(
                 commit.ref
@@ -580,6 +600,81 @@ class DirectExecutionEngine:
             DataPlaneErrorCode.CAPABILITY_MISSING, "Read operation missing"
         )
 
+    def _adapter_for(self, capability: SourceCapability) -> object | None:
+        adapter = self._adapters.get(capability.provider)
+        if adapter is not None:
+            return adapter
+        try:
+            return SourceAdapterRegistry.create(capability.provider)
+        except KeyError:
+            return None
+
+    @staticmethod
+    def _provider_request(
+        adapter: object | None,
+        operation: OperationContract,
+        arguments: dict[str, object],
+    ) -> dict[str, object]:
+        build_request = getattr(adapter, "build_request", None)
+        if not callable(build_request):
+            return arguments
+        try:
+            request = build_request(operation.name, arguments)
+        except (TypeError, ValueError) as exc:
+            raise DataPlaneError(
+                DataPlaneErrorCode.SCHEMA_MISMATCH,
+                "Provider request is invalid",
+            ) from exc
+        if not isinstance(request, dict):
+            raise DataPlaneError(
+                DataPlaneErrorCode.SCHEMA_MISMATCH,
+                "Provider request is invalid",
+            )
+        return request
+
+    @staticmethod
+    def _verification_claim(
+        adapter: object | None,
+        operation: OperationContract,
+        request: dict[str, object],
+    ) -> dict[str, str]:
+        create_claim = getattr(adapter, "create_verification_claim", None)
+        if not callable(create_claim):
+            return {}
+        try:
+            claim = create_claim(operation.name, request)
+        except (TypeError, ValueError) as exc:
+            raise DataPlaneError(
+                DataPlaneErrorCode.SCHEMA_MISMATCH,
+                "Provider verification claim is invalid",
+            ) from exc
+        if not _is_private_claim(claim):
+            raise DataPlaneError(
+                DataPlaneErrorCode.SCHEMA_MISMATCH,
+                "Provider verification claim is invalid",
+            )
+        return claim
+
+    @staticmethod
+    def _claim_adapter_available(adapter: object | None) -> bool:
+        return callable(getattr(adapter, "verify_verification_claim", None))
+
+    @staticmethod
+    def _verification_claim_matches(
+        adapter: object | None,
+        operation_name: str,
+        claim: dict[str, str],
+        candidate: NormalizedBatch,
+        observed: NormalizedBatch,
+    ) -> bool:
+        verify_claim = getattr(adapter, "verify_verification_claim", None)
+        if not callable(verify_claim):
+            return False
+        try:
+            return bool(verify_claim(operation_name, claim, candidate, observed))
+        except (TypeError, ValueError):
+            return False
+
     def _read_batch(
         self,
         capability: SourceCapability,
@@ -615,9 +710,11 @@ class DirectExecutionEngine:
         arguments: dict[str, object],
     ) -> object:
         try:
-            encoded_arguments = {
-                key: quote(str(value), safe="") for key, value in arguments.items()
-            }
+            fields = set(_format_fields(operation.path))
+            encoded_arguments = dict(arguments)
+            encoded_arguments.update(
+                {field: _encode_path_segment(arguments[field]) for field in fields}
+            )
             path = operation.path.format(**encoded_arguments)
         except (KeyError, ValueError) as exc:
             raise DataPlaneError(
@@ -752,12 +849,14 @@ class DirectExecutionEngine:
         operation: OperationContract,
         payload: object,
     ) -> NormalizedBatch:
-        adapter = self._adapters.get(capability.provider)
+        adapter = self._adapter_for(capability)
         if adapter is None:
-            try:
-                adapter = SourceAdapterRegistry.create(capability.provider)
-            except KeyError:
+            if capability.provider == "generic":
                 return _generic_batch(capability, operation, payload)
+            raise DataPlaneError(
+                DataPlaneErrorCode.CAPABILITY_MISSING,
+                "Provider adapter is unavailable",
+            )
         try:
             batch = adapter.normalize(operation.resource_type, payload)  # type: ignore[union-attr]
         except (TypeError, ValueError, KeyError) as exc:
@@ -805,7 +904,9 @@ class DirectExecutionEngine:
                 "Execution URL failed SSRF validation",
             )
 
-    def _save_receipt(self, receipt: ExecutionReceipt) -> None:
+    def _save_receipt(
+        self, receipt: ExecutionReceipt, verification_claim: dict[str, str]
+    ) -> None:
         with self._lock, self._conn:
             self._conn.execute(
                 """
@@ -826,6 +927,7 @@ class DirectExecutionEngine:
                         {
                             "request_hash": receipt.request_hash,
                             "candidate": receipt.normalized,
+                            "verification_claim": verification_claim,
                         },
                         sort_keys=True,
                         separators=(",", ":"),
@@ -956,6 +1058,30 @@ def _candidate_batch(receipt: ExecutionReceipt) -> NormalizedBatch:
         ) from exc
 
 
+def _candidate_claim(receipt: ExecutionReceipt) -> dict[str, str]:
+    claim = receipt.normalized.get("verification_claim")
+    if not _is_private_claim(claim):
+        raise DataPlaneError(
+            DataPlaneErrorCode.VERIFICATION_FAILED,
+            "Receipt verification claim is invalid",
+        )
+    return claim
+
+
+def _is_private_claim(value: object) -> bool:
+    if not isinstance(value, dict) or not value:
+        return False
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str) or not item:
+            return False
+        if key.endswith("_hash"):
+            if not item.startswith("sha256:"):
+                return False
+        elif not key.endswith("_ref"):
+            return False
+    return True
+
+
 def _candidate_matches_observation(
     candidate: NormalizedBatch,
     observed: NormalizedBatch,
@@ -985,17 +1111,13 @@ def _generic_batch(
     values = value if isinstance(value, list) else [value]
     records: list[ResourceRecord] = []
     for item in values:
-        if not isinstance(item, dict):
-            raise DataPlaneError(
-                DataPlaneErrorCode.SCHEMA_MISMATCH,
-                "Generic response record is not an object",
-            )
-        record_id = item.get("id", item.get("slug"))
+        record = dict(item) if isinstance(item, dict) else {"value": item}
+        record_id = record.get("id", record.get("slug"))
         if not isinstance(record_id, str) or not record_id:
             record_id = hashlib.sha256(
-                json.dumps(item, sort_keys=True, separators=(",", ":")).encode()
+                json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest()
-        records.append(ResourceRecord(resource_id=record_id, payload=dict(item)))
+        records.append(ResourceRecord(resource_id=record_id, payload=record))
     return NormalizedBatch(
         source_id=capability.source_id,
         resource_type=operation.resource_type,
@@ -1093,6 +1215,20 @@ def _path_arguments(path: str, provider_ref: str) -> dict[str, object]:
     if not fields:
         return {}
     return {field: provider_ref for field in fields}
+
+
+def _encode_path_segment(value: object) -> str:
+    segment = str(value)
+    if (
+        segment in {".", ".."}
+        or any(character in segment for character in ("/", "\\", "?", "#"))
+        or any(ord(character) < 32 or ord(character) == 127 for character in segment)
+    ):
+        raise DataPlaneError(
+            DataPlaneErrorCode.SCHEMA_MISMATCH,
+            "Path argument is not a single segment",
+        )
+    return quote(segment, safe="")
 
 
 def _observes_ref(batch: NormalizedBatch, provider_ref: str) -> bool:

@@ -35,6 +35,10 @@ def _hash(value: bytes | str) -> str:
     return f"sha256:{hashlib.sha256(value).hexdigest()}"
 
 
+def _projection_hash(value: object) -> str:
+    return _hash(json.dumps(value, sort_keys=True, separators=(",", ":")))
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -47,6 +51,14 @@ def _envelope_result(payload: object) -> object:
     if not isinstance(payload, dict) or payload.get("statusCode") != 200:
         raise ValueError("Trend Coffee payload must be a successful provider envelope")
     return payload.get("result")
+
+
+def _order_projection(payload: dict[str, object]) -> dict[str, object]:
+    return {
+        "type": payload.get("type"),
+        "branch": payload.get("branch"),
+        "orderItems": payload.get("orderItems"),
+    }
 
 
 @SourceAdapterRegistry.register("trendcoffee")
@@ -217,6 +229,48 @@ class TrendCoffeeAdapter:
             if order is not None:
                 return order
         raise ValueError("Only allowlisted Trend Coffee request shapes are supported")
+
+    def create_verification_claim(
+        self, operation: str, request: dict[str, object]
+    ) -> dict[str, str]:
+        if operation == "order.place":
+            return {"projection_hash": _projection_hash(_order_projection(request))}
+        if operation == "payment.initiate" and _non_empty_string(request.get("order")):
+            order_ref = str(request["order"])
+            return {
+                "projection_hash": _projection_hash({"order": order_ref}),
+                "order_ref": order_ref,
+            }
+        raise ValueError("Trend Coffee operation has no verification claim")
+
+    def verify_verification_claim(
+        self,
+        operation: str,
+        claim: dict[str, str],
+        candidate: NormalizedBatch,
+        observed: NormalizedBatch,
+    ) -> bool:
+        if operation == "order.place":
+            candidate_refs = {record.resource_id for record in candidate.records}
+            return any(
+                record.resource_id in candidate_refs
+                and claim.get("projection_hash")
+                == _projection_hash(_order_projection(record.payload))
+                for record in observed.records
+            )
+        if operation == "payment.initiate":
+            order_ref = claim.get("order_ref")
+            return (
+                isinstance(order_ref, str)
+                and claim.get("projection_hash")
+                == _projection_hash({"order": order_ref})
+                and any(
+                    record.payload.get("order") == order_ref
+                    for record in candidate.records
+                )
+                and any(record.resource_id == order_ref for record in observed.records)
+            )
+        return False
 
     @staticmethod
     def _build_take_out_order(payload: dict[str, object]) -> dict[str, object] | None:

@@ -10,6 +10,8 @@ import pytest
 from openjarvis.data_plane.adapters import SourceAdapterRegistry, TrendCoffeeAdapter
 from openjarvis.data_plane.types import (
     DiscoveryEvidence,
+    NormalizedBatch,
+    ResourceRecord,
     StructuredSourceAdapter,
     TrustState,
 )
@@ -226,6 +228,96 @@ def test_trend_adapter_builds_only_allowlisted_take_out_order_request():
                 "items": [],
             },
         )
+
+
+def test_trend_adapter_verifies_order_claim_against_observed_provider_fields():
+    adapter = TrendCoffeeAdapter()
+    request = adapter.build_request(
+        "order.place",
+        {
+            "order_type": "take-out",
+            "branch_slug": "branch-1",
+            "items": [{"quantity": 1, "variant_slug": "variant-1", "note": "ít đá"}],
+        },
+    )
+    claim = adapter.create_verification_claim("order.place", request)
+    candidate = NormalizedBatch(
+        source_id="trendcoffee",
+        resource_type="order",
+        records=(ResourceRecord("order-1", {"slug": "order-1"}),),
+        synced_at="2026-08-20T00:00:00+00:00",
+    )
+    observed = NormalizedBatch(
+        source_id="trendcoffee",
+        resource_type="order",
+        records=(
+            ResourceRecord(
+                "order-1",
+                {
+                    "slug": "order-1",
+                    "type": "take-out",
+                    "branch": "branch-1",
+                    "orderItems": request["orderItems"],
+                },
+            ),
+        ),
+        synced_at="2026-08-20T00:00:00+00:00",
+    )
+
+    assert adapter.verify_verification_claim("order.place", claim, candidate, observed)
+    mismatched = NormalizedBatch(
+        source_id="trendcoffee",
+        resource_type="order",
+        records=(
+            ResourceRecord(
+                "order-1",
+                {
+                    "slug": "order-1",
+                    "type": "take-out",
+                    "branch": "other-branch",
+                    "orderItems": request["orderItems"],
+                },
+            ),
+        ),
+        synced_at="2026-08-20T00:00:00+00:00",
+    )
+    assert not adapter.verify_verification_claim(
+        "order.place", claim, candidate, mismatched
+    )
+
+
+def test_trend_adapter_payment_claim_requires_candidate_and_observed_order_match():
+    adapter = TrendCoffeeAdapter()
+    request = adapter.build_request(
+        "payment.initiate",
+        {"order": "order-1", "paymentMethod": "bank-transfer"},
+    )
+    claim = adapter.create_verification_claim("payment.initiate", request)
+    candidate = NormalizedBatch(
+        source_id="trendcoffee",
+        resource_type="payment",
+        records=(ResourceRecord("payment-1", {"order": "order-1"}),),
+        synced_at="2026-08-20T00:00:00+00:00",
+    )
+    observed = NormalizedBatch(
+        source_id="trendcoffee",
+        resource_type="order",
+        records=(ResourceRecord("order-1", {"slug": "order-1"}),),
+        synced_at="2026-08-20T00:00:00+00:00",
+    )
+
+    assert adapter.verify_verification_claim(
+        "payment.initiate", claim, candidate, observed
+    )
+    wrong_candidate = NormalizedBatch(
+        source_id="trendcoffee",
+        resource_type="payment",
+        records=(ResourceRecord("payment-1", {"order": "other-order"}),),
+        synced_at="2026-08-20T00:00:00+00:00",
+    )
+    assert not adapter.verify_verification_claim(
+        "payment.initiate", claim, wrong_candidate, observed
+    )
     with pytest.raises(ValueError, match="allowlisted"):
         adapter.build_request(
             "order.place",
