@@ -76,6 +76,11 @@ class FakeMerchant:
     #   would share this one. Scope by thread_id at the same time as the other
     #   single-session ceilings (NativeAgentRuntime._lock, the voice lease,
     #   the TTS renderer global) -- they only make sense changed together.
+    #
+    # ponytail: `_lines` is one unlocked dict and `place_order` reads then
+    #   clears it non-atomically. This is only safe because tool calls within
+    #   a turn run one at a time -- agent.parallel_tools must stay false for
+    #   the ordering-kiosk preset. Add locking if that ever changes.
     """
 
     def __init__(self) -> None:

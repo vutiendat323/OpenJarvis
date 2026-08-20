@@ -203,6 +203,19 @@ def test_the_real_build_wires_one_shared_merchant_into_every_ordering_tool():
         system.close()
 
 
+def test_the_preset_disables_parallel_tool_dispatch():
+    """Parallel dispatch runs a turn's tool calls concurrently, which lets a
+    model reach ``cart_add`` + ``cart_view`` results in one turn -- the
+    single-call-that-both-mutates-and-observes collapse the doctrine exists
+    to prevent, reached around it instead of through it. It is also a data
+    race against ``FakeMerchant``'s single unlocked cart. The preset must
+    keep ``parallel_tools`` off; this fails if that ever quietly flips back
+    to the ``AgentConfig`` default of ``True``.
+    """
+    config = load_config(PRESET_PATH)
+    assert config.agent.parallel_tools is False
+
+
 def test_agent_system_prompt_carries_the_notes_are_not_guarantees_rule():
     """The doctrine's most violable rule has to reach the Agent, and the only
     live path for that is the system prompt.

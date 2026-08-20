@@ -26,6 +26,13 @@ default_model = "qwen3.5:9b"        # needs reliable function calling
 default_agent = "orchestrator"
 system_prompt_path = "configs/openjarvis/prompts/ordering-kiosk.md"
 max_turns = 30
+# The doctrine (one tool call = one mutation or one observation, never both)
+# only forces a reasoning turn between action and consequence if tool calls
+# run one at a time. Parallel dispatch would let a turn emitting cart_add +
+# cart_view get both results before the Agent reasons about either --
+# reaching the same collapse the doctrine exists to prevent, just around it
+# instead of through it. Not a performance knob here.
+parallel_tools = false
 
 [merchants]
 backend = "fake"
