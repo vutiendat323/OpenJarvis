@@ -95,11 +95,15 @@ def _repopulate_registries() -> None:
                     pass
 
 
-def _run_serve(tmp_path, monkeypatch, *, build_spy, set_system_spy):
+def _run_serve(tmp_path, monkeypatch, *, build_spy, set_system_spy, configure=None):
     """Invoke ``jarvis serve`` with all heavy/blocking pieces stubbed out.
 
     Returns the CliRunner result. The server is never actually started
     (``uvicorn.run`` is a no-op) and no real engine is contacted.
+
+    ``configure``, if given, is called with the ``JarvisConfig`` before it is
+    handed to ``serve()`` -- for tests that need one field off the defaults
+    used below.
     """
     from openjarvis.core.config import JarvisConfig
     from openjarvis.core.registry import MemoryRegistry
@@ -125,6 +129,8 @@ def _run_serve(tmp_path, monkeypatch, *, build_spy, set_system_spy):
     config.server.port = 8123
     # Resolve a model without contacting a real engine / discovery.
     config.intelligence.default_model = "test-model"
+    if configure is not None:
+        configure(config)
 
     engine = _fake_engine()
     # Keep this wiring test independent of the optional native memory runtime.

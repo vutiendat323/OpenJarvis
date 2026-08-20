@@ -319,6 +319,13 @@ def serve(
 
     agent = None
     if system.agent_name:
+        # resolve_agent_system_prompt raises RuntimeError on a configured but
+        # unreadable system_prompt_path, deliberately -- the Agent's
+        # instructions must never be silently dropped. Resolve it outside the
+        # broad except below so that failure is fatal (a toolless chatbot is
+        # worse than a startup error) while genuinely optional construction
+        # failures below keep their existing tolerant handling.
+        system_prompt = resolve_agent_system_prompt(system.config.agent)
         try:
             agent = construct_registered_agent(
                 agent_name=system.agent_name,
@@ -330,7 +337,7 @@ def serve(
                 capability_policy=system.capability_policy,
                 memory_backend=system.memory_backend,
                 session_store=system.session_store,
-                system_prompt=resolve_agent_system_prompt(system.config.agent),
+                system_prompt=system_prompt,
                 parallel_tools=system.config.agent.parallel_tools,
                 extra_kwargs={
                     "skill_few_shot_examples": system._skill_few_shot_examples,
