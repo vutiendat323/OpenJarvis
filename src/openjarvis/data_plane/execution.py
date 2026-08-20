@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -724,13 +725,23 @@ class DirectExecutionEngine:
         arguments: dict[str, object],
     ) -> object:
         try:
-            path_template = operation.path.split("?", 1)[0]
-            fields = set(_format_fields(path_template))
-            encoded_arguments = dict(arguments)
-            encoded_arguments.update(
-                {field: _encode_path_segment(arguments[field]) for field in fields}
+            path_template, separator, query_template = operation.path.partition("?")
+            path_fields = set(_format_fields(path_template))
+            query_fields = set(_format_fields(query_template))
+            path_arguments = dict(arguments)
+            path_arguments.update(
+                {field: _encode_path_segment(arguments[field]) for field in path_fields}
             )
-            path = operation.path.format(**encoded_arguments)
+            query_arguments = dict(arguments)
+            query_arguments.update(
+                {
+                    field: _encode_query_component(arguments[field])
+                    for field in query_fields
+                }
+            )
+            path = path_template.format(**path_arguments)
+            if separator:
+                path = f"{path}?{query_template.format(**query_arguments)}"
         except (KeyError, ValueError) as exc:
             raise DataPlaneError(
                 DataPlaneErrorCode.SCHEMA_MISMATCH, "Path arguments are invalid"
@@ -991,15 +1002,21 @@ def _join_capability_url(capability: SourceCapability, path: str) -> str:
 def _request_hash(
     capability: SourceCapability, operation: str, arguments: dict[str, object]
 ) -> str:
-    value = json.dumps(
-        {
-            "revision": capability.revision,
-            "operation": operation,
-            "arguments": arguments,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    try:
+        value = json.dumps(
+            {
+                "revision": capability.revision,
+                "operation": operation,
+                "arguments": arguments,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise DataPlaneError(
+            DataPlaneErrorCode.SCHEMA_MISMATCH,
+            "Request arguments are not serializable",
+        ) from exc
     return f"sha256:{hashlib.sha256(value.encode()).hexdigest()}"
 
 
@@ -1085,7 +1102,7 @@ def _is_private_claim(value: object) -> bool:
         if not isinstance(key, str) or not isinstance(item, str) or not item:
             return False
         if key.endswith("_hash"):
-            if not item.startswith("sha256:"):
+            if re.fullmatch(r"sha256:[0-9a-f]{64}", item) is None:
                 return False
         elif not key.endswith("_ref"):
             return False
@@ -1245,6 +1262,16 @@ def _encode_path_segment(value: object) -> str:
             "Path argument is not a single segment",
         )
     return quote(segment, safe="")
+
+
+def _encode_query_component(value: object) -> str:
+    try:
+        return quote(str(value), safe="")
+    except (TypeError, ValueError) as exc:
+        raise DataPlaneError(
+            DataPlaneErrorCode.SCHEMA_MISMATCH,
+            "Query argument is not serializable",
+        ) from exc
 
 
 def _observes_ref(batch: NormalizedBatch, provider_ref: str) -> bool:

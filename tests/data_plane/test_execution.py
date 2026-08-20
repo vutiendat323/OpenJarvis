@@ -16,6 +16,7 @@ import respx
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.data_plane.adapters import TrendCoffeeAdapter
 from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
+from openjarvis.data_plane.errors import DataPlaneError, DataPlaneErrorCode
 from openjarvis.data_plane.execution import DirectExecutionEngine, ExecutionTransport
 from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
 from openjarvis.data_plane.types import (
@@ -794,6 +795,16 @@ class MalformedClaimAdapter(FixtureAdapter):
         return {"projection_hash": "not-a-hash"}
 
 
+class InvalidHashClaimAdapter(FixtureAdapter):
+    def __init__(self, claim: dict[str, str]) -> None:
+        self._claim = claim
+
+    def create_verification_claim(
+        self, operation: str, request: dict[str, object]
+    ) -> dict[str, str]:
+        return self._claim
+
+
 @pytest.mark.parametrize(
     "adapter", [NoClaimAdapter(), EmptyClaimAdapter(), MalformedClaimAdapter()]
 )
@@ -801,6 +812,33 @@ def test_execute_fails_before_dispatch_without_valid_correlation_claim(
     runtime, adapter
 ):
     runtime.direct._adapters["fixture"] = adapter
+
+    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+
+    assert receipt.status is ReceiptStatus.FAILED
+    assert receipt.error_code == "capability_quarantined"
+    assert runtime.transport.calls == []
+    assert [event.event_type for event in runtime.bus.history] == [
+        EventType.SOURCE_EXECUTE_STARTED,
+        EventType.SOURCE_EXECUTE_RECEIPT_CREATED,
+    ]
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        {"projection_hash": "sha256:x"},
+        {"projection_hash": "sha256:" + "A" * 64},
+        {"projection_hash": "sha256:" + "g" * 64},
+        {"projection_hash": "sha256:" + "a" * 63},
+        {
+            "projection_hash": _claim_hash({"item": "coffee"}),
+            "secondary_hash": "sha256:x",
+        },
+    ],
+)
+def test_execute_rejects_every_malformed_private_hash_before_dispatch(runtime, claim):
+    runtime.direct._adapters["fixture"] = InvalidHashClaimAdapter(claim)
 
     receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
 
@@ -901,6 +939,62 @@ def test_path_placeholder_percent_encodes_valid_unicode_and_space(runtime):
 
     assert receipt.status is ReceiptStatus.SUCCEEDED
     assert runtime.transport.calls[0]["url"].endswith("/orders/c%C3%A0%20ph%C3%AA")
+
+
+def test_query_placeholder_encodes_a_single_query_component(runtime):
+    capability_data = _capability().to_dict()
+    operations = dict(capability_data["operations"])
+    order = dict(operations["order.place"])
+    order["path"] = "/orders?item={item}&source=contract"
+    operations["order.place"] = order
+    capability_data["operations"] = operations
+    runtime.capabilities.save(SourceCapability.from_dict(capability_data))
+    runtime.transport.responses = [_response({"id": "order-1"})]
+
+    receipt = runtime.direct.execute("fixture", "order.place", {"item": "x&admin=true"})
+
+    assert receipt.status is ReceiptStatus.SUCCEEDED
+    assert runtime.transport.calls[0]["url"].endswith(
+        "/orders?item=x%26admin%3Dtrue&source=contract"
+    )
+
+
+def test_query_placeholder_missing_is_schema_mismatch(runtime):
+    capability_data = _capability().to_dict()
+    operations = dict(capability_data["operations"])
+    order = dict(operations["order.place"])
+    order["path"] = "/orders?filter={filter}"
+    operations["order.place"] = order
+    capability_data["operations"] = operations
+    runtime.capabilities.save(SourceCapability.from_dict(capability_data))
+
+    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+
+    assert receipt.status is ReceiptStatus.FAILED
+    assert receipt.error_code == "schema_mismatch"
+    assert runtime.transport.calls == []
+
+
+def test_query_placeholder_nonserializable_is_schema_mismatch(runtime):
+    class Unserializable:
+        def __str__(self) -> str:
+            raise TypeError("no query representation")
+
+    capability_data = _capability().to_dict()
+    operations = dict(capability_data["operations"])
+    order = dict(operations["order.place"])
+    order["path"] = "/orders?filter={filter}"
+    operations["order.place"] = order
+    capability_data["operations"] = operations
+    runtime.capabilities.save(SourceCapability.from_dict(capability_data))
+
+    with pytest.raises(DataPlaneError) as raised:
+        runtime.direct.execute(
+            "fixture", "order.place", {"item": "coffee", "filter": Unserializable()}
+        )
+
+    assert raised.value.code is DataPlaneErrorCode.SCHEMA_MISMATCH
+    assert runtime.transport.calls == []
 
 
 @respx.mock
