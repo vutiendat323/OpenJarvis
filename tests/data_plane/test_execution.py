@@ -776,21 +776,41 @@ def test_verify_rejects_provider_candidate_and_observation_for_other_request(run
     assert result.error_code == "verification_failed"
 
 
-def test_verify_fails_closed_when_adapter_has_no_correlation_seam(runtime):
-    class NoClaimAdapter:
-        normalize = FixtureAdapter.normalize
+class NoClaimAdapter:
+    normalize = FixtureAdapter.normalize
 
-    runtime.direct._adapters["fixture"] = NoClaimAdapter()
-    runtime.transport.responses = [
-        _response({"id": "order-1"}),
-        _response({"id": "order-1", "item": "coffee"}),
-    ]
+
+class EmptyClaimAdapter(FixtureAdapter):
+    def create_verification_claim(
+        self, operation: str, request: dict[str, object]
+    ) -> dict[str, str]:
+        return {}
+
+
+class MalformedClaimAdapter(FixtureAdapter):
+    def create_verification_claim(
+        self, operation: str, request: dict[str, object]
+    ) -> dict[str, str]:
+        return {"projection_hash": "not-a-hash"}
+
+
+@pytest.mark.parametrize(
+    "adapter", [NoClaimAdapter(), EmptyClaimAdapter(), MalformedClaimAdapter()]
+)
+def test_execute_fails_before_dispatch_without_valid_correlation_claim(
+    runtime, adapter
+):
+    runtime.direct._adapters["fixture"] = adapter
 
     receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
-    result = runtime.direct.verify(receipt.receipt_id)
 
-    assert result.status is ReceiptStatus.FAILED
-    assert len(runtime.transport.calls) == 1
+    assert receipt.status is ReceiptStatus.FAILED
+    assert receipt.error_code == "capability_quarantined"
+    assert runtime.transport.calls == []
+    assert [event.event_type for event in runtime.bus.history] == [
+        EventType.SOURCE_EXECUTE_STARTED,
+        EventType.SOURCE_EXECUTE_RECEIPT_CREATED,
+    ]
 
 
 def test_trend_execution_dispatches_adapter_built_provider_request(runtime):
@@ -841,7 +861,8 @@ def test_trend_execution_dispatches_adapter_built_provider_request(runtime):
 
 
 @pytest.mark.parametrize(
-    "path_argument", ["a/b", r"a\\b", "a?b", "a#b", "a\nb", ".", ".."]
+    "path_argument",
+    ["a/b", r"a\\b", "a?b", "a#b", "a\nb", ".", "..", "%2F", "%2E", "%2e%2e", "", 1],
 )
 def test_path_placeholder_rejects_non_segment_values_before_dispatch(
     runtime, path_argument
@@ -862,6 +883,24 @@ def test_path_placeholder_rejects_non_segment_values_before_dispatch(
     assert receipt.status is ReceiptStatus.FAILED
     assert receipt.error_code == "schema_mismatch"
     assert runtime.transport.calls == []
+
+
+def test_path_placeholder_percent_encodes_valid_unicode_and_space(runtime):
+    capability_data = _capability().to_dict()
+    operations = dict(capability_data["operations"])
+    order = dict(operations["order.place"])
+    order["path"] = "/orders/{order_id}"
+    operations["order.place"] = order
+    capability_data["operations"] = operations
+    runtime.capabilities.save(SourceCapability.from_dict(capability_data))
+    runtime.transport.responses = [_response({"id": "order-1"})]
+
+    receipt = runtime.direct.execute(
+        "fixture", "order.place", {"item": "coffee", "order_id": "cà phê"}
+    )
+
+    assert receipt.status is ReceiptStatus.SUCCEEDED
+    assert runtime.transport.calls[0]["url"].endswith("/orders/c%C3%A0%20ph%C3%AA")
 
 
 @respx.mock

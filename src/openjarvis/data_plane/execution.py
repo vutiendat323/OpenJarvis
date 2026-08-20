@@ -648,18 +648,22 @@ class DirectExecutionEngine:
         request: dict[str, object],
     ) -> dict[str, str]:
         create_claim = getattr(adapter, "create_verification_claim", None)
-        if not callable(create_claim):
-            return {}
+        verify_claim = getattr(adapter, "verify_verification_claim", None)
+        if not callable(create_claim) or not callable(verify_claim):
+            raise DataPlaneError(
+                DataPlaneErrorCode.CAPABILITY_QUARANTINED,
+                "Provider has no verification correlation",
+            )
         try:
             claim = create_claim(operation.name, request)
         except (TypeError, ValueError) as exc:
             raise DataPlaneError(
-                DataPlaneErrorCode.SCHEMA_MISMATCH,
+                DataPlaneErrorCode.CAPABILITY_QUARANTINED,
                 "Provider verification claim is invalid",
             ) from exc
         if not _is_private_claim(claim):
             raise DataPlaneError(
-                DataPlaneErrorCode.SCHEMA_MISMATCH,
+                DataPlaneErrorCode.CAPABILITY_QUARANTINED,
                 "Provider verification claim is invalid",
             )
         return claim
@@ -720,7 +724,8 @@ class DirectExecutionEngine:
         arguments: dict[str, object],
     ) -> object:
         try:
-            fields = set(_format_fields(operation.path))
+            path_template = operation.path.split("?", 1)[0]
+            fields = set(_format_fields(path_template))
             encoded_arguments = dict(arguments)
             encoded_arguments.update(
                 {field: _encode_path_segment(arguments[field]) for field in fields}
@@ -1223,10 +1228,16 @@ def _path_arguments(path: str, provider_ref: str) -> dict[str, object]:
 
 
 def _encode_path_segment(value: object) -> str:
-    segment = str(value)
+    if not isinstance(value, str):
+        raise DataPlaneError(
+            DataPlaneErrorCode.SCHEMA_MISMATCH,
+            "Path argument is not a raw identifier",
+        )
+    segment = value
     if (
-        segment in {".", ".."}
-        or any(character in segment for character in ("/", "\\", "?", "#"))
+        not segment
+        or segment in {".", ".."}
+        or any(character in segment for character in ("/", "\\", "?", "#", "%"))
         or any(ord(character) < 32 or ord(character) == 127 for character in segment)
     ):
         raise DataPlaneError(
