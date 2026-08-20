@@ -89,9 +89,19 @@ No live response body was committed.
   invocation that injects the mock, uses a temporary `SQLiteCapabilityStore`,
   sets `browser_fallback=False`, and explicitly asserts both
   `browser_actions == 0` and `observer.observe.assert_not_called()`.
-- The store and safe `DiscoveryHttpClient` are closed in `finally`. The engine
+- The store and its test-local HTTP seam are closed in `finally`. The engine
   run is deliberately separate from the provider adapter's three public GET
   reads because provider-adapter dispatch is not part of `DiscoveryEngine` yet.
-- The engine budget is 10 seconds, each request uses the discovery client's
-  safe-method allowlist, and no browser or mutation path is reachable.
+- The engine budget is 10 seconds and no browser or mutation path is reachable.
 - Reformatted all modified Python files, including `types.py`.
+
+## Fix round 3
+
+- Replaced the real discovery HTTP client in the observer proof with a
+  deterministic test-local fake that implements the engine's deadline,
+  HTTPS-policy, fetch, and close seam. It records only its controlled root and
+  `robots.txt` responses; it performs no network I/O.
+- The gated live path therefore makes exactly three network requests: publisher
+  homepage, `/api/latest/branch`, and `/api/latest/products`, all via GET. The
+  fake-call recording separately proves the real `DiscoveryEngine` reached its
+  `browser_fallback=False` decision without invoking the injected observer.

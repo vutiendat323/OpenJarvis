@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 from unittest.mock import Mock
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -12,7 +13,6 @@ import pytest
 from openjarvis.data_plane.adapters.trendcoffee import TrendCoffeeAdapter
 from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
 from openjarvis.data_plane.discovery import BrowserObservationPort, DiscoveryEngine
-from openjarvis.data_plane.discovery_http import DiscoveryHttpClient
 from openjarvis.data_plane.types import (
     DiscoveryConstraints,
     DiscoveryEvidence,
@@ -20,6 +20,42 @@ from openjarvis.data_plane.types import (
 )
 
 pytestmark = pytest.mark.live
+
+
+class _NoNetworkDiscoveryHttp:
+    """Deterministic discovery seam that records calls without network I/O."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.deadline: float | None = None
+        self.require_https: bool | None = None
+        self.closed = False
+
+    def set_deadline(self, deadline: float | None) -> None:
+        self.deadline = deadline
+
+    def set_require_https(self, require_https: bool) -> None:
+        self.require_https = require_https
+
+    def fetch(self, url: str, method: str = "GET") -> httpx.Response:
+        self.calls.append((method, url))
+        path = urlsplit(url).path or "/"
+        if path == "/":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                content=b"<html><body>Trend Coffee</body></html>",
+                request=httpx.Request(method, url),
+            )
+        return httpx.Response(
+            404,
+            headers={"content-type": "text/plain"},
+            content=b"not found",
+            request=httpx.Request(method, url),
+        )
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _evidence(
@@ -45,7 +81,7 @@ def test_live_trendcoffee_public_reads_are_normalizable(tmp_path):
 
     browser_observer = Mock(spec=BrowserObservationPort)
     store = SQLiteCapabilityStore(tmp_path / "trendcoffee-live.db")
-    discovery_http = DiscoveryHttpClient(timeout_seconds=5.0)
+    discovery_http = _NoNetworkDiscoveryHttp()
     try:
         discovery_result = DiscoveryEngine(
             store,
@@ -100,3 +136,10 @@ def test_live_trendcoffee_public_reads_are_normalizable(tmp_path):
     assert normalized_batch_count == 2
     assert discovery_result.browser_actions == 0
     browser_observer.observe.assert_not_called()
+    assert discovery_http.calls == [
+        ("GET", "https://trendcoffee.net"),
+        ("GET", "https://trendcoffee.net/robots.txt"),
+    ]
+    assert discovery_http.deadline is not None
+    assert discovery_http.require_https is True
+    assert discovery_http.closed is True
