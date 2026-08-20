@@ -465,13 +465,11 @@ class DiscoveryEngine:
             try:
                 response = self.http.fetch(validation_url, method="GET")
             except DataPlaneError as exc:
-                if exc.code is DataPlaneErrorCode.DISCOVERY_BUDGET_EXCEEDED:
-                    return (
-                        replace(capability, operations=operations),
-                        validation_evidence,
-                        exc.code,
-                    )
-                continue
+                return (
+                    replace(capability, operations=operations),
+                    validation_evidence,
+                    exc.code,
+                )
 
             matched = False
             if response.is_success and _is_json_content_type(_content_type(response)):
@@ -492,6 +490,12 @@ class DiscoveryEngine:
                     provenance="publisher_safe_read",
                 )
             )
+            if not response.is_success:
+                return (
+                    replace(capability, operations=operations),
+                    validation_evidence,
+                    _response_error_code(response.status_code),
+                )
             if matched:
                 operations[name] = replace(operation, trust=TrustState.READ_VALIDATED)
 

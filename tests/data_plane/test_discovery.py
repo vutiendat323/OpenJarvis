@@ -65,6 +65,22 @@ class RaisingHttp(RecordingHttp):
         raise DataPlaneError(self.error_code, "controlled discovery failure")
 
 
+class ValidationRaisingHttp(RecordingHttp):
+    def __init__(
+        self,
+        responses: dict[str, object],
+        error_code: DataPlaneErrorCode,
+    ) -> None:
+        super().__init__(responses)
+        self.error_code = error_code
+
+    def fetch(self, url: str, method: str = "GET") -> httpx.Response:
+        if urlsplit(url).path == "/products":
+            self.calls.append(SimpleNamespace(url=url, method=method))
+            raise DataPlaneError(self.error_code, "controlled validation failure")
+        return super().fetch(url, method)
+
+
 class RecordingObserver(BrowserObservationPort):
     def __init__(self, evidence: tuple[DiscoveryEvidence, ...] = ()) -> None:
         self.calls: list[tuple[str, float]] = []
@@ -226,6 +242,115 @@ def _graphql_document(*, required_argument: bool) -> str:
             }
         }
     )
+
+
+def _graphql_scalar_document() -> str:
+    scalar_fields = [
+        ("id", "ID"),
+        ("label", "String"),
+        ("active", "Boolean"),
+        ("ratio", "Float"),
+        ("count", "Int"),
+    ]
+    return json.dumps(
+        {
+            "data": {
+                "__schema": {
+                    "queryType": {"name": "Query"},
+                    "types": [
+                        {
+                            "kind": "OBJECT",
+                            "name": "Query",
+                            "fields": [
+                                {
+                                    "name": "stats",
+                                    "args": [],
+                                    "type": {
+                                        "kind": "NON_NULL",
+                                        "name": None,
+                                        "ofType": {
+                                            "kind": "OBJECT",
+                                            "name": "Metrics",
+                                        },
+                                    },
+                                }
+                            ],
+                        },
+                        {
+                            "kind": "OBJECT",
+                            "name": "Metrics",
+                            "fields": [
+                                {
+                                    "name": name,
+                                    "args": [],
+                                    "type": {
+                                        "kind": "NON_NULL"
+                                        if name == "active"
+                                        else "SCALAR",
+                                        "name": None if name == "active" else scalar,
+                                        "ofType": (
+                                            {"kind": "SCALAR", "name": scalar}
+                                            if name == "active"
+                                            else None
+                                        ),
+                                    },
+                                }
+                                for name, scalar in scalar_fields
+                            ],
+                        },
+                    ],
+                }
+            }
+        }
+    )
+
+
+def _validated_openapi_prior(capability_store) -> SourceCapability:
+    html = (
+        '<link rel="service-desc" '
+        'type="application/vnd.oai.openapi+json" href="/openapi.json">'
+    )
+    document = _openapi_document(
+        response_schema={
+            "type": "object",
+            "required": ["id"],
+            "properties": {"id": {"type": "string"}},
+        }
+    )
+    result = DiscoveryEngine(
+        capability_store,
+        http_client=RecordingHttp(
+            {
+                "/": (200, "text/html", html),
+                "/robots.txt": (404, "text/plain", ""),
+                "/openapi.json": (
+                    200,
+                    "application/vnd.oai.openapi+json",
+                    document,
+                ),
+                "/products": (200, "application/json", '{"id":"espresso"}'),
+            }
+        ),
+    ).discover(SourceRef("https://example.test"), DiscoveryConstraints())
+    assert result.capability is not None
+    prior = replace(
+        result.capability,
+        provider="trendcoffee",
+        operations={
+            **result.capability.operations,
+            "order.place": OperationContract(
+                name="order.place",
+                method="POST",
+                path="/orders",
+                resource_type="order",
+                trust=TrustState.WRITE_VALIDATED,
+                safe=False,
+            ),
+        },
+        revision=result.capability.revision + 1,
+    )
+    capability_store.save(prior)
+    return prior
 
 
 def test_cached_validated_capability_short_circuits_network_and_browser(
@@ -581,6 +706,99 @@ def test_graphql_zero_arg_query_retains_template_and_validates_with_get(
     ]
 
 
+def test_graphql_native_scalar_response_types_pass_safe_get_validation(
+    capability_store,
+):
+    html = '<link rel="service-desc" type="application/graphql" href="/graphql">'
+    http = RecordingHttp(
+        {
+            "/": (200, "text/html", html),
+            "/robots.txt": (404, "text/plain", ""),
+            "/graphql": [
+                (200, "application/json", _graphql_scalar_document()),
+                (
+                    200,
+                    "application/json",
+                    json.dumps(
+                        {
+                            "data": {
+                                "stats": {
+                                    "id": "metric-1",
+                                    "label": "Today",
+                                    "active": True,
+                                    "ratio": 1.5,
+                                    "count": 3,
+                                }
+                            }
+                        }
+                    ),
+                ),
+            ],
+        }
+    )
+
+    result = DiscoveryEngine(capability_store, http_client=http).discover(
+        SourceRef("https://example.test"),
+        DiscoveryConstraints(),
+    )
+
+    assert result.state is TrustState.READ_VALIDATED
+    assert result.capability is not None
+    operation = result.capability.operations["graphql.stats"]
+    assert operation.trust is TrustState.READ_VALIDATED
+    properties = operation.response_schema["properties"]["data"]["properties"]["stats"][
+        "properties"
+    ]
+    assert properties == {
+        "id": {"type": "string"},
+        "label": {"type": "string"},
+        "active": {"type": "boolean"},
+        "ratio": {"type": "number"},
+        "count": {"type": "integer"},
+    }
+
+
+def test_graphql_native_scalar_type_mismatch_fails_safe_get_validation(
+    capability_store,
+):
+    html = '<link rel="service-desc" type="application/graphql" href="/graphql">'
+    http = RecordingHttp(
+        {
+            "/": (200, "text/html", html),
+            "/robots.txt": (404, "text/plain", ""),
+            "/graphql": [
+                (200, "application/json", _graphql_scalar_document()),
+                (
+                    200,
+                    "application/json",
+                    json.dumps(
+                        {
+                            "data": {
+                                "stats": {
+                                    "id": "metric-1",
+                                    "label": "Today",
+                                    "active": "true",
+                                    "ratio": "1.5",
+                                    "count": "3",
+                                }
+                            }
+                        }
+                    ),
+                ),
+            ],
+        }
+    )
+
+    result = DiscoveryEngine(capability_store, http_client=http).discover(
+        SourceRef("https://example.test"),
+        DiscoveryConstraints(),
+    )
+
+    assert result.state is TrustState.QUARANTINED
+    assert result.capability is not None
+    assert result.capability.operations["graphql.stats"].trust is TrustState.QUARANTINED
+
+
 def test_graphql_introspection_preserves_publisher_endpoint_query(capability_store):
     html = (
         '<link rel="service-desc" type="application/graphql" href="/graphql?version=1">'
@@ -924,6 +1142,100 @@ def test_refresh_rate_limit_or_unavailable_response_preserves_prior_trust(
     assert result.error_code == expected_error.value
     assert result.capability == prior
     assert capability_store.get("example.test") == prior
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_error"),
+    [
+        (429, DataPlaneErrorCode.RATE_LIMITED),
+        (503, DataPlaneErrorCode.PROVIDER_UNAVAILABLE),
+    ],
+)
+def test_refresh_validation_response_preserves_prior_and_reports_transient_error(
+    capability_store,
+    status_code,
+    expected_error,
+):
+    prior = _validated_openapi_prior(capability_store)
+    html = (
+        '<link rel="service-desc" '
+        'type="application/vnd.oai.openapi+json" href="/openapi.json">'
+    )
+    http = RecordingHttp(
+        {
+            "/": (200, "text/html", html),
+            "/robots.txt": (404, "text/plain", ""),
+            "/openapi.json": (
+                200,
+                "application/vnd.oai.openapi+json",
+                _openapi_document(
+                    response_schema={
+                        "type": "object",
+                        "required": ["id"],
+                        "properties": {"id": {"type": "string"}},
+                    }
+                ),
+            ),
+            "/products": (status_code, "application/json", '{"temporary":true}'),
+        }
+    )
+
+    result = DiscoveryEngine(capability_store, http_client=http).refresh("example.test")
+
+    assert result.error_code == expected_error.value
+    assert result.capability == prior
+    assert capability_store.get("example.test") == prior
+    assert result.capability.operations["order.place"].trust is (
+        TrustState.WRITE_VALIDATED
+    )
+    assert any(urlsplit(call.url).path == "/products" for call in http.calls)
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        DataPlaneErrorCode.PROVIDER_UNAVAILABLE,
+        DataPlaneErrorCode.CAPABILITY_QUARANTINED,
+        DataPlaneErrorCode.DISCOVERY_BUDGET_EXCEEDED,
+    ],
+)
+def test_refresh_validation_transport_error_preserves_prior_and_error_code(
+    capability_store,
+    error_code,
+):
+    prior = _validated_openapi_prior(capability_store)
+    html = (
+        '<link rel="service-desc" '
+        'type="application/vnd.oai.openapi+json" href="/openapi.json">'
+    )
+    http = ValidationRaisingHttp(
+        {
+            "/": (200, "text/html", html),
+            "/robots.txt": (404, "text/plain", ""),
+            "/openapi.json": (
+                200,
+                "application/vnd.oai.openapi+json",
+                _openapi_document(
+                    response_schema={
+                        "type": "object",
+                        "required": ["id"],
+                        "properties": {"id": {"type": "string"}},
+                    }
+                ),
+            ),
+        },
+        error_code,
+    )
+
+    result = DiscoveryEngine(capability_store, http_client=http).refresh("example.test")
+
+    assert result.error_code == error_code.value
+    assert result.capability == prior
+    assert capability_store.get("example.test") == prior
+    assert result.capability.operations["order.place"].trust is (
+        TrustState.WRITE_VALIDATED
+    )
+    assert any(urlsplit(call.url).path == "/products" for call in http.calls)
 
 
 def test_events_are_redacted_and_source_id_preserves_non_default_port(capability_store):

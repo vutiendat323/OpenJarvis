@@ -666,12 +666,26 @@ def _graphql_response_schema(
     }
     if name in scalar_types:
         return {"type": scalar_types[name]}
-    fields = _graphql_selection_fields(return_ref, types)
-    if fields:
+    selected_fields = set(_graphql_selection_fields(return_ref, types))
+    type_item = types.get(name)
+    if selected_fields and isinstance(type_item, dict):
+        properties: dict[str, object] = {}
+        for field in type_item.get("fields", [])[:_MAX_ITEMS]:
+            if not isinstance(field, dict):
+                continue
+            field_name = _safe_property_name(field.get("name", ""))
+            if field_name not in selected_fields:
+                continue
+            field_schema = _graphql_response_schema(field.get("type"), types)
+            if field_schema:
+                properties[field_name] = field_schema
+    else:
+        properties = {}
+    if properties:
         return {
             "type": "object",
-            "required": fields,
-            "properties": {field: {"type": "string"} for field in fields},
+            "required": list(properties),
+            "properties": properties,
         }
     return {}
 
