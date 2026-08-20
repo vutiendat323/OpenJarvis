@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from string import Formatter
 from typing import Protocol
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
@@ -30,6 +30,7 @@ from openjarvis.data_plane.types import (
     NormalizedBatch,
     OperationContract,
     ReceiptStatus,
+    ResourceRecord,
     SnapshotRef,
     SourceCapability,
     SyncReceipt,
@@ -99,6 +100,18 @@ class HttpExecutionTransport:
             for key, value in arguments.items()
             if key not in excluded_arguments
         }
+        if capability.transport is TransportKind.GRAPHQL:
+            template = operation.request_schema.get("query_template")
+            if not isinstance(template, str) or not template:
+                raise DataPlaneError(
+                    DataPlaneErrorCode.SCHEMA_MISMATCH,
+                    "GraphQL operation has no query template",
+                )
+            return client.post(
+                url,
+                json={"query": template, "variables": payload},
+                headers=headers,
+            )
         if operation.method.upper() in {"GET", "HEAD"}:
             return client.request(
                 operation.method, url, params=payload, headers=headers
@@ -203,13 +216,12 @@ class DirectExecutionEngine:
             self._read_operation(capability, resource) for resource in resources
         ]
         try:
-            refs: list[SnapshotRef] = []
-            count = 0
-            for operation in operations:
-                batch = self._read_batch(capability, operation, {})
-                commit = self._snapshots.upsert(batch)
-                refs.append(commit.ref)
-                count += commit.resource_count
+            batches = tuple(
+                self._read_batch(capability, operation, {}) for operation in operations
+            )
+            commits = self._snapshots.upsert_many(batches)
+            refs = tuple(commit.ref for commit in commits)
+            count = sum(commit.resource_count for commit in commits)
         except DataPlaneError as exc:
             self._publish(
                 EventType.SOURCE_SYNC_FAILED,
@@ -220,12 +232,26 @@ class DirectExecutionEngine:
             return _sync_receipt(
                 source_id, resources, ReceiptStatus.FAILED, started_at, exc.code.value
             )
+        except ValueError:
+            self._publish(
+                EventType.SOURCE_SYNC_FAILED,
+                source_id=source_id,
+                capability_revision=capability.revision,
+                status=ReceiptStatus.FAILED.value,
+            )
+            return _sync_receipt(
+                source_id,
+                resources,
+                ReceiptStatus.FAILED,
+                started_at,
+                DataPlaneErrorCode.SCHEMA_MISMATCH.value,
+            )
         receipt = _sync_receipt(
             source_id,
             resources,
             ReceiptStatus.SUCCEEDED,
             started_at,
-            snapshot_refs=tuple(refs),
+            snapshot_refs=refs,
             resource_count=count,
         )
         self._publish(
@@ -281,6 +307,14 @@ class DirectExecutionEngine:
                 ReceiptStatus.UNKNOWN,
                 error_code=DataPlaneErrorCode.MUTATION_AMBIGUOUS.value,
             )
+        except httpx.RequestError:
+            receipt = self._new_receipt(
+                capability,
+                operation_name,
+                request_hash,
+                ReceiptStatus.UNKNOWN,
+                error_code=DataPlaneErrorCode.MUTATION_AMBIGUOUS.value,
+            )
         except DataPlaneError as exc:
             receipt = self._new_receipt(
                 capability,
@@ -297,10 +331,10 @@ class DirectExecutionEngine:
             capability_revision=capability.revision,
             status=receipt.status.value,
         )
-        return receipt
+        return _public_receipt(receipt)
 
     def verify(self, receipt_id: str) -> VerificationResult:
-        receipt = self.get_receipt(receipt_id)
+        receipt = self._load_receipt(receipt_id, private=True)
         if receipt is None:
             raise KeyError(receipt_id)
         capability = self._capability(receipt.source_id)
@@ -316,48 +350,52 @@ class DirectExecutionEngine:
                 DataPlaneErrorCode.VERIFICATION_FAILED,
                 "Verification operation is not safe",
             )
+        if capability.revision != receipt.capability_revision:
+            return self._complete_verification(
+                receipt,
+                capability,
+                verify_operation.name,
+                observed=False,
+                status=ReceiptStatus.FAILED,
+                error_code=DataPlaneErrorCode.VERIFICATION_FAILED.value,
+            )
         if (
             receipt.status is not ReceiptStatus.SUCCEEDED
             or not receipt.provider_ref
             or not receipt.normalized
         ):
-            result = VerificationResult(
-                receipt_id=receipt_id,
-                operation=verify_operation.name,
+            return self._complete_verification(
+                receipt,
+                capability,
+                verify_operation.name,
                 observed=False,
                 status=ReceiptStatus.FAILED,
                 error_code=DataPlaneErrorCode.VERIFICATION_FAILED.value,
             )
-            self._publish(
-                EventType.SOURCE_VERIFY_COMPLETED,
-                source_id=receipt.source_id,
-                operation=result.operation,
-                capability_revision=capability.revision,
-                status=result.status.value,
-            )
-            return result
         try:
+            candidate = _candidate_batch(receipt)
             observed = self._read_batch(
                 capability,
                 verify_operation,
                 _path_arguments(verify_operation.path, receipt.provider_ref),
             )
-            if not receipt.provider_ref or not _observes_ref(
-                observed, receipt.provider_ref
+            if not _candidate_matches_observation(
+                candidate, observed, receipt.provider_ref
             ):
                 raise DataPlaneError(
                     DataPlaneErrorCode.VERIFICATION_FAILED,
                     "Provider observation does not match receipt reference",
                 )
-            candidate = NormalizedBatch.from_dict(receipt.normalized)
-            refs = [self._snapshots.upsert(candidate).ref]
-            refs.append(self._snapshots.upsert(observed).ref)
+            refs = tuple(
+                commit.ref
+                for commit in self._snapshots.upsert_many((candidate, observed))
+            )
             result = VerificationResult(
                 receipt_id=receipt_id,
                 operation=verify_operation.name,
                 observed=True,
                 status=ReceiptStatus.SUCCEEDED,
-                snapshot_refs=tuple(refs),
+                snapshot_refs=refs,
             )
         except DataPlaneError as exc:
             result = VerificationResult(
@@ -367,16 +405,31 @@ class DirectExecutionEngine:
                 status=ReceiptStatus.FAILED,
                 error_code=exc.code.value,
             )
-        self._publish(
-            EventType.SOURCE_VERIFY_COMPLETED,
-            source_id=receipt.source_id,
-            operation=result.operation,
-            capability_revision=capability.revision,
-            status=result.status.value,
+        except ValueError:
+            result = VerificationResult(
+                receipt_id=receipt_id,
+                operation=verify_operation.name,
+                observed=False,
+                status=ReceiptStatus.FAILED,
+                error_code=DataPlaneErrorCode.VERIFICATION_FAILED.value,
+            )
+        return self._complete_verification(
+            receipt,
+            capability,
+            result.operation,
+            observed=result.observed,
+            status=result.status,
+            snapshot_refs=result.snapshot_refs,
+            error_code=result.error_code,
         )
-        return result
 
     def get_receipt(self, receipt_id: str) -> ExecutionReceipt | None:
+        receipt = self._load_receipt(receipt_id)
+        return _public_receipt(receipt) if receipt is not None else None
+
+    def _load_receipt(
+        self, receipt_id: str, *, private: bool = False
+    ) -> ExecutionReceipt | None:
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM execution_receipts WHERE receipt_id = ?", (receipt_id,)
@@ -391,9 +444,37 @@ class DirectExecutionEngine:
             request_hash=row["request_hash"],
             status=ReceiptStatus(row["status"]),
             provider_ref=row["provider_ref"],
-            normalized=dict(json.loads(row["normalized_json"])),
+            normalized=dict(json.loads(row["normalized_json"])) if private else {},
             created_at=row["created_at"],
         )
+
+    def _complete_verification(
+        self,
+        receipt: ExecutionReceipt,
+        capability: SourceCapability,
+        operation: str,
+        *,
+        observed: bool,
+        status: ReceiptStatus,
+        snapshot_refs: tuple[SnapshotRef, ...] = (),
+        error_code: str = "",
+    ) -> VerificationResult:
+        result = VerificationResult(
+            receipt_id=receipt.receipt_id,
+            operation=operation,
+            observed=observed,
+            status=status,
+            snapshot_refs=snapshot_refs,
+            error_code=error_code,
+        )
+        self._publish(
+            EventType.SOURCE_VERIFY_COMPLETED,
+            source_id=receipt.source_id,
+            operation=operation,
+            capability_revision=capability.revision,
+            status=status.value,
+        )
+        return result
 
     @staticmethod
     def _new_receipt(
@@ -488,7 +569,13 @@ class DirectExecutionEngine:
     ) -> OperationContract:
         for operation in capability.operations.values():
             if operation.resource_type == resource_type and operation.safe:
-                return self._operation(capability, operation.name)
+                validated = self._operation(capability, operation.name)
+                if validated.method.upper() not in {"GET", "HEAD"}:
+                    raise DataPlaneError(
+                        DataPlaneErrorCode.SCHEMA_MISMATCH,
+                        "Safe sync requires a GET or HEAD contract method",
+                    )
+                return validated
         raise DataPlaneError(
             DataPlaneErrorCode.CAPABILITY_MISSING, "Read operation missing"
         )
@@ -528,18 +615,21 @@ class DirectExecutionEngine:
         arguments: dict[str, object],
     ) -> object:
         try:
-            path = operation.path.format(**arguments)
+            encoded_arguments = {
+                key: quote(str(value), safe="") for key, value in arguments.items()
+            }
+            path = operation.path.format(**encoded_arguments)
         except (KeyError, ValueError) as exc:
             raise DataPlaneError(
                 DataPlaneErrorCode.SCHEMA_MISMATCH, "Path arguments are invalid"
             ) from exc
         url = _join_capability_url(capability, path)
-        headers = self._headers(capability, operation, url, arguments)
         transport = self._transports.get(capability.transport)
         if transport is None:
             raise DataPlaneError(
                 DataPlaneErrorCode.CAPABILITY_MISSING, "Transport unavailable"
             )
+        headers = self._headers(capability, operation, url, arguments, transport)
         attempts = 0
         current_url = url
         while True:
@@ -555,10 +645,20 @@ class DirectExecutionEngine:
                 if self._retry_allowed(operation, arguments) and attempts < 1:
                     attempts += 1
                     continue
+                if operation.safe:
+                    raise DataPlaneError(
+                        DataPlaneErrorCode.PROVIDER_UNAVAILABLE,
+                        "Safe provider request failed",
+                    )
                 raise
             if not isinstance(response, httpx.Response):
                 return response
             if response.status_code in _REDIRECT_STATUSES:
+                if not operation.safe:
+                    raise DataPlaneError(
+                        DataPlaneErrorCode.PROVIDER_UNAVAILABLE,
+                        "Unsafe operation redirect rejected",
+                    )
                 if attempts >= 5:
                     raise DataPlaneError(
                         DataPlaneErrorCode.PROVIDER_UNAVAILABLE, "Too many redirects"
@@ -601,6 +701,7 @@ class DirectExecutionEngine:
         operation: OperationContract,
         url: str,
         arguments: dict[str, object],
+        transport: ExecutionTransport,
     ) -> dict[str, str]:
         headers = {"User-Agent": "OpenJarvis/direct-execution"}
         if capability.credential_ref:
@@ -626,7 +727,8 @@ class DirectExecutionEngine:
             if isinstance(value, str) and value:
                 headers[operation.idempotency_header] = value
         if operation.csrf_cookie:
-            token = self._http.csrf_token(url, operation.csrf_cookie)
+            lookup = getattr(transport, "csrf_token", None)
+            token = lookup(url, operation.csrf_cookie) if callable(lookup) else None
             if not token or not operation.csrf_header:
                 raise DataPlaneError(
                     DataPlaneErrorCode.AUTHENTICATION_EXPIRED,
@@ -652,7 +754,10 @@ class DirectExecutionEngine:
     ) -> NormalizedBatch:
         adapter = self._adapters.get(capability.provider)
         if adapter is None:
-            adapter = SourceAdapterRegistry.create(capability.provider)
+            try:
+                adapter = SourceAdapterRegistry.create(capability.provider)
+            except KeyError:
+                return _generic_batch(capability, operation, payload)
         try:
             batch = adapter.normalize(operation.resource_type, payload)  # type: ignore[union-attr]
         except (TypeError, ValueError, KeyError) as exc:
@@ -669,31 +774,12 @@ class DirectExecutionEngine:
         return replace(batch, capability_revision=capability.revision)
 
     def _validate_response(self, operation: OperationContract, payload: object) -> None:
-        schema = operation.response_schema
-        if not schema:
-            return
-        if schema.get("type") == "object" and not isinstance(payload, dict):
-            raise DataPlaneError(
-                DataPlaneErrorCode.SCHEMA_MISMATCH, "Response must be object"
-            )
-        required = schema.get("required", [])
-        if (
-            isinstance(required, list)
-            and isinstance(payload, dict)
-            and any(key not in payload for key in required)
-        ):
-            raise DataPlaneError(
-                DataPlaneErrorCode.SCHEMA_MISMATCH, "Response required field missing"
-            )
+        _validate_json_schema(operation.response_schema, payload, "Response")
 
     def _validate_request(
         self, operation: OperationContract, arguments: dict[str, object]
     ) -> None:
-        required = operation.request_schema.get("required", [])
-        if isinstance(required, list) and any(key not in arguments for key in required):
-            raise DataPlaneError(
-                DataPlaneErrorCode.SCHEMA_MISMATCH, "Request required field missing"
-            )
+        _validate_json_schema(operation.request_schema, arguments, "Request")
 
     def _validate_capability_origin(self, capability: SourceCapability) -> None:
         self._validate_request_url(capability, capability.base_url)
@@ -737,7 +823,12 @@ class DirectExecutionEngine:
                     receipt.status.value,
                     receipt.provider_ref,
                     json.dumps(
-                        receipt.normalized, sort_keys=True, separators=(",", ":")
+                        {
+                            "request_hash": receipt.request_hash,
+                            "candidate": receipt.normalized,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
                     ),
                     receipt.created_at,
                 ),
@@ -766,7 +857,15 @@ def _join_capability_url(capability: SourceCapability, path: str) -> str:
         raise DataPlaneError(
             DataPlaneErrorCode.SCHEMA_MISMATCH, "Operation path is unsafe"
         )
-    url = f"{capability.base_url.rstrip('/')}{path}"
+    if capability.transport is TransportKind.GRAPHQL:
+        if path != urlsplit(capability.base_url).path:
+            raise DataPlaneError(
+                DataPlaneErrorCode.SCHEMA_MISMATCH,
+                "GraphQL operation path does not match its endpoint",
+            )
+        url = capability.base_url
+    else:
+        url = f"{capability.base_url.rstrip('/')}{path}"
     parsed = urlsplit(url)
     if parsed.query or parsed.fragment:
         # Query templates are allowed, fragments never are.
@@ -834,6 +933,132 @@ def _provider_ref(batch: NormalizedBatch) -> str:
         if isinstance(order_ref, str) and order_ref
         else batch.records[0].resource_id
     )
+
+
+def _public_receipt(receipt: ExecutionReceipt) -> ExecutionReceipt:
+    return replace(receipt, normalized={})
+
+
+def _candidate_batch(receipt: ExecutionReceipt) -> NormalizedBatch:
+    stored_hash = receipt.normalized.get("request_hash")
+    candidate = receipt.normalized.get("candidate")
+    if stored_hash != receipt.request_hash or not isinstance(candidate, dict):
+        raise DataPlaneError(
+            DataPlaneErrorCode.VERIFICATION_FAILED,
+            "Receipt candidate provenance is invalid",
+        )
+    try:
+        return NormalizedBatch.from_dict(candidate)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DataPlaneError(
+            DataPlaneErrorCode.VERIFICATION_FAILED,
+            "Receipt candidate is invalid",
+        ) from exc
+
+
+def _candidate_matches_observation(
+    candidate: NormalizedBatch,
+    observed: NormalizedBatch,
+    provider_ref: str,
+) -> bool:
+    if not provider_ref or not _observes_ref(observed, provider_ref):
+        return False
+    if candidate.resource_type == "payment":
+        return any(
+            record.payload.get("order") == provider_ref for record in candidate.records
+        )
+    return any(record.resource_id == provider_ref for record in candidate.records)
+
+
+def _generic_batch(
+    capability: SourceCapability,
+    operation: OperationContract,
+    payload: object,
+) -> NormalizedBatch:
+    value = payload
+    if isinstance(value, dict) and isinstance(value.get("data"), dict):
+        data = value["data"]
+        query_name = operation.name.removeprefix("graphql.")
+        value = data.get(query_name, data)
+    if isinstance(value, dict) and isinstance(value.get("items"), list):
+        value = value["items"]
+    values = value if isinstance(value, list) else [value]
+    records: list[ResourceRecord] = []
+    for item in values:
+        if not isinstance(item, dict):
+            raise DataPlaneError(
+                DataPlaneErrorCode.SCHEMA_MISMATCH,
+                "Generic response record is not an object",
+            )
+        record_id = item.get("id", item.get("slug"))
+        if not isinstance(record_id, str) or not record_id:
+            record_id = hashlib.sha256(
+                json.dumps(item, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+        records.append(ResourceRecord(resource_id=record_id, payload=dict(item)))
+    return NormalizedBatch(
+        source_id=capability.source_id,
+        resource_type=operation.resource_type,
+        records=tuple(records),
+        synced_at=_now(),
+        capability_revision=capability.revision,
+        provenance=("generic_structured_transport",),
+    )
+
+
+def _validate_json_schema(schema: dict[str, object], value: object, label: str) -> None:
+    if not schema:
+        return
+    if not _matches_schema(schema, value):
+        raise DataPlaneError(
+            DataPlaneErrorCode.SCHEMA_MISMATCH,
+            f"{label} does not match its contract schema",
+        )
+
+
+def _matches_schema(schema: dict[str, object], value: object) -> bool:
+    schema_type = schema.get("type")
+    if isinstance(schema_type, str) and not _matches_type(schema_type, value):
+        return False
+    enum = schema.get("enum")
+    if isinstance(enum, list) and value not in enum:
+        return False
+    if isinstance(value, dict):
+        required = schema.get("required", [])
+        if isinstance(required, list) and any(key not in value for key in required):
+            return False
+        properties = schema.get("properties", {})
+        if isinstance(properties, dict):
+            if schema.get("additionalProperties") is False and any(
+                key not in properties for key in value
+            ):
+                return False
+            for key, child in properties.items():
+                if (
+                    key in value
+                    and isinstance(child, dict)
+                    and not _matches_schema(child, value[key])
+                ):
+                    return False
+    if isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, dict) and any(
+            not _matches_schema(items, item) for item in value
+        ):
+            return False
+    return True
+
+
+def _matches_type(schema_type: str, value: object) -> bool:
+    return {
+        "object": isinstance(value, dict),
+        "array": isinstance(value, list),
+        "string": isinstance(value, str),
+        "boolean": isinstance(value, bool),
+        "integer": isinstance(value, int) and not isinstance(value, bool),
+        "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+        "null": value is None,
+    }.get(schema_type, True)
 
 
 def _redact_batch(batch: NormalizedBatch) -> NormalizedBatch:

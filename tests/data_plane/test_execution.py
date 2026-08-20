@@ -47,6 +47,7 @@ class RecordingTransport(ExecutionTransport):
     def __init__(self, responses: list[object] | None = None) -> None:
         self.responses = list(responses or [])
         self.calls: list[dict[str, object]] = []
+        self.csrf_value: str | None = None
 
     def request(self, **kwargs: object) -> object:
         self.calls.append(kwargs)
@@ -56,6 +57,9 @@ class RecordingTransport(ExecutionTransport):
         if isinstance(response, BaseException):
             raise response
         return response
+
+    def csrf_token(self, url: str, name: str) -> str | None:
+        return self.csrf_value
 
 
 def _response(*items: dict[str, object], status: int = 200) -> httpx.Response:
@@ -519,3 +523,318 @@ def test_idempotent_post_retries_only_when_a_key_is_supplied(runtime):
     assert receipt.status is ReceiptStatus.SUCCEEDED
     assert len(runtime.transport.calls) == 2
     assert runtime.transport.calls[0]["headers"]["Idempotency-Key"] == "request-key"
+
+
+def test_unsafe_redirect_is_rejected_without_replaying_mutation(runtime):
+    runtime.transport.responses = [httpx.Response(307, headers={"location": "/orders"})]
+
+    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+
+    assert receipt.status is ReceiptStatus.FAILED
+    assert len(runtime.transport.calls) == 1
+
+
+def test_public_receipts_hide_unverified_candidate_data(runtime):
+    runtime.transport.responses = [_response({"id": "order-1", "qrCode": "qr-secret"})]
+
+    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    reopened = runtime.direct.get_receipt(receipt.receipt_id)
+
+    assert receipt.normalized == {}
+    assert reopened is not None
+    assert reopened.normalized == {}
+    assert "qr-secret" not in json.dumps(receipt.to_dict())
+
+
+def test_verify_rejects_receipt_after_capability_revision_changes(runtime):
+    runtime.transport.responses = [_response({"id": "order-1"})]
+    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    capability = runtime.capabilities.get("fixture")
+    assert capability is not None
+    runtime.capabilities.save(
+        SourceCapability.from_dict({**capability.to_dict(), "revision": 5})
+    )
+
+    result = runtime.direct.verify(receipt.receipt_id)
+
+    assert result.status is ReceiptStatus.FAILED
+    assert result.error_code == "verification_failed"
+    assert len(runtime.transport.calls) == 1
+
+
+def test_verify_rejects_tampered_candidate_request_hash_before_observation(runtime):
+    runtime.transport.responses = [_response({"id": "order-1"})]
+    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    with runtime.direct._conn:
+        runtime.direct._conn.execute(
+            "UPDATE execution_receipts SET normalized_json = ? WHERE receipt_id = ?",
+            (
+                json.dumps({"request_hash": "sha256:wrong", "candidate": {}}),
+                receipt.receipt_id,
+            ),
+        )
+
+    result = runtime.direct.verify(receipt.receipt_id)
+
+    assert result.status is ReceiptStatus.FAILED
+    assert result.error_code == "verification_failed"
+    assert len(runtime.transport.calls) == 1
+
+
+def test_connect_error_for_unsafe_request_creates_unknown_receipt(runtime):
+    runtime.transport.responses = [httpx.ConnectError("connection dropped")]
+
+    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+
+    assert receipt.status is ReceiptStatus.UNKNOWN
+    assert receipt.error_code == "mutation_ambiguous"
+
+
+def test_safe_request_error_exhaustion_returns_failed_sync_receipt(runtime):
+    runtime.transport.responses = [
+        httpx.ConnectError("first"),
+        httpx.ConnectError("second"),
+    ]
+
+    receipt = runtime.direct.sync("fixture", ["branch"])
+
+    assert receipt.status is ReceiptStatus.FAILED
+    assert receipt.error_code == "provider_unavailable"
+    assert len(runtime.transport.calls) == 2
+
+
+def test_sync_rejects_safe_post_contract_before_dispatch(runtime):
+    capability_data = _capability().to_dict()
+    operations = dict(capability_data["operations"])
+    branch = dict(operations["branch.list"])
+    branch["method"] = "POST"
+    operations["branch.list"] = branch
+    capability_data["operations"] = operations
+    runtime.capabilities.save(SourceCapability.from_dict(capability_data))
+
+    with pytest.raises(Exception, match="GET or HEAD"):
+        runtime.direct.sync("fixture", ["branch"])
+
+    assert runtime.transport.calls == []
+
+
+def test_request_schema_subset_rejects_extra_and_wrong_nested_values(runtime):
+    capability_data = _capability().to_dict()
+    operations = dict(capability_data["operations"])
+    order = dict(operations["order.place"])
+    order["request_schema"] = {
+        "type": "object",
+        "required": ["item"],
+        "additionalProperties": False,
+        "properties": {
+            "item": {
+                "type": "object",
+                "required": ["size"],
+                "properties": {"size": {"enum": ["small", "large"]}},
+            }
+        },
+    }
+    operations["order.place"] = order
+    capability_data["operations"] = operations
+    runtime.capabilities.save(SourceCapability.from_dict(capability_data))
+
+    receipt = runtime.direct.execute(
+        "fixture", "order.place", {"item": {"size": "medium"}, "extra": True}
+    )
+
+    assert receipt.status is ReceiptStatus.FAILED
+    assert receipt.error_code == "schema_mismatch"
+    assert runtime.transport.calls == []
+
+
+def test_injected_transport_owns_csrf_cookie_lookup(runtime):
+    capability_data = _capability().to_dict()
+    operations = dict(capability_data["operations"])
+    order = dict(operations["order.place"])
+    order.update({"csrf_cookie": "csrf", "csrf_header": "X-CSRF"})
+    operations["order.place"] = order
+    capability_data["operations"] = operations
+    runtime.capabilities.save(SourceCapability.from_dict(capability_data))
+    runtime.transport.csrf_value = "injected-token"
+    runtime.transport.responses = [_response({"id": "order-1"})]
+
+    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+
+    assert receipt.status is ReceiptStatus.SUCCEEDED
+    assert runtime.transport.calls[0]["headers"]["X-CSRF"] == "injected-token"
+
+
+def test_payment_candidate_requires_matching_observed_order_reference(runtime):
+    capability_data = _capability().to_dict()
+    operations = dict(capability_data["operations"])
+    operations["payment.initiate"] = OperationContract(
+        "payment.initiate",
+        "POST",
+        "/payments",
+        "payment",
+        TrustState.WRITE_VALIDATED,
+        False,
+        verify_operation="order.read",
+    ).to_dict()
+    capability_data["operations"] = operations
+    runtime.capabilities.save(SourceCapability.from_dict(capability_data))
+    runtime.transport.responses = [
+        _response({"id": "payment-1", "order": "order-1", "qrCode": "merchant-qr"}),
+        _response({"id": "order-1", "status": "paid"}),
+    ]
+
+    receipt = runtime.direct.execute(
+        "fixture", "payment.initiate", {"order": "order-1"}
+    )
+    result = runtime.direct.verify(receipt.receipt_id)
+
+    assert receipt.normalized == {}
+    assert result.status is ReceiptStatus.SUCCEEDED
+    assert (
+        runtime.snapshots.query(
+            StructuredQuery(source_id="fixture", resource_type="payment")
+        )
+        .items[0]
+        .payload["order"]
+        == "order-1"
+    )
+
+
+@respx.mock
+def test_generic_graphql_sync_posts_discovered_query_template(tmp_path):
+    path = tmp_path / "structured.db"
+    capabilities = SQLiteCapabilityStore(path)
+    capabilities.save(
+        SourceCapability(
+            source_id="generic",
+            provider="generic",
+            origin="https://generic.test",
+            base_url="https://generic.test/graphql",
+            auth_mode="none",
+            credential_ref="",
+            transport=TransportKind.GRAPHQL,
+            operations={
+                "graphql.menu": OperationContract(
+                    "graphql.menu",
+                    "GET",
+                    "/graphql",
+                    "structured_record",
+                    TrustState.READ_VALIDATED,
+                    True,
+                    request_schema={
+                        "query_template": "query { menu { id name } }",
+                    },
+                )
+            },
+            fingerprint="sha256:fixture",
+            schema_hash="sha256:schema",
+            evidence=(),
+            validated_at="2026-08-20T00:00:00+00:00",
+            expires_at="2030-08-20T00:00:00+00:00",
+            revision=1,
+        )
+    )
+    snapshots = StructuredSnapshotStore(path)
+    direct = DirectExecutionEngine(capabilities, snapshots)
+    route = respx.post("https://generic.test/graphql").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": {"menu": [{"id": "espresso", "name": "Espresso"}]}},
+        )
+    )
+
+    receipt = direct.sync("generic", ["structured_record"])
+
+    assert receipt.status is ReceiptStatus.SUCCEEDED
+    assert json.loads(route.calls[0].request.content) == {
+        "query": "query { menu { id name } }",
+        "variables": {},
+    }
+    assert (
+        snapshots.query(
+            StructuredQuery(source_id="generic", resource_type="structured_record")
+        )
+        .items[0]
+        .resource_id
+        == "espresso"
+    )
+    direct.close()
+    snapshots.close()
+    capabilities.close()
+
+
+@respx.mock
+def test_generic_rest_sync_normalizes_and_commits_records(tmp_path):
+    path = tmp_path / "structured.db"
+    capabilities = SQLiteCapabilityStore(path)
+    capabilities.save(
+        SourceCapability(
+            source_id="generic",
+            provider="generic",
+            origin="https://generic.test",
+            base_url="https://generic.test/api",
+            auth_mode="none",
+            credential_ref="",
+            transport=TransportKind.REST,
+            operations={
+                "records.list": OperationContract(
+                    "records.list",
+                    "GET",
+                    "/records",
+                    "structured_record",
+                    TrustState.READ_VALIDATED,
+                    True,
+                )
+            },
+            fingerprint="sha256:fixture",
+            schema_hash="sha256:schema",
+            evidence=(),
+            validated_at="2026-08-20T00:00:00+00:00",
+            expires_at="2030-08-20T00:00:00+00:00",
+            revision=1,
+        )
+    )
+    snapshots = StructuredSnapshotStore(path)
+    direct = DirectExecutionEngine(capabilities, snapshots)
+    respx.get("https://generic.test/api/records").mock(
+        return_value=httpx.Response(
+            200,
+            json={"items": [{"id": "record-1", "name": "Record"}]},
+        )
+    )
+
+    receipt = direct.sync("generic", ["structured_record"])
+
+    assert receipt.status is ReceiptStatus.SUCCEEDED
+    assert (
+        snapshots.query(
+            StructuredQuery(source_id="generic", resource_type="structured_record")
+        )
+        .items[0]
+        .resource_id
+        == "record-1"
+    )
+    direct.close()
+    snapshots.close()
+    capabilities.close()
+
+
+def test_failed_verification_activation_leaves_candidate_out_of_snapshot(runtime):
+    runtime.transport.responses = [
+        _response({"id": "order-1", "status": "created"}),
+        _response(
+            {"id": "order-1", "status": "paid"},
+            {"id": "order-1", "status": "duplicate"},
+        ),
+    ]
+    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+
+    result = runtime.direct.verify(receipt.receipt_id)
+
+    assert result.status is ReceiptStatus.FAILED
+    assert (
+        runtime.snapshots.query(
+            StructuredQuery(source_id="fixture", resource_type="order")
+        ).items
+        == ()
+    )

@@ -119,6 +119,29 @@ def test_failed_batch_keeps_last_complete_version(tmp_path):
     store.close()
 
 
+def test_upsert_many_rolls_back_every_head_when_later_batch_is_invalid(tmp_path):
+    store = StructuredSnapshotStore(tmp_path / "structured.db")
+    previous = store.upsert(menu_batch(price=35_000))
+    branch = NormalizedBatch(
+        source_id="trend-coffee",
+        resource_type="branch",
+        records=(ResourceRecord(resource_id="branch-1", payload={"name": "Q1"}),),
+        synced_at="2026-08-20T01:00:00Z",
+    )
+
+    with pytest.raises(ValueError, match="duplicate_resource_id"):
+        store.upsert_many((branch, batch_with_duplicate_ids()))
+
+    assert store.query(current_menu_query()).version == previous.version
+    assert (
+        store.query(
+            StructuredQuery(source_id="trend-coffee", resource_type="branch")
+        ).items
+        == ()
+    )
+    store.close()
+
+
 def test_query_requires_present_type_matched_payload_filters(tmp_path):
     store = StructuredSnapshotStore(tmp_path / "structured.db")
     store.upsert(

@@ -138,23 +138,40 @@ class StructuredSnapshotStore:
 
     def upsert(self, batch: NormalizedBatch) -> SnapshotCommit:
         """Persist one complete batch and atomically activate its new version."""
-        resource_ids = [record.resource_id for record in batch.records]
-        if len(resource_ids) != len(set(resource_ids)):
-            raise ValueError("duplicate_resource_id")
+        return self.upsert_many((batch,))[0]
 
+    def upsert_many(
+        self, batches: tuple[NormalizedBatch, ...]
+    ) -> tuple[SnapshotCommit, ...]:
+        """Atomically persist and activate every batch in one transaction."""
+        for batch in batches:
+            resource_ids = [record.resource_id for record in batch.records]
+            if len(resource_ids) != len(set(resource_ids)):
+                raise ValueError("duplicate_resource_id")
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
-                version = self._next_version(batch.source_id, batch.resource_type)
-                self._insert_version_and_records(batch, version)
-                self._activate_head(batch.source_id, batch.resource_type, version)
+                versions: list[int] = []
+                for batch in batches:
+                    version = self._next_version(batch.source_id, batch.resource_type)
+                    self._insert_version_and_records(batch, version)
+                    versions.append(version)
+                for batch, version in zip(batches, versions, strict=True):
+                    self._activate_head(batch.source_id, batch.resource_type, version)
             except BaseException:
                 self._conn.rollback()
                 raise
             else:
                 self._conn.commit()
-        ref = SnapshotRef(batch.source_id, batch.resource_type, version)
-        return SnapshotCommit(ref, version, len(batch.records), batch.synced_at)
+        return tuple(
+            SnapshotCommit(
+                SnapshotRef(batch.source_id, batch.resource_type, version),
+                version,
+                len(batch.records),
+                batch.synced_at,
+            )
+            for batch, version in zip(batches, versions, strict=True)
+        )
 
     def get(self, ref: SnapshotRef) -> StructuredSnapshot | None:
         """Return the full immutable batch addressed by *ref*."""
