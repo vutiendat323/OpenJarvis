@@ -78,7 +78,17 @@ class DataPlaneRuntime:
         if self._closed:
             return
         self._closed = True
-        self.discovery.close()
-        self.direct.close()
-        self.snapshots.close()
-        self.capabilities.close()
+        first_error: Exception | None = None
+        for owner in (
+            self.discovery,
+            self.direct,
+            self.snapshots,
+            self.capabilities,
+        ):
+            try:
+                owner.close()
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error

@@ -143,7 +143,23 @@ class SystemBuilder:
         runtime = self._unowned_data_plane
         self._unowned_data_plane = None
         if runtime is not None:
-            runtime.close()
+            try:
+                runtime.close()
+            except Exception:
+                logger.debug("Error closing unowned Data Plane runtime", exc_info=True)
+
+    @staticmethod
+    def _close_partial_data_plane_owners(*owners) -> None:
+        for owner in reversed(owners):
+            if owner is None:
+                continue
+            try:
+                owner.close()
+            except Exception:
+                logger.debug(
+                    "Error closing partially constructed Data Plane owner",
+                    exc_info=True,
+                )
 
     def _clear_mcp_discovery_state(self, *, close_clients: bool) -> None:
         if close_clients:
@@ -632,11 +648,24 @@ class SystemBuilder:
             config.data_plane.db_path = str(db_path)
         if not config.data_plane.artifact_dir:
             config.data_plane.artifact_dir = str(data_dir / "artifacts")
-        capabilities = SQLiteCapabilityStore(db_path)
-        snapshots = StructuredSnapshotStore(db_path)
-        discovery = DiscoveryEngine(capabilities, event_bus=bus)
-        direct = DirectExecutionEngine(capabilities, snapshots, bus=bus)
-        runtime = DataPlaneRuntime(capabilities, snapshots, discovery, direct)
+        capabilities = None
+        snapshots = None
+        discovery = None
+        direct = None
+        try:
+            capabilities = SQLiteCapabilityStore(db_path)
+            snapshots = StructuredSnapshotStore(db_path)
+            discovery = DiscoveryEngine(capabilities, event_bus=bus)
+            direct = DirectExecutionEngine(capabilities, snapshots, bus=bus)
+            runtime = DataPlaneRuntime(capabilities, snapshots, discovery, direct)
+        except Exception:
+            self._close_partial_data_plane_owners(
+                capabilities,
+                snapshots,
+                discovery,
+                direct,
+            )
+            raise
         self._unowned_data_plane = runtime
         return runtime
 
