@@ -1,12 +1,12 @@
-# Ordering Kiosk — FakeMerchant-backed voice ordering demo, Phase 1.
+# Ordering Kiosk — Trend Coffee-backed voice ordering, Phase 1.
 #
 # Text and Voice both reach the same orchestrator Agent. The Agent explores
-# the fake merchant's menu, recommends, confirms with the customer, places
-# the order, and reads it back -- each step a separate tool call, so no
-# single call both changes an order and reports what it became.
+# validated Trend Coffee snapshots, recommends, confirms with the customer,
+# and uses the same eight ordering tools -- each step a separate tool call, so
+# no single call both changes an order and reports what it became.
 #
-# No real merchant, no network, no payment: the fake merchant is the ground
-# truth here. See configs/openjarvis/prompts/ordering-kiosk.md for how the
+# Order mutation remains locally quarantined until its explicit approval path
+# is enabled. See configs/openjarvis/prompts/ordering-kiosk.md for how the
 # Agent is expected to use these tools.
 #
 # max_turns is 30, not the default 10 -- a full order is several
@@ -40,7 +40,15 @@ max_turns = 30
 parallel_tools = false
 
 [merchants]
-backend = "fake"
+backend = "trendcoffee"
+source_id = "trend-coffee"
+
+[data_plane]
+enabled = true
+source_url = "https://trendcoffee.net/"
+discovery_budget_seconds = 60
+browser_fallback = true
+trusted_write_operations = ""
 
 [tools]
 enabled = "branch_list,menu_search,menu_item,cart_add,cart_remove,cart_view,order_place,order_verify,display_menu,display_cart,display_clear"

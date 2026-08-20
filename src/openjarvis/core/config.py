@@ -1591,12 +1591,13 @@ class DigestConfig:
 class MerchantsConfig:
     """Which merchant the ordering tools talk to.
 
-    ``fake`` is an in-process merchant with a fixed menu, which is what the
-    goal loop is proven against. ``none`` leaves the tools without a merchant,
-    so each one fails with ``merchant_unavailable`` rather than guessing.
+    ``none`` leaves ordering tools without a merchant, so they fail with
+    ``merchant_unavailable`` rather than guessing. ``fake`` is retained only
+    for deterministic tests; production uses a Data Plane-backed provider.
     """
 
-    backend: str = "fake"
+    backend: str = "none"
+    source_id: str = "trend-coffee"
 
 
 @dataclass(slots=True)

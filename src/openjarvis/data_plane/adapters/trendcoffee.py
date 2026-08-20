@@ -47,6 +47,10 @@ def _non_empty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _free_text_note(value: object) -> bool:
+    return isinstance(value, str) and (value == "" or bool(value.strip()))
+
+
 def _envelope_result(payload: object) -> object:
     if not isinstance(payload, dict) or payload.get("statusCode") != 200:
         raise ValueError("Trend Coffee payload must be a successful provider envelope")
@@ -303,7 +307,7 @@ class TrendCoffeeAdapter:
                 or not isinstance(item.get("quantity"), int)
                 or item["quantity"] <= 0
                 or not _non_empty_string(item.get("variant_slug"))
-                or not _non_empty_string(item.get("note"))
+                or not _free_text_note(item.get("note"))
             ):
                 return None
             items.append(

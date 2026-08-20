@@ -346,11 +346,6 @@ def test_trend_adapter_payment_claim_requires_candidate_and_observed_order_match
         {
             "order_type": "take-out",
             "branch_slug": "ba9355f797",
-            "items": [{"quantity": 1, "variant_slug": "d5de540d4c", "note": ""}],
-        },
-        {
-            "order_type": "take-out",
-            "branch_slug": "ba9355f797",
             "items": [{"quantity": 1, "variant_slug": "d5de540d4c", "note": "ít đá"}],
             "coupon": "unexpected",
         },
@@ -359,6 +354,19 @@ def test_trend_adapter_payment_claim_requires_candidate_and_observed_order_match
 def test_trend_adapter_rejects_empty_or_extra_take_out_order_fields(payload):
     with pytest.raises(ValueError, match="allowlisted"):
         TrendCoffeeAdapter().build_request("order.place", payload)
+
+
+def test_trend_adapter_preserves_an_empty_order_note_verbatim():
+    request = TrendCoffeeAdapter().build_request(
+        "order.place",
+        {
+            "order_type": "take-out",
+            "branch_slug": "ba9355f797",
+            "items": [{"quantity": 1, "variant_slug": "d5de540d4c", "note": ""}],
+        },
+    )
+
+    assert request["orderItems"][0]["note"] == ""
 
 
 def test_trend_adapter_rejects_whitespace_only_allowlisted_fields():

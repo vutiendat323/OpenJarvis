@@ -139,20 +139,19 @@ def test_ordering_and_display_tools_never_overlap():
     assert checked == 11, f"expected 8 ordering + 3 display tools, saw {checked}"
 
 
-def test_the_real_build_wires_one_shared_merchant_into_every_ordering_tool():
-    """Phase 1 rests on one merchant instance per built system -- the fake
-    merchant holds a single cart because one session at a time is a
-    confirmed constraint.
+def test_the_real_build_wires_one_shared_merchant_into_every_ordering_tool(tmp_path):
+    """Phase 1 rests on one merchant instance per built system.
 
     The other tests in this file, and ``tests/system/test_ordering_wiring.py``,
     exercise the injection helpers directly against a hand-built tool list.
     Neither goes through ``SystemBuilder._resolve_tools`` -- the
-    ``config.merchants`` check, the ``FakeMerchant()`` construction, and the
+    ``config.merchants`` check, merchant construction, and the
     injection loop -- so a regression there (e.g. a merchant built per tool)
     could pass every other test in this file and still break Phase 1. Build
     a real system from the preset to close that gap.
     """
     config = load_config(PRESET_PATH)
+    config.data_plane.db_path = str(tmp_path / "structured.db")
     # tests/conftest.py clears EngineRegistry before every test, so engine
     # discovery would find nothing regardless of what is running on this
     # box. Inject through the builder's public seam instead -- no model is
@@ -197,6 +196,7 @@ def test_the_real_build_wires_one_shared_merchant_into_every_ordering_tool():
             t.spec.name for t in ordering_tools
         )
         assert len({id(t._merchant) for t in ordering_tools}) == 1
+        assert ordering_tools[0]._merchant._runtime is system.data_plane
         assert len(display_tools) == 3
         assert all(t._bus is not None for t in display_tools)
     finally:
@@ -208,7 +208,7 @@ def test_the_preset_disables_parallel_tool_dispatch():
     model reach ``cart_add`` + ``cart_view`` results in one turn -- the
     single-call-that-both-mutates-and-observes collapse the doctrine exists
     to prevent, reached around it instead of through it. It is also a data
-    race against ``FakeMerchant``'s single unlocked cart. The preset must
+    race against the process-local draft cart. The preset must
     keep ``parallel_tools`` off; this fails if that ever quietly flips back
     to the ``AgentConfig`` default of ``True``.
     """
@@ -219,7 +219,7 @@ def test_the_preset_disables_parallel_tool_dispatch():
 def test_merchants_backend_none_leaves_ordering_tools_without_a_merchant(tmp_path):
     """``[merchants] backend = "none"`` must survive config load and reach
     the built system -- both the ``top_sections`` round-trip and the
-    builder's ``FakeMerchant``-or-nothing branch are on the hook here.
+    builder's configured-merchant-or-nothing branch are on the hook here.
     """
     import inspect
 
@@ -240,7 +240,7 @@ def test_merchants_backend_none_leaves_ordering_tools_without_a_merchant(tmp_pat
                 ToolRegistry.register_value(name, member)
 
     preset_text = PRESET_PATH.read_text()
-    none_preset = preset_text.replace('backend = "fake"', 'backend = "none"')
+    none_preset = preset_text.replace('backend = "trendcoffee"', 'backend = "none"')
     assert 'backend = "none"' in none_preset  # the replace actually matched
 
     config_path = tmp_path / "ordering-kiosk-none.toml"

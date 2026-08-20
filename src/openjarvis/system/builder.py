@@ -519,6 +519,12 @@ class SystemBuilder:
                 from openjarvis.merchants.fake import FakeMerchant
 
                 merchant = FakeMerchant()
+            elif config.merchants.backend == "trendcoffee" and data_plane is not None:
+                from openjarvis.merchants.trendcoffee import TrendCoffeeMerchant
+
+                merchant = TrendCoffeeMerchant(
+                    data_plane, source_id=config.merchants.source_id
+                )
         for tool in internal_server.get_tools():
             if merchant is not None:
                 self._inject_ordering_merchant(tool, merchant)
