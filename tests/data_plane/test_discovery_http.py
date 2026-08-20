@@ -8,6 +8,12 @@ from openjarvis.data_plane.discovery_http import DiscoveryHttpClient
 from openjarvis.data_plane.errors import DataPlaneError, DataPlaneErrorCode
 
 
+class _TwoChunkStream(httpx.SyncByteStream):
+    def __iter__(self):
+        yield b"first"
+        yield b"second"
+
+
 @respx.mock
 def test_discovery_http_allows_only_safe_methods_and_rechecks_redirects():
     client = DiscoveryHttpClient(max_response_bytes=1024)
@@ -81,6 +87,25 @@ def test_discovery_http_rejects_a_response_over_the_size_cap():
     with patch("openjarvis.data_plane.discovery_http.check_ssrf", return_value=None):
         with pytest.raises(DataPlaneError, match="size limit"):
             client.fetch("https://example.test/large")
+
+
+def test_discovery_http_checks_total_deadline_while_streaming():
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, stream=_TwoChunkStream(), request=request)
+    )
+    ticks = iter((0.0, 0.5, 1.0))
+    client = DiscoveryHttpClient(
+        max_response_bytes=1024,
+        clock=lambda: next(ticks),
+        client=httpx.Client(transport=transport),
+    )
+    client.set_deadline(1.0)
+
+    with patch("openjarvis.data_plane.discovery_http.check_ssrf", return_value=None):
+        with pytest.raises(DataPlaneError) as exc:
+            client.fetch("https://example.test/slow")
+
+    assert exc.value.code is DataPlaneErrorCode.DISCOVERY_BUDGET_EXCEEDED
 
 
 @respx.mock

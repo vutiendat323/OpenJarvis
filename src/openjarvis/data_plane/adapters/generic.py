@@ -382,6 +382,17 @@ def extract_openapi(
     if not isinstance(paths, dict):
         return None
     operations: list[dict[str, object]] = []
+    api_base_url = _origin(source_url)
+    servers = document.get("servers")
+    if isinstance(servers, list) and servers and isinstance(servers[0], dict):
+        server_url = servers[0].get("url")
+        if isinstance(server_url, str):
+            try:
+                resolved_server = urljoin(source_url, server_url)
+            except ValueError:
+                resolved_server = ""
+            if public_server := _public_url(resolved_server):
+                api_base_url = public_server.rstrip("/")
     for raw_path, path_item in list(paths.items())[:_MAX_ITEMS]:
         if not isinstance(path_item, dict):
             continue
@@ -395,6 +406,29 @@ def extract_openapi(
             operation_id = _safe_name(operation.get("operationId", ""))
             if not operation_id:
                 operation_id = f"{method}_{path.strip('/').replace('/', '_') or 'root'}"
+            required_parameters: list[dict[str, object]] = []
+            parameter_groups = (
+                path_item.get("parameters"),
+                operation.get("parameters"),
+            )
+            for parameters in parameter_groups:
+                if not isinstance(parameters, list):
+                    continue
+                for parameter in parameters[:_MAX_ITEMS]:
+                    if not isinstance(parameter, dict) or not parameter.get("required"):
+                        continue
+                    location = str(parameter.get("in", "")).casefold()
+                    name = _safe_property_name(parameter.get("name", ""))
+                    if location not in {"path", "query"} or not name:
+                        continue
+                    required_parameters.append(
+                        {
+                            "name": name,
+                            "in": location,
+                            "required": True,
+                            "schema": _sanitize_schema(parameter.get("schema")),
+                        }
+                    )
             response_schema: dict[str, object] = {}
             responses = operation.get("responses")
             if isinstance(responses, dict):
@@ -417,13 +451,14 @@ def extract_openapi(
                     "name": operation_id,
                     "method": method.upper(),
                     "path": path,
+                    "required_parameters": required_parameters,
                     "response_schema": response_schema,
                 }
             )
     if not operations:
         return None
     payload = {
-        "api_origin": _origin(source_url),
+        "api_base_url": api_base_url,
         "operations": operations,
         "version": _safe_name(document.get("openapi", document.get("swagger", ""))),
     }
@@ -457,16 +492,65 @@ def extract_graphql(
         return None
     query_type = schema.get("queryType")
     query_name = query_type.get("name") if isinstance(query_type, dict) else "Query"
-    fields: list[str] = []
+    types = {
+        str(item.get("name")): item
+        for item in schema.get("types", [])
+        if isinstance(item, dict) and item.get("name")
+    }
+    queries: list[dict[str, object]] = []
     for type_item in schema.get("types", []):
         if not isinstance(type_item, dict) or type_item.get("name") != query_name:
             continue
         for field in type_item.get("fields", [])[:_MAX_ITEMS]:
-            if isinstance(field, dict) and (
-                name := _safe_property_name(field.get("name", ""))
-            ):
-                fields.append(name)
-    if not fields:
+            if not isinstance(field, dict):
+                continue
+            name = _safe_property_name(field.get("name", ""))
+            if not name:
+                continue
+            arguments: list[dict[str, object]] = []
+            for argument in field.get("args", [])[:_MAX_ITEMS]:
+                if not isinstance(argument, dict):
+                    continue
+                argument_name = _safe_property_name(argument.get("name", ""))
+                argument_type = _graphql_type_name(argument.get("type"))
+                if argument_name and argument_type:
+                    arguments.append(
+                        {
+                            "name": argument_name,
+                            "type": argument_type,
+                            "required": argument_type.endswith("!"),
+                        }
+                    )
+            return_ref = field.get("type")
+            return_type = _graphql_type_name(return_ref)
+            selection_fields = _graphql_selection_fields(return_ref, types)
+            selection = (
+                f" {{ {' '.join(selection_fields)} }}" if selection_fields else ""
+            )
+            query_template = f"query OpenJarvisValidation {{ {name}{selection} }}"
+            queries.append(
+                {
+                    "name": name,
+                    "arguments": arguments,
+                    "return_type": return_type,
+                    "selection_fields": selection_fields,
+                    "query_template": query_template,
+                    "response_schema": {
+                        "type": "object",
+                        "required": ["data"],
+                        "properties": {
+                            "data": {
+                                "type": "object",
+                                "required": [name],
+                                "properties": {
+                                    name: _graphql_response_schema(return_ref, types)
+                                },
+                            }
+                        },
+                    },
+                }
+            )
+    if not queries:
         return None
     return DiscoveryEvidence(
         kind="graphql",
@@ -475,7 +559,7 @@ def extract_graphql(
         content_type=content_type,
         payload={
             "endpoint": _public_url(source_url)[:_MAX_STRING],
-            "query_fields": sorted(set(fields)),
+            "queries": queries,
         },
         body_hash=_hash(body),
         provenance="publisher_declared",
@@ -512,6 +596,86 @@ def _origin(url: str) -> str:
     return f"{parsed.scheme.casefold()}://{host.casefold()}{port}"
 
 
+def _graphql_type_name(value: object) -> str:
+    if not isinstance(value, dict):
+        return ""
+    kind = str(value.get("kind", ""))
+    nested = value.get("ofType")
+    if kind == "NON_NULL":
+        inner = _graphql_type_name(nested)
+        return f"{inner}!" if inner else ""
+    if kind == "LIST":
+        inner = _graphql_type_name(nested)
+        return f"[{inner}]" if inner else ""
+    return _safe_property_name(value.get("name", ""))
+
+
+def _graphql_named_type(value: object) -> str:
+    current = value
+    for _ in range(8):
+        if not isinstance(current, dict):
+            return ""
+        raw_name = current.get("name")
+        name = _safe_property_name(raw_name) if isinstance(raw_name, str) else ""
+        if name:
+            return name
+        current = current.get("ofType")
+    return ""
+
+
+def _graphql_selection_fields(
+    return_ref: object,
+    types: dict[str, dict[str, object]],
+) -> list[str]:
+    named_type = _graphql_named_type(return_ref)
+    type_item = types.get(named_type)
+    if not isinstance(type_item, dict):
+        return []
+    fields: list[str] = []
+    for field in type_item.get("fields", [])[:_MAX_ITEMS]:
+        if not isinstance(field, dict) or field.get("args"):
+            continue
+        field_type = _graphql_type_name(field.get("type"))
+        if field_type.rstrip("!") in {"Boolean", "Float", "ID", "Int", "String"}:
+            if name := _safe_property_name(field.get("name", "")):
+                fields.append(name)
+    return fields
+
+
+def _graphql_response_schema(
+    return_ref: object,
+    types: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    if not isinstance(return_ref, dict):
+        return {}
+    kind = str(return_ref.get("kind", ""))
+    if kind == "NON_NULL":
+        return _graphql_response_schema(return_ref.get("ofType"), types)
+    if kind == "LIST":
+        return {
+            "type": "array",
+            "items": _graphql_response_schema(return_ref.get("ofType"), types),
+        }
+    name = _safe_property_name(return_ref.get("name", ""))
+    scalar_types = {
+        "Boolean": "boolean",
+        "Float": "number",
+        "ID": "string",
+        "Int": "integer",
+        "String": "string",
+    }
+    if name in scalar_types:
+        return {"type": scalar_types[name]}
+    fields = _graphql_selection_fields(return_ref, types)
+    if fields:
+        return {
+            "type": "object",
+            "required": fields,
+            "properties": {field: {"type": "string"} for field in fields},
+        }
+    return {}
+
+
 def compile_capability(
     *,
     source_id: str,
@@ -529,9 +693,9 @@ def compile_capability(
             continue
         if item.kind == "openapi":
             transport = TransportKind.REST
-            api_origin = item.payload.get("api_origin")
-            if isinstance(api_origin, str) and api_origin:
-                base_url = api_origin
+            api_base_url = item.payload.get("api_base_url")
+            if isinstance(api_base_url, str) and api_base_url:
+                base_url = api_base_url
             for raw_operation in item.payload.get("operations", []):
                 if not isinstance(raw_operation, dict):
                     continue
@@ -547,8 +711,13 @@ def compile_capability(
                     method=method,
                     path=path,
                     resource_type="structured_record",
-                    trust=TrustState.READ_VALIDATED,
+                    trust=TrustState.QUARANTINED,
                     safe=True,
+                    request_schema={
+                        "required_parameters": list(
+                            raw_operation.get("required_parameters", [])
+                        )
+                    },
                     response_schema=_sanitize_schema(
                         raw_operation.get("response_schema")
                     ),
@@ -558,8 +727,10 @@ def compile_capability(
             if transport is TransportKind.EMBEDDED:
                 transport = TransportKind.GRAPHQL
                 base_url = str(item.payload.get("endpoint", origin))
-            for field in item.payload.get("query_fields", []):
-                name = _safe_property_name(field)
+            for query in item.payload.get("queries", []):
+                if not isinstance(query, dict):
+                    continue
+                name = _safe_property_name(query.get("name", ""))
                 if name:
                     operation_name = f"graphql.{name}"
                     operations[operation_name] = OperationContract(
@@ -568,8 +739,13 @@ def compile_capability(
                         path=urlsplit(str(item.payload.get("endpoint", origin))).path
                         or "/",
                         resource_type="structured_record",
-                        trust=TrustState.READ_VALIDATED,
+                        trust=TrustState.QUARANTINED,
                         safe=True,
+                        request_schema={
+                            "arguments": list(query.get("arguments", [])),
+                            "query_template": str(query.get("query_template", "")),
+                        },
+                        response_schema=_sanitize_schema(query.get("response_schema")),
                     )
             attributable_kinds.add(item.kind)
         elif item.kind in {"json_ld", "embedded_json"}:
@@ -605,6 +781,10 @@ def compile_capability(
         for item in evidence
     ]
     observed = now or datetime.now(timezone.utc)
+    has_validated_read = any(
+        operation.trust is TrustState.READ_VALIDATED
+        for operation in operations.values()
+    )
     return SourceCapability(
         source_id=source_id,
         provider="generic",
@@ -617,8 +797,10 @@ def compile_capability(
         fingerprint=_hash(_canonical(fingerprint_material)),
         schema_hash=_hash(_canonical(schema_material)),
         evidence=evidence,
-        validated_at=observed.isoformat() if operations else "",
-        expires_at=(observed + timedelta(hours=1)).isoformat() if operations else "",
+        validated_at=observed.isoformat() if has_validated_read else "",
+        expires_at=(observed + timedelta(hours=1)).isoformat()
+        if has_validated_read
+        else "",
         revision=revision,
     )
 

@@ -156,12 +156,22 @@ class DiscoveryHttpClient:
             ) as streamed:
                 body = bytearray()
                 for chunk in streamed.iter_bytes():
+                    if self._deadline is not None and self._clock() >= self._deadline:
+                        raise DataPlaneError(
+                            DataPlaneErrorCode.DISCOVERY_BUDGET_EXCEEDED,
+                            "Discovery deadline exceeded while streaming response",
+                        )
                     body.extend(chunk)
                     if len(body) > self._max_response_bytes:
                         raise DataPlaneError(
                             DataPlaneErrorCode.CAPABILITY_QUARANTINED,
                             "Discovery response exceeded the size limit",
                         )
+                if self._deadline is not None and self._clock() >= self._deadline:
+                    raise DataPlaneError(
+                        DataPlaneErrorCode.DISCOVERY_BUDGET_EXCEEDED,
+                        "Discovery deadline exceeded while streaming response",
+                    )
                 return httpx.Response(
                     status_code=streamed.status_code,
                     headers=streamed.headers,
