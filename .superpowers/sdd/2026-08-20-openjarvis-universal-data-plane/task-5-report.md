@@ -1,0 +1,68 @@
+# Task 5 — Trend Coffee adapter report
+
+## Scope
+
+Added the registered `trendcoffee` structured-source adapter, minimal fixtures,
+fixture tests, and an explicitly gated live-read test. The adapter compiles the
+publisher origin independently from the API base URL, keeps `order.place` and
+`payment.initiate` `QUARANTINED`, and performs no network I/O itself.
+
+`build_request()` accepts only these provider-neutral request shapes:
+
+- `order.place`: `{order_type: "take-out", branch_slug, items}` with only
+  non-empty, positive `{quantity, variant_slug, note}` entries. It maps to the
+  fixed Task 8 provider body.
+- `payment.initiate`: `{order, paymentMethod: "bank-transfer"}`.
+
+The page iterator continues only while the provider envelope says
+`result.hasNext is true`; it never infers completion from returned item count.
+The bundle helper re-discovers script paths from homepage HTML while its stored
+evidence contains only a content hash and publisher origin, not an asset path.
+
+## Fixture provenance
+
+- `branch.json` and `products.json` are minimal redacted public GET captures
+  dated 2026-08-20.
+- `order.json` and `payment.json` are clearly marked reconstructed first-party
+  bundle schema examples. They do not establish write evidence or promote
+  either mutation from `QUARANTINED`.
+
+## RED / GREEN
+
+1. RED: `test_trendcoffee_adapter.py` failed collection because
+   `TrendCoffeeAdapter` did not exist.
+2. GREEN: normalization, contracts, provider-envelope pagination, registration,
+   exact request allowlists, and bundle evidence tests passed.
+3. RED: the `order.place` request test failed with the payment-only builder.
+4. GREEN: the exact take-out mapping passed and rejects missing, extra, empty,
+   and invalid order/payment fields.
+5. RED: the bundle rediscovery test found the regex used a literal `\\b`.
+6. GREEN: correcting the word boundaries discovered `/assets/app.js` while
+   retaining only a SHA-256 content fingerprint.
+7. RED: whitespace-only `order` and `note` values were accepted by the initial
+   truthiness checks.
+8. GREEN: exact request validation now requires non-blank strings.
+
+## Verification
+
+```
+POSTHOG_DISABLED=true uv run pytest tests/data_plane -q
+# 82 passed, 1 skipped
+
+OPENJARVIS_LIVE_TREND_READ=1 POSTHOG_DISABLED=true \\
+  uv run pytest tests/data_plane/test_trendcoffee_live.py -q -m live
+# 1 passed
+
+uv run ruff check src/openjarvis/data_plane/adapters/__init__.py \\
+  src/openjarvis/data_plane/adapters/trendcoffee.py \\
+  tests/data_plane/test_trendcoffee_adapter.py \\
+  tests/data_plane/test_trendcoffee_live.py
+uv run ruff format --check <same four files>
+git diff --check
+# all passed
+```
+
+The live check issued GETs only for the publisher homepage,
+`/api/latest/branch`, and `/api/latest/products`. It compiled attributable
+evidence, normalized two non-empty batches, and invoked no browser observer.
+No live response body was committed.

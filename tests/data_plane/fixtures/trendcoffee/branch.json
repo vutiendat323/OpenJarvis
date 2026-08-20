@@ -1,0 +1,7 @@
+{
+  "_fixture_provenance": "Captured public GET response on 2026-08-20; redacted to normalization fields.",
+  "statusCode": 200,
+  "result": [
+    {"slug": "ba9355f797", "name": "TREND Coffee"}
+  ]
+}
