@@ -72,9 +72,12 @@ class TrendCoffeeAdapter:
         return MatchResult(False)
 
     @staticmethod
-    def known_read_targets() -> tuple[str, ...]:
+    def known_read_targets() -> tuple[tuple[str, str], ...]:
         """The bounded public GETs required for a complete read capability."""
-        return (f"{_BASE_URL}/branch", f"{_BASE_URL}/products")
+        return (
+            ("branch", f"{_BASE_URL}/branch"),
+            ("menu_item", f"{_BASE_URL}/products"),
+        )
 
     @staticmethod
     def source_id() -> str:

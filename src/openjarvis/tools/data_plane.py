@@ -11,6 +11,7 @@ from openjarvis.data_plane.errors import DataPlaneError, DataPlaneErrorCode
 from openjarvis.data_plane.types import (
     ConsistencyMode,
     DiscoveryConstraints,
+    ReceiptStatus,
     SourceRef,
     StructuredQuery,
     TrustState,
@@ -92,18 +93,14 @@ class SourceDiscoverTool(_DataPlaneTool):
                 and discovered.state is TrustState.READ_VALIDATED
                 and capability is not None
             ):
-                resources = sorted(
-                    {
-                        operation.resource_type
-                        for operation in capability.operations.values()
-                        if operation.safe
-                        and operation.trust is TrustState.READ_VALIDATED
-                    }
+                resources = self._runtime.direct.syncable_resources(
+                    capability.source_id
                 )
                 if resources:
-                    payload["sync"] = self._runtime.direct.sync(
-                        capability.source_id, resources
-                    ).to_dict()
+                    receipt = self._runtime.direct.sync(capability.source_id, resources)
+                    payload["sync"] = receipt.to_dict()
+                    if receipt.status is not ReceiptStatus.SUCCEEDED:
+                        return self._result(payload, success=False)
             return self._result(payload)
         except DataPlaneError as error:
             return self._error(error)
@@ -145,8 +142,10 @@ class SourceSyncTool(_DataPlaneTool):
                 {"error_code": "source_sync_arguments_invalid"}, success=False
             )
         try:
+            receipt = self._runtime.direct.sync(source_id, resources)
             return self._result(
-                {"sync": self._runtime.direct.sync(source_id, resources).to_dict()}
+                {"sync": receipt.to_dict()},
+                success=receipt.status is ReceiptStatus.SUCCEEDED,
             )
         except DataPlaneError as error:
             return self._error(error)
@@ -200,12 +199,20 @@ class StructuredQueryTool(_DataPlaneTool):
 
         try:
             if query.consistency is ConsistencyMode.LIVE:
-                self._runtime.direct.sync(query.source_id, [query.resource_type])
+                receipt = self._runtime.direct.sync(
+                    query.source_id, [query.resource_type]
+                )
+                if receipt.status is not ReceiptStatus.SUCCEEDED:
+                    return self._result({"sync": receipt.to_dict()}, success=False)
             result = self._runtime.snapshots.query(query)
             if query.consistency is ConsistencyMode.REFRESH_IF_STALE and (
                 result.stale or result.version == 0
             ):
-                self._runtime.direct.sync(query.source_id, [query.resource_type])
+                receipt = self._runtime.direct.sync(
+                    query.source_id, [query.resource_type]
+                )
+                if receipt.status is not ReceiptStatus.SUCCEEDED:
+                    return self._result({"sync": receipt.to_dict()}, success=False)
                 result = self._runtime.snapshots.query(query)
             return self._result({"result": result.to_dict()})
         except DataPlaneError as error:

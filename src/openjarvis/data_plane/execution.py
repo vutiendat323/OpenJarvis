@@ -267,6 +267,20 @@ class DirectExecutionEngine:
         )
         return receipt
 
+    def syncable_resources(self, source_id: str) -> list[str]:
+        """Return read resources whose path needs only engine-supplied paging."""
+        capability = self._capability(source_id)
+        resources: list[str] = []
+        for operation in capability.operations.values():
+            if (
+                operation.safe
+                and operation.trust is TrustState.READ_VALIDATED
+                and set(_format_fields(operation.path)) <= {"page", "size"}
+                and operation.resource_type not in resources
+            ):
+                resources.append(operation.resource_type)
+        return resources
+
     def set_mcp_tools(self, tools: list[object]) -> None:
         """Reuse the builder-owned MCP tool pool for MCP capabilities."""
         transport = self._transports.get(TransportKind.MCP)

@@ -324,9 +324,7 @@ class JarvisSystem:
         if self.agent_scheduler is not None:
             self.agent_scheduler.stop()
         if self.data_plane is not None:
-            self.data_plane.direct.close()
-            self.data_plane.snapshots.close()
-            self.data_plane.capabilities.close()
+            self.data_plane.close()
         self._close_mcp_clients()
 
     def __enter__(self) -> JarvisSystem:

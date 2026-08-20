@@ -89,6 +89,7 @@ class DiscoveryEngine:
         self._browser_observer = browser_observer
         self._event_bus = event_bus
         self._clock = clock
+        self._closed = False
 
     @property
     def capability_store(self) -> SQLiteCapabilityStore:
@@ -118,6 +119,15 @@ class DiscoveryEngine:
 
     def get_capability(self, source_id: str) -> SourceCapability | None:
         return self._store.get(source_id)
+
+    def close(self) -> None:
+        """Release the owned discovery HTTP client exactly once."""
+        if self._closed:
+            return
+        self._closed = True
+        close = getattr(self.http, "close", None)
+        if callable(close):
+            close()
 
     def _discover(
         self,
@@ -509,11 +519,16 @@ class DiscoveryEngine:
         if not callable(targets) or not callable(compile_capability):
             return None
         try:
-            target_urls = tuple(targets())
+            target_specs = tuple(targets())
         except (TypeError, ValueError):
             return None
-        if not target_urls or any(
-            not isinstance(url, str) or _origin(url) != origin for url in target_urls
+        if not target_specs or any(
+            not isinstance(spec, tuple)
+            or len(spec) != 2
+            or not isinstance(spec[0], str)
+            or not isinstance(spec[1], str)
+            or _origin(spec[1]) != origin
+            for spec in target_specs
         ):
             return None
 
@@ -528,7 +543,7 @@ class DiscoveryEngine:
                 provenance="publisher_document",
             )
         ]
-        for target_url in target_urls:
+        for resource_type, target_url in target_specs:
             if self._clock() >= deadline:
                 return None
             try:
@@ -536,6 +551,17 @@ class DiscoveryEngine:
             except DataPlaneError:
                 return None
             if not response.is_success:
+                return None
+            try:
+                payload = response.json()
+                batch = adapter.normalize(resource_type, payload)
+            except (AttributeError, TypeError, ValueError):
+                return None
+            if (
+                not batch.records
+                or batch.source_id != source_id
+                or batch.resource_type != resource_type
+            ):
                 return None
             evidence.append(
                 DiscoveryEvidence(

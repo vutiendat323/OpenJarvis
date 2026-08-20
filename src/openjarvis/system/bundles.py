@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -71,3 +71,14 @@ class DataPlaneRuntime:
     snapshots: StructuredSnapshotStore
     discovery: DiscoveryEngine
     direct: DirectExecutionEngine
+    _closed: bool = field(default=False, init=False, repr=False)
+
+    def close(self) -> None:
+        """Release Data Plane-owned resources exactly once."""
+        if self._closed:
+            return
+        self._closed = True
+        self.discovery.close()
+        self.direct.close()
+        self.snapshots.close()
+        self.capabilities.close()

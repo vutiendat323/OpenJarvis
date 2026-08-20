@@ -9,6 +9,7 @@ from openjarvis.data_plane.types import (
     ConsistencyMode,
     DiscoveryResult,
     OperationContract,
+    ReceiptStatus,
     SourceCapability,
     StructuredResult,
     TransportKind,
@@ -38,11 +39,29 @@ class _DirectWithoutExecution:
 
     def sync(self, source_id: str, resources: list[str]) -> SimpleNamespace:
         self.sync_requests.append((source_id, resources))
-        return SimpleNamespace(to_dict=lambda: {"status": "succeeded"})
+        return SimpleNamespace(
+            status=ReceiptStatus.SUCCEEDED,
+            to_dict=lambda: {"status": "succeeded"},
+        )
+
+    def syncable_resources(self, source_id: str) -> list[str]:
+        return ["branch"]
 
     def execute(self, *args: object, **kwargs: object) -> None:
         raise AssertionError(
             "Task 7 source_execute must not call DirectExecutionEngine"
+        )
+
+
+class _FailedDirect(_DirectWithoutExecution):
+    def sync(self, source_id: str, resources: list[str]) -> SimpleNamespace:
+        self.sync_requests.append((source_id, resources))
+        return SimpleNamespace(
+            status=ReceiptStatus.FAILED,
+            to_dict=lambda: {
+                "status": "failed",
+                "error_code": "provider_unavailable",
+            },
         )
 
 
@@ -181,3 +200,67 @@ def test_source_discover_syncs_new_reads_but_not_a_cache_hit() -> None:
     assert discovered.success is True
     assert cached.success is True
     assert runtime.direct.sync_requests == [("fixture", ["branch"])]
+
+
+def test_sync_receipt_failure_is_not_reported_as_fresh_success() -> None:
+    """Dropping receipt status checks would falsely report a completed sync."""
+    capability = SourceCapability(
+        source_id="fixture",
+        provider="generic",
+        origin="https://fixture.test",
+        base_url="https://fixture.test/api",
+        auth_mode="none",
+        credential_ref="",
+        transport=TransportKind.REST,
+        operations={
+            "branch.list": OperationContract(
+                "branch.list",
+                "GET",
+                "/branch",
+                "branch",
+                TrustState.READ_VALIDATED,
+                True,
+            )
+        },
+        fingerprint="sha256:fixture",
+        schema_hash="sha256:schema",
+        evidence=(),
+        validated_at="",
+        expires_at="",
+        revision=1,
+    )
+    runtime = _runtime_for(capability)
+    runtime.direct = _FailedDirect()
+    runtime.discovery.discover = lambda *_args: DiscoveryResult(
+        source_id="fixture",
+        state=TrustState.READ_VALIDATED,
+        capability=capability,
+    )
+    discover = SourceDiscoverTool()
+    sync = SourceSyncTool()
+    query = StructuredQueryTool()
+    for tool in (discover, sync, query):
+        tool._runtime = runtime
+
+    discovered = discover.execute(source_ref="https://fixture.test")
+    synchronized = sync.execute(source_id="fixture", resources=["branch"])
+    live = query.execute(
+        source_id="fixture", resource_type="branch", consistency="live"
+    )
+    runtime.snapshots.query = lambda query: StructuredResult(
+        items=(), version=1, synced_at="2026-08-20T00:00:00+00:00", stale=True
+    )
+    refreshed = query.execute(
+        source_id="fixture",
+        resource_type="branch",
+        consistency="refresh_if_stale",
+    )
+
+    assert discovered.success is False
+    assert synchronized.success is False
+    assert live.success is False
+    assert refreshed.success is False
+    assert all(
+        json.loads(result.content)["sync"]["status"] == "failed"
+        for result in (discovered, synchronized, live, refreshed)
+    )

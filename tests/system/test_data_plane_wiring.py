@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from openjarvis.core.config import JarvisConfig
 from openjarvis.core.events import EventBus
 from openjarvis.core.registry import SourceAdapterRegistry
@@ -54,14 +56,26 @@ def test_builder_restores_required_adapters_after_registry_clear(tmp_path) -> No
         system.close()
 
 
-def test_system_closes_shared_data_plane_owners_once() -> None:
-    """Closing a system must not duplicate any Data Plane-owned close call."""
+def test_data_plane_runtime_closes_its_owners_once() -> None:
+    """One runtime close must not duplicate any Data Plane-owned close call."""
     runtime = DataPlaneRuntime(
         capabilities=MagicMock(),
         snapshots=MagicMock(),
         discovery=MagicMock(),
         direct=MagicMock(),
     )
+    runtime.close()
+    runtime.close()
+
+    runtime.direct.close.assert_called_once()
+    runtime.snapshots.close.assert_called_once()
+    runtime.capabilities.close.assert_called_once()
+    runtime.discovery.close.assert_called_once()
+
+
+def test_system_delegates_data_plane_shutdown_to_its_runtime() -> None:
+    """System ownership must not reintroduce parallel close calls."""
+    runtime = MagicMock()
     system = JarvisSystem(
         config=JarvisConfig(),
         bus=EventBus(),
@@ -73,6 +87,34 @@ def test_system_closes_shared_data_plane_owners_once() -> None:
 
     system.close()
 
-    runtime.direct.close.assert_called_once()
-    runtime.snapshots.close.assert_called_once()
-    runtime.capabilities.close.assert_called_once()
+    runtime.close.assert_called_once()
+
+
+def test_builder_failure_closes_the_unowned_data_plane(tmp_path, monkeypatch) -> None:
+    """A failure after composition must not leak the runtime's HTTP/SQLite owners."""
+    config = JarvisConfig()
+    config.data_plane.enabled = True
+    config.data_plane.db_path = str(tmp_path / "structured.db")
+    config.skills.enabled = False
+    config.telemetry.enabled = False
+    engine = MagicMock(spec=["health", "list_models", "close"])
+    engine.health.return_value = True
+    builder = SystemBuilder(config).engine_instance(engine)
+    captured = {}
+    original = builder._build_data_plane
+
+    def capture_runtime(*args):
+        runtime = original(*args)
+        captured["runtime"] = runtime
+        return runtime
+
+    def fail_after_composition(*args, **kwargs):
+        raise RuntimeError("controlled tool resolution failure")
+
+    monkeypatch.setattr(builder, "_build_data_plane", capture_runtime)
+    monkeypatch.setattr(builder, "_resolve_tools", fail_after_composition)
+
+    with pytest.raises(RuntimeError, match="controlled tool resolution failure"):
+        builder.build()
+
+    assert captured["runtime"]._closed is True

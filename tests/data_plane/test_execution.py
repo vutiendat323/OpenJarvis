@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -444,6 +445,52 @@ def test_mcp_transport_normalizes_builder_owned_adapter_result(tmp_path):
         .resource_id
         == "from-mcp"
     )
+    direct.close()
+    snapshots.close()
+    capabilities.close()
+
+
+def test_syncable_resources_exclude_identifier_bound_read_contracts(tmp_path):
+    """Initial sync must not try a read whose path needs an Agent-supplied id."""
+    path = tmp_path / "structured.db"
+    capabilities = SQLiteCapabilityStore(path)
+    capability = _capability()
+    capabilities.save(
+        replace(
+            capability,
+            operations={
+                "branch.list": OperationContract(
+                    "branch.list",
+                    "GET",
+                    "/branch",
+                    "branch",
+                    TrustState.READ_VALIDATED,
+                    True,
+                ),
+                "menu.list": OperationContract(
+                    "menu.list",
+                    "GET",
+                    "/products?page={page}&size={size}",
+                    "menu_item",
+                    TrustState.READ_VALIDATED,
+                    True,
+                ),
+                "order.read": OperationContract(
+                    "order.read",
+                    "GET",
+                    "/orders/{order_id}",
+                    "order",
+                    TrustState.READ_VALIDATED,
+                    True,
+                ),
+            },
+        )
+    )
+    snapshots = StructuredSnapshotStore(path)
+    direct = DirectExecutionEngine(capabilities, snapshots)
+
+    assert direct.syncable_resources("fixture") == ["branch", "menu_item"]
+
     direct.close()
     snapshots.close()
     capabilities.close()

@@ -107,6 +107,15 @@ class RedirectedHttp(RecordingHttp):
         )
 
 
+class ClosableHttp(RecordingHttp):
+    def __init__(self) -> None:
+        super().__init__({})
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
 @pytest.fixture
 def capability_store(tmp_path) -> SQLiteCapabilityStore:
     store = SQLiteCapabilityStore(tmp_path / "capabilities.db")
@@ -414,6 +423,83 @@ def test_known_provider_compiles_canonical_capability_before_generic_fallback(
     )
     assert result.browser_actions == 0
     assert observer.calls == []
+
+
+def test_known_provider_does_not_promote_non_json_read_payload(capability_store):
+    """A 2xx provider response is not validated until its normalized batch exists."""
+    result = DiscoveryEngine(
+        capability_store,
+        http_client=RecordingHttp(
+            {
+                "/": (200, "text/html", "<html></html>"),
+                "/robots.txt": (404, "text/plain", ""),
+                "/api/latest/branch": (200, "application/json", "not-json"),
+                "/api/latest/products": (
+                    200,
+                    "application/json",
+                    (TREND_FIXTURES / "products.json").read_text(),
+                ),
+            }
+        ),
+    ).discover(SourceRef("https://trendcoffee.net"), DiscoveryConstraints())
+
+    persisted = capability_store.get("trend-coffee")
+    assert not (
+        persisted is not None
+        and persisted.provider == "trendcoffee"
+        and any(
+            operation.trust is TrustState.READ_VALIDATED
+            for operation in persisted.operations.values()
+        )
+    )
+    assert not (
+        result.state is TrustState.READ_VALIDATED
+        and result.capability is not None
+        and result.capability.provider == "trendcoffee"
+    )
+
+
+def test_known_provider_does_not_promote_empty_normalized_read(capability_store):
+    """An empty public catalog needs explicit provider policy, not implicit trust."""
+    DiscoveryEngine(
+        capability_store,
+        http_client=RecordingHttp(
+            {
+                "/": (200, "text/html", "<html></html>"),
+                "/robots.txt": (404, "text/plain", ""),
+                "/api/latest/branch": (
+                    200,
+                    "application/json",
+                    '{"statusCode":200,"result":[]}',
+                ),
+                "/api/latest/products": (
+                    200,
+                    "application/json",
+                    (TREND_FIXTURES / "products.json").read_text(),
+                ),
+            }
+        ),
+    ).discover(SourceRef("https://trendcoffee.net"), DiscoveryConstraints())
+
+    persisted = capability_store.get("trend-coffee")
+    assert not (
+        persisted is not None
+        and persisted.provider == "trendcoffee"
+        and any(
+            operation.trust is TrustState.READ_VALIDATED
+            for operation in persisted.operations.values()
+        )
+    )
+
+
+def test_discovery_close_releases_its_owned_http_client(capability_store):
+    """A normal system close must release the client opened for discovery."""
+    http = ClosableHttp()
+    discovery = DiscoveryEngine(capability_store, http_client=http)
+
+    discovery.close()
+
+    assert http.closed is True
 
 
 def test_cached_discovery_still_publishes_redacted_lifecycle_events(capability_store):

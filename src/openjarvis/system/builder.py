@@ -50,6 +50,7 @@ class SystemBuilder:
         self._speech: Optional[bool] = None
         self._mcp_clients: List = []
         self._mcp_tools: List[BaseTool] = []
+        self._unowned_data_plane = None
 
     def engine(self, key: str) -> SystemBuilder:
         self._engine_key = key
@@ -124,16 +125,25 @@ class SystemBuilder:
         # returned, that system owns the clients and adapters captured below;
         # retaining them here would make a reused builder hand closed clients
         # from an earlier system to the next one.
+        self._close_unowned_data_plane()
         self._clear_mcp_discovery_state(close_clients=True)
         try:
             system = self._build()
         except BaseException:
             # No system took ownership, so release any clients opened before
             # the build failed.
+            self._close_unowned_data_plane()
             self._clear_mcp_discovery_state(close_clients=True)
             raise
+        self._unowned_data_plane = None
         self._clear_mcp_discovery_state(close_clients=False)
         return system
+
+    def _close_unowned_data_plane(self) -> None:
+        runtime = self._unowned_data_plane
+        self._unowned_data_plane = None
+        if runtime is not None:
+            runtime.close()
 
     def _clear_mcp_discovery_state(self, *, close_clients: bool) -> None:
         if close_clients:
@@ -595,8 +605,7 @@ class SystemBuilder:
         tool._discovery_budget_seconds = config.data_plane.discovery_budget_seconds
         tool._browser_fallback = config.data_plane.browser_fallback
 
-    @staticmethod
-    def _build_data_plane(config, bus):
+    def _build_data_plane(self, config, bus):
         if not config.data_plane.enabled:
             return None
         import importlib
@@ -627,7 +636,9 @@ class SystemBuilder:
         snapshots = StructuredSnapshotStore(db_path)
         discovery = DiscoveryEngine(capabilities, event_bus=bus)
         direct = DirectExecutionEngine(capabilities, snapshots, bus=bus)
-        return DataPlaneRuntime(capabilities, snapshots, discovery, direct)
+        runtime = DataPlaneRuntime(capabilities, snapshots, discovery, direct)
+        self._unowned_data_plane = runtime
+        return runtime
 
     def _setup_sandbox(self, config):
         sandbox_enabled = (
