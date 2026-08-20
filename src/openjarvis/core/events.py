@@ -80,6 +80,21 @@ class EventType(str, Enum):
     OPTIMIZE_TRIAL_END = "optimize_trial_end"
     OPTIMIZE_RUN_END = "optimize_run_end"
     FEEDBACK_RECEIVED = "feedback_received"
+    SOURCE_DISCOVERY_STARTED = "source.discovery.started"
+    SOURCE_DISCOVERY_STAGE_COMPLETED = "source.discovery.stage_completed"
+    SOURCE_DISCOVERY_COMPLETED = "source.discovery.completed"
+    SOURCE_CAPABILITY_VALIDATED = "source.capability.validated"
+    SOURCE_CAPABILITY_DEMOTED = "source.capability.demoted"
+    SOURCE_SYNC_STARTED = "source.sync.started"
+    SOURCE_SYNC_COMMITTED = "source.sync.committed"
+    SOURCE_SYNC_FAILED = "source.sync.failed"
+    SOURCE_EXECUTE_STARTED = "source.execute.started"
+    SOURCE_EXECUTE_RECEIPT_CREATED = "source.execute.receipt_created"
+    SOURCE_VERIFY_COMPLETED = "source.verify.completed"
+    ARTIFACT_PUBLISHED = "artifact.published"
+    ARTIFACT_ACTIVATED = "artifact.activated"
+    ARTIFACT_REJECTED = "artifact.rejected"
+    ARTIFACT_ROLLED_BACK = "artifact.rolled_back"
 
 
 @dataclass(slots=True)
