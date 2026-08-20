@@ -10,6 +10,10 @@ if TYPE_CHECKING:
     from openjarvis.agents.executor import AgentExecutor
     from openjarvis.agents.manager import AgentManager
     from openjarvis.agents.scheduler import AgentScheduler
+    from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
+    from openjarvis.data_plane.discovery import DiscoveryEngine
+    from openjarvis.data_plane.execution import DirectExecutionEngine
+    from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
     from openjarvis.scheduler.scheduler import TaskScheduler
     from openjarvis.scheduler.store import SchedulerStore
     from openjarvis.security.audit import AuditLogger
@@ -57,3 +61,13 @@ class Scheduling:
 
     store: Optional[SchedulerStore] = None
     runner: Optional[TaskScheduler] = None
+
+
+@dataclass
+class DataPlaneRuntime:
+    """One owned composition of the three Data Plane modules."""
+
+    capabilities: SQLiteCapabilityStore
+    snapshots: StructuredSnapshotStore
+    discovery: DiscoveryEngine
+    direct: DirectExecutionEngine

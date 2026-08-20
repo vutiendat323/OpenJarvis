@@ -7,7 +7,7 @@ from typing import Any, List, Optional
 
 from openjarvis.core.config import JarvisConfig, load_config
 from openjarvis.core.events import EventBus, get_event_bus
-from openjarvis.core.paths import get_config_dir
+from openjarvis.core.paths import get_config_dir, get_data_dir
 from openjarvis.engine._stubs import InferenceEngine
 from openjarvis.system.core import JarvisSystem
 from openjarvis.tools._stubs import BaseTool, ToolExecutor
@@ -209,6 +209,7 @@ class SystemBuilder:
 
         memory_backend = self._resolve_memory(config)
         channel_backend = self._resolve_channel(config, bus)
+        data_plane = self._build_data_plane(config, bus)
         tool_list = self._resolve_tools(
             config,
             engine,
@@ -216,7 +217,10 @@ class SystemBuilder:
             memory_backend,
             channel_backend,
             bus,
+            data_plane,
         )
+        if data_plane is not None:
+            data_plane.direct.set_mcp_tools(self._mcp_tools)
         # The policy has to travel with the executor: ToolExecutor.execute()
         # consults it before dispatch, and a None policy silently disables the
         # capability check for every tool routed through this executor.
@@ -355,6 +359,7 @@ class SystemBuilder:
             agent_executor=agent_executor,
             speech_backend=speech_backend,
             skill_manager=skill_manager,
+            data_plane=data_plane,
         )
         system._learning_orchestrator = learning_orchestrator
         system._skill_few_shot_examples = skill_few_shot_examples
@@ -465,9 +470,17 @@ class SystemBuilder:
             return None
 
     def _resolve_tools(
-        self, config, engine, model, memory_backend, channel_backend=None, bus=None
+        self,
+        config,
+        engine,
+        model,
+        memory_backend,
+        channel_backend=None,
+        bus=None,
+        data_plane=None,
     ):
         """Resolve tool instances via MCPServer (primary) + external MCP servers."""
+        import openjarvis.tools.data_plane  # noqa: F401 -- trigger registration
         from openjarvis.mcp.server import MCPServer
 
         internal_server = MCPServer()
@@ -484,6 +497,7 @@ class SystemBuilder:
             if merchant is not None:
                 self._inject_ordering_merchant(tool, merchant)
             self._inject_display_bus(tool, bus)
+            self._inject_data_plane_runtime(tool, data_plane, config)
 
         tool_names = self._tool_names
         if tool_names is None:
@@ -572,6 +586,48 @@ class SystemBuilder:
         """Hand the event bus to every display tool."""
         if tool.spec.category == "display" and hasattr(tool, "_bus"):
             tool._bus = bus
+
+    @staticmethod
+    def _inject_data_plane_runtime(tool, runtime, config) -> None:
+        if tool.spec.category != "data_plane" or not hasattr(tool, "_runtime"):
+            return
+        tool._runtime = runtime
+        tool._discovery_budget_seconds = config.data_plane.discovery_budget_seconds
+        tool._browser_fallback = config.data_plane.browser_fallback
+
+    @staticmethod
+    def _build_data_plane(config, bus):
+        if not config.data_plane.enabled:
+            return None
+        import importlib
+        from pathlib import Path
+
+        from openjarvis.core.registry import SourceAdapterRegistry
+        from openjarvis.data_plane.adapters import generic, trendcoffee
+        from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
+        from openjarvis.data_plane.discovery import DiscoveryEngine
+        from openjarvis.data_plane.execution import DirectExecutionEngine
+        from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
+        from openjarvis.system.bundles import DataPlaneRuntime
+
+        for key, module in (("generic", generic), ("trendcoffee", trendcoffee)):
+            if not SourceAdapterRegistry.contains(key):
+                importlib.reload(module)
+            if not SourceAdapterRegistry.contains(key):
+                raise RuntimeError(f"Data Plane adapter is not registered: {key}")
+
+        data_dir = get_data_dir()
+        db_path = Path(config.data_plane.db_path).expanduser()
+        if not config.data_plane.db_path:
+            db_path = data_dir / "structured.db"
+            config.data_plane.db_path = str(db_path)
+        if not config.data_plane.artifact_dir:
+            config.data_plane.artifact_dir = str(data_dir / "artifacts")
+        capabilities = SQLiteCapabilityStore(db_path)
+        snapshots = StructuredSnapshotStore(db_path)
+        discovery = DiscoveryEngine(capabilities, event_bus=bus)
+        direct = DirectExecutionEngine(capabilities, snapshots, bus=bus)
+        return DataPlaneRuntime(capabilities, snapshots, discovery, direct)
 
     def _setup_sandbox(self, config):
         sandbox_enabled = (

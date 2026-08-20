@@ -1599,6 +1599,19 @@ class MerchantsConfig:
     backend: str = "fake"
 
 
+@dataclass(slots=True)
+class DataPlaneConfig:
+    """Structured source discovery and snapshot settings."""
+
+    enabled: bool = False
+    db_path: str = ""
+    artifact_dir: str = ""
+    discovery_budget_seconds: int = 60
+    browser_fallback: bool = False
+    source_url: str = ""
+    trusted_write_operations: str = ""
+
+
 @dataclass
 class JarvisConfig:
     """Top-level configuration for OpenJarvis."""
@@ -1634,6 +1647,7 @@ class JarvisConfig:
     digest: DigestConfig = field(default_factory=DigestConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     merchants: MerchantsConfig = field(default_factory=MerchantsConfig)
+    data_plane: DataPlaneConfig = field(default_factory=DataPlaneConfig)
     mining: Optional["MiningConfig"] = None
 
     @property
@@ -1924,6 +1938,7 @@ def load_config(path: Optional[Path] = None) -> JarvisConfig:
             "compression",
             "skills",
             "merchants",
+            "data_plane",
         )
         for section_name in top_sections:
             if section_name in data:

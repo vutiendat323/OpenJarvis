@@ -25,6 +25,7 @@ from openjarvis.data_plane.types import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "generic"
+TREND_FIXTURES = Path(__file__).parent / "fixtures" / "trendcoffee"
 
 
 class RecordingHttp:
@@ -373,6 +374,45 @@ def test_cached_validated_capability_short_circuits_network_and_browser(
     assert result.cache_hit is True
     assert result.browser_actions == 0
     assert http.calls == []
+    assert observer.calls == []
+
+
+def test_known_provider_compiles_canonical_capability_before_generic_fallback(
+    capability_store,
+):
+    """Trend's declared safe reads must become one reusable provider contract."""
+    observer = RecordingObserver()
+    result = DiscoveryEngine(
+        capability_store,
+        http_client=RecordingHttp(
+            {
+                "/": (200, "text/html", "<html></html>"),
+                "/robots.txt": (404, "text/plain", ""),
+                "/api/latest/branch": (
+                    200,
+                    "application/json",
+                    (TREND_FIXTURES / "branch.json").read_text(),
+                ),
+                "/api/latest/products": (
+                    200,
+                    "application/json",
+                    (TREND_FIXTURES / "products.json").read_text(),
+                ),
+            }
+        ),
+        browser_observer=observer,
+    ).discover(
+        SourceRef("https://trendcoffee.net"),
+        DiscoveryConstraints(browser_fallback=True),
+    )
+
+    assert result.capability is not None
+    assert result.capability.source_id == "trend-coffee"
+    assert result.capability.provider == "trendcoffee"
+    assert (
+        result.capability.operations["branch.list"].trust is TrustState.READ_VALIDATED
+    )
+    assert result.browser_actions == 0
     assert observer.calls == []
 
 

@@ -23,6 +23,7 @@ import openjarvis.data_plane.adapters  # noqa: F401
 from openjarvis.core.credentials import get_tool_credential
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.registry import SourceAdapterRegistry
+from openjarvis.data_plane.adapters.generic import normalize_payload
 from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
 from openjarvis.data_plane.errors import DataPlaneError, DataPlaneErrorCode
 from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
@@ -31,7 +32,6 @@ from openjarvis.data_plane.types import (
     NormalizedBatch,
     OperationContract,
     ReceiptStatus,
-    ResourceRecord,
     SnapshotRef,
     SourceCapability,
     SyncReceipt,
@@ -138,6 +138,9 @@ class McpExecutionTransport:
     """Reuse existing MCP tool adapters without introducing another agent path."""
 
     def __init__(self, adapters: Mapping[str, object]) -> None:
+        self._adapters = dict(adapters)
+
+    def set_adapters(self, adapters: Mapping[str, object]) -> None:
         self._adapters = dict(adapters)
 
     def request(self, **kwargs: object) -> object:
@@ -263,6 +266,19 @@ class DirectExecutionEngine:
             status=receipt.status.value,
         )
         return receipt
+
+    def set_mcp_tools(self, tools: list[object]) -> None:
+        """Reuse the builder-owned MCP tool pool for MCP capabilities."""
+        transport = self._transports.get(TransportKind.MCP)
+        if not isinstance(transport, McpExecutionTransport):
+            return
+        adapters = {
+            str(tool.spec.name): tool
+            for tool in tools
+            if hasattr(tool, "spec")
+            and isinstance(getattr(tool.spec, "name", None), str)
+        }
+        transport.set_adapters(adapters)
 
     def execute(
         self, source_id: str, operation_name: str, arguments: dict[str, object]
@@ -606,9 +622,13 @@ class DirectExecutionEngine:
         if adapter is not None:
             return adapter
         try:
-            return SourceAdapterRegistry.create(capability.provider)
+            adapter = SourceAdapterRegistry.create(capability.provider)
         except KeyError:
             return None
+        bind_capability = getattr(adapter, "bind_capability", None)
+        if callable(bind_capability):
+            bind_capability(capability)
+        return adapter
 
     def _normalization_adapter(self, capability: SourceCapability) -> object | None:
         adapter = self._adapter_for(capability)
@@ -877,7 +897,7 @@ class DirectExecutionEngine:
     ) -> NormalizedBatch:
         adapter = self._normalization_adapter(capability)
         if adapter is None:
-            return _generic_batch(capability, operation, payload)
+            return normalize_payload(capability, operation, payload)
         try:
             batch = adapter.normalize(operation.resource_type, payload)  # type: ignore[union-attr]
         except (TypeError, ValueError, KeyError) as exc:
@@ -1121,38 +1141,6 @@ def _candidate_matches_observation(
             record.payload.get("order") == provider_ref for record in candidate.records
         )
     return any(record.resource_id == provider_ref for record in candidate.records)
-
-
-def _generic_batch(
-    capability: SourceCapability,
-    operation: OperationContract,
-    payload: object,
-) -> NormalizedBatch:
-    value = payload
-    if isinstance(value, dict) and isinstance(value.get("data"), dict):
-        data = value["data"]
-        query_name = operation.name.removeprefix("graphql.")
-        value = data.get(query_name, data)
-    if isinstance(value, dict) and isinstance(value.get("items"), list):
-        value = value["items"]
-    values = value if isinstance(value, list) else [value]
-    records: list[ResourceRecord] = []
-    for item in values:
-        record = dict(item) if isinstance(item, dict) else {"value": item}
-        record_id = record.get("id", record.get("slug"))
-        if not isinstance(record_id, str) or not record_id:
-            record_id = hashlib.sha256(
-                json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()
-        records.append(ResourceRecord(resource_id=record_id, payload=record))
-    return NormalizedBatch(
-        source_id=capability.source_id,
-        resource_type=operation.resource_type,
-        records=tuple(records),
-        synced_at=_now(),
-        capability_revision=capability.revision,
-        provenance=("generic_structured_transport",),
-    )
 
 
 def _validate_json_schema(schema: dict[str, object], value: object, label: str) -> None:

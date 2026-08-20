@@ -7,6 +7,7 @@ from pathlib import Path
 from openjarvis.core.config import (
     AgentConfig,
     ChannelConfig,
+    DataPlaneConfig,
     EngineConfig,
     GpuInfo,
     HardwareInfo,
@@ -43,6 +44,21 @@ class TestDefaults:
         assert ec.ollama_host == ""
         assert ec.vllm_host == "http://localhost:8000"
         assert ec.lemonade_host == "http://localhost:13305"
+
+
+class TestDataPlaneConfig:
+    def test_data_plane_defaults_and_toml_overrides(self, tmp_path: Path) -> None:
+        """An omitted path is a runtime default, while TOML remains explicit."""
+        assert DataPlaneConfig().enabled is False
+        assert DataPlaneConfig().db_path == ""
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[data_plane]\nenabled = true\ndb_path = "/tmp/structured.db"\n'
+        )
+        config = load_config(config_path)
+        assert config.data_plane.enabled is True
+        assert config.data_plane.db_path == "/tmp/structured.db"
 
 
 class TestRecommendEngine:

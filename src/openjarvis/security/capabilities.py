@@ -26,6 +26,10 @@ class Capability(str, Enum):
     TOOL_INVOKE = "tool:invoke"
     SCHEDULE_CREATE = "schedule:create"
     SYSTEM_ADMIN = "system:admin"
+    SOURCE_DISCOVER = "source:discover"
+    SOURCE_READ = "source:read"
+    SOURCE_WRITE = "source:write"
+    ARTIFACT_PUBLISH = "artifact:publish"
 
 
 @dataclass(slots=True)

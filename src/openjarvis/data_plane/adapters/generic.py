@@ -10,9 +10,13 @@ from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
+from openjarvis.core.registry import SourceAdapterRegistry
 from openjarvis.data_plane.types import (
     DiscoveryEvidence,
+    MatchResult,
+    NormalizedBatch,
     OperationContract,
+    ResourceRecord,
     SourceCapability,
     TransportKind,
     TrustState,
@@ -830,11 +834,97 @@ def is_openapi_declaration(endpoint: DeclaredEndpoint) -> bool:
     )
 
 
+@SourceAdapterRegistry.register("generic")
+class GenericAdapter:
+    """Registry wrapper around the existing generic compile/normalize path."""
+
+    def __init__(self) -> None:
+        self._capability: SourceCapability | None = None
+
+    def match(self, evidence: DiscoveryEvidence) -> MatchResult:
+        return MatchResult(False)
+
+    def compile(self, evidence: tuple[DiscoveryEvidence, ...]) -> SourceCapability:
+        if not evidence:
+            raise ValueError("Generic compile requires evidence")
+        origin = _origin(evidence[0].source_url)
+        source_id = _source_id(origin)
+        capability = compile_capability(
+            source_id=source_id,
+            origin=origin,
+            evidence=evidence,
+            revision=1,
+        )
+        self.bind_capability(capability)
+        return capability
+
+    def bind_capability(self, capability: SourceCapability) -> None:
+        self._capability = capability
+
+    def normalize(self, resource_type: str, payload: object) -> NormalizedBatch:
+        capability = self._capability
+        if capability is None:
+            raise ValueError("Generic normalizer has no capability")
+        operation = next(
+            (
+                operation
+                for operation in capability.operations.values()
+                if operation.resource_type == resource_type
+            ),
+            None,
+        )
+        if operation is None:
+            raise ValueError("Generic normalizer has no resource contract")
+        return normalize_payload(capability, operation, payload)
+
+
+def normalize_payload(
+    capability: SourceCapability,
+    operation: OperationContract,
+    payload: object,
+) -> NormalizedBatch:
+    """Normalize generic REST/GraphQL payloads without a second execution path."""
+    value = payload
+    if isinstance(value, dict) and isinstance(value.get("data"), dict):
+        data = value["data"]
+        query_name = operation.name.removeprefix("graphql.")
+        value = data.get(query_name, data)
+    if isinstance(value, dict) and isinstance(value.get("items"), list):
+        value = value["items"]
+    values = value if isinstance(value, list) else [value]
+    records: list[ResourceRecord] = []
+    for item in values:
+        record = dict(item) if isinstance(item, dict) else {"value": item}
+        record_id = record.get("id", record.get("slug"))
+        if not isinstance(record_id, str) or not record_id:
+            record_id = hashlib.sha256(
+                json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+        records.append(ResourceRecord(resource_id=record_id, payload=record))
+    return NormalizedBatch(
+        source_id=capability.source_id,
+        resource_type=operation.resource_type,
+        records=tuple(records),
+        synced_at=datetime.now(timezone.utc).isoformat(),
+        capability_revision=capability.revision,
+        provenance=("generic_structured_transport",),
+    )
+
+
+def _source_id(origin: str) -> str:
+    parsed = urlsplit(origin)
+    host = (parsed.hostname or "").casefold()
+    if parsed.port is not None and parsed.port not in {80, 443}:
+        return f"{host}:{parsed.port}"
+    return host
+
+
 __all__ = [
     "JSON_LD_TYPES",
     "ROUTE_PATTERN",
     "SUPPORTED_LINK_RELS",
     "DeclaredEndpoint",
+    "GenericAdapter",
     "HtmlExtraction",
     "compile_capability",
     "extract_graphql",
@@ -843,4 +933,5 @@ __all__ = [
     "extract_routes",
     "is_graphql_declaration",
     "is_openapi_declaration",
+    "normalize_payload",
 ]

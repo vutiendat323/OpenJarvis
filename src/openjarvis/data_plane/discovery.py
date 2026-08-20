@@ -11,7 +11,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Protocol, runtime_checkable
 from urllib.parse import SplitResult, parse_qsl, urlencode, urlsplit, urlunsplit
 
+import openjarvis.data_plane.adapters  # noqa: F401 -- register provider adapters
 from openjarvis.core.events import EventBus, EventType
+from openjarvis.core.registry import SourceAdapterRegistry
 from openjarvis.data_plane.adapters.generic import (
     HtmlExtraction,
     compile_capability,
@@ -88,6 +90,10 @@ class DiscoveryEngine:
         self._event_bus = event_bus
         self._clock = clock
 
+    @property
+    def capability_store(self) -> SQLiteCapabilityStore:
+        return self._store
+
     def discover(
         self,
         source_ref: SourceRef,
@@ -125,7 +131,10 @@ class DiscoveryEngine:
         started_at = self._clock()
         deadline = started_at + max(0.0, constraints.budget_seconds)
         requested_origin = _origin(source_ref.value)
-        source_id = source_id_override or _source_id(source_ref.value)
+        known_adapter = self._known_provider_adapter(requested_origin)
+        source_id = source_id_override or self._source_id_for(
+            known_adapter, source_ref.value
+        )
 
         self._publish(
             EventType.SOURCE_DISCOVERY_STARTED,
@@ -213,6 +222,19 @@ class DiscoveryEngine:
                 _response_error_code(root_response.status_code),
                 prior,
             )
+
+        if known_adapter is not None:
+            known_result = self._discover_known_provider(
+                known_adapter,
+                source_id=source_id,
+                origin=requested_origin,
+                root_response=root_response,
+                deadline=deadline,
+                started_at=started_at,
+                prior=prior,
+            )
+            if known_result is not None:
+                return known_result
 
         content_type = _content_type(root_response)
         html = HtmlExtraction((), (), ())
@@ -431,6 +453,109 @@ class DiscoveryEngine:
             prior,
             browser_actions=browser_actions,
         )
+
+    @staticmethod
+    def _source_id_for(adapter: object | None, source_ref: str) -> str:
+        source_id = getattr(adapter, "source_id", None)
+        if callable(source_id):
+            value = source_id()
+            if isinstance(value, str) and value:
+                return value
+        return _source_id(source_ref)
+
+    @staticmethod
+    def _known_provider_adapter(origin: str) -> object | None:
+        if not SourceAdapterRegistry.contains("trendcoffee"):
+            import importlib
+
+            from openjarvis.data_plane.adapters import trendcoffee
+
+            importlib.reload(trendcoffee)
+        probe = DiscoveryEvidence(
+            kind="source",
+            source_url=origin,
+            payload={"origin": origin},
+            provenance="source_ref",
+        )
+        for key in SourceAdapterRegistry.keys():
+            try:
+                adapter = SourceAdapterRegistry.create(key)
+            except (KeyError, TypeError):
+                continue
+            targets = getattr(adapter, "known_read_targets", None)
+            match = getattr(adapter, "match", None)
+            if not callable(targets) or not callable(match):
+                continue
+            try:
+                if match(probe).matched:
+                    return adapter
+            except (AttributeError, TypeError, ValueError):
+                continue
+        return None
+
+    def _discover_known_provider(
+        self,
+        adapter: object,
+        *,
+        source_id: str,
+        origin: str,
+        root_response: object,
+        deadline: float,
+        started_at: float,
+        prior: SourceCapability | None,
+    ) -> DiscoveryResult | None:
+        targets = getattr(adapter, "known_read_targets", None)
+        compile_capability = getattr(adapter, "compile", None)
+        if not callable(targets) or not callable(compile_capability):
+            return None
+        try:
+            target_urls = tuple(targets())
+        except (TypeError, ValueError):
+            return None
+        if not target_urls or any(
+            not isinstance(url, str) or _origin(url) != origin for url in target_urls
+        ):
+            return None
+
+        evidence = [
+            DiscoveryEvidence(
+                kind="publisher_document",
+                source_url=_redacted_url(str(root_response.url)),
+                method="GET",
+                status_code=root_response.status_code,
+                content_type=_content_type(root_response),
+                body_hash=f"sha256:{hashlib.sha256(root_response.content).hexdigest()}",
+                provenance="publisher_document",
+            )
+        ]
+        for target_url in target_urls:
+            if self._clock() >= deadline:
+                return None
+            try:
+                response = self.http.fetch(target_url, method="GET")
+            except DataPlaneError:
+                return None
+            if not response.is_success:
+                return None
+            evidence.append(
+                DiscoveryEvidence(
+                    kind="known_provider_read",
+                    source_url=_redacted_url(str(response.url)),
+                    method="GET",
+                    status_code=response.status_code,
+                    content_type=_content_type(response),
+                    body_hash=f"sha256:{hashlib.sha256(response.content).hexdigest()}",
+                    provenance="publisher_response",
+                )
+            )
+        try:
+            capability = compile_capability(tuple(evidence))
+        except (TypeError, ValueError):
+            return None
+        if capability.source_id != source_id:
+            return None
+        self._stage_completed(source_id, "known_provider", evidence)
+        return self._persist_validated(capability, evidence, started_at, prior)
 
     def _validate_safe_reads(
         self,

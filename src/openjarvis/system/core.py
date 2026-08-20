@@ -12,6 +12,7 @@ from openjarvis.core.types import Message, Role
 from openjarvis.engine._stubs import InferenceEngine
 from openjarvis.system.bundles import (
     AgentRuntime,
+    DataPlaneRuntime,
     Observability,
     Scheduling,
     SecurityContext,
@@ -89,6 +90,7 @@ class JarvisSystem:
     # Keep newly added fields after every pre-existing positional field so
     # older positional JarvisSystem(...) calls retain their original meaning.
     mcp_tools: List[BaseTool] = field(default_factory=list)
+    data_plane: Optional[DataPlaneRuntime] = None
 
     @property
     def security(self) -> SecurityContext:
@@ -321,6 +323,10 @@ class JarvisSystem:
             self.agent_manager.close()
         if self.agent_scheduler is not None:
             self.agent_scheduler.stop()
+        if self.data_plane is not None:
+            self.data_plane.direct.close()
+            self.data_plane.snapshots.close()
+            self.data_plane.capabilities.close()
         self._close_mcp_clients()
 
     def __enter__(self) -> JarvisSystem:

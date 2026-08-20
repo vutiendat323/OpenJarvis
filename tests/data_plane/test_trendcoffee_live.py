@@ -131,7 +131,7 @@ def test_live_trendcoffee_public_reads_are_normalizable(tmp_path):
         )
     )
 
-    assert capability.source_id == "trendcoffee"
+    assert capability.source_id == "trend-coffee"
     assert capability.base_url == "https://trendcoffee.net/api/latest"
     assert normalized_batch_count == 2
     assert discovery_result.browser_actions == 0

@@ -242,13 +242,13 @@ def test_trend_adapter_verifies_order_claim_against_observed_provider_fields():
     )
     claim = adapter.create_verification_claim("order.place", request)
     candidate = NormalizedBatch(
-        source_id="trendcoffee",
+        source_id="trend-coffee",
         resource_type="order",
         records=(ResourceRecord("order-1", {"slug": "order-1"}),),
         synced_at="2026-08-20T00:00:00+00:00",
     )
     observed = NormalizedBatch(
-        source_id="trendcoffee",
+        source_id="trend-coffee",
         resource_type="order",
         records=(
             ResourceRecord(
@@ -266,7 +266,7 @@ def test_trend_adapter_verifies_order_claim_against_observed_provider_fields():
 
     assert adapter.verify_verification_claim("order.place", claim, candidate, observed)
     mismatched = NormalizedBatch(
-        source_id="trendcoffee",
+        source_id="trend-coffee",
         resource_type="order",
         records=(
             ResourceRecord(
@@ -294,13 +294,13 @@ def test_trend_adapter_payment_claim_requires_candidate_and_observed_order_match
     )
     claim = adapter.create_verification_claim("payment.initiate", request)
     candidate = NormalizedBatch(
-        source_id="trendcoffee",
+        source_id="trend-coffee",
         resource_type="payment",
         records=(ResourceRecord("payment-1", {"order": "order-1"}),),
         synced_at="2026-08-20T00:00:00+00:00",
     )
     observed = NormalizedBatch(
-        source_id="trendcoffee",
+        source_id="trend-coffee",
         resource_type="order",
         records=(ResourceRecord("order-1", {"slug": "order-1"}),),
         synced_at="2026-08-20T00:00:00+00:00",
@@ -310,7 +310,7 @@ def test_trend_adapter_payment_claim_requires_candidate_and_observed_order_match
         "payment.initiate", claim, candidate, observed
     )
     wrong_candidate = NormalizedBatch(
-        source_id="trendcoffee",
+        source_id="trend-coffee",
         resource_type="payment",
         records=(ResourceRecord("payment-1", {"order": "other-order"}),),
         synced_at="2026-08-20T00:00:00+00:00",

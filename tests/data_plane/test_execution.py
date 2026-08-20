@@ -415,7 +415,7 @@ def test_safe_get_retries_rate_limit_with_retry_after(tmp_path):
     capabilities.close()
 
 
-def test_mcp_transport_normalizes_existing_adapter_result(tmp_path):
+def test_mcp_transport_normalizes_builder_owned_adapter_result(tmp_path):
     path = tmp_path / "structured.db"
     capabilities = SQLiteCapabilityStore(path)
     capabilities.save(_capability(transport=TransportKind.MCP))
@@ -429,7 +429,9 @@ def test_mcp_transport_normalizes_existing_adapter_result(tmp_path):
         capabilities,
         snapshots,
         adapters={"fixture": FixtureAdapter()},
-        mcp_adapters={"branch.list": mcp},
+    )
+    direct.set_mcp_tools(
+        [SimpleNamespace(spec=SimpleNamespace(name="branch.list"), execute=mcp.execute)]
     )
 
     receipt = direct.sync("fixture", ["branch"])
@@ -855,7 +857,7 @@ def test_trend_execution_dispatches_adapter_built_provider_request(runtime):
     capability_data = _capability().to_dict()
     capability_data.update(
         {
-            "source_id": "trendcoffee",
+            "source_id": "trend-coffee",
             "provider": "trendcoffee",
             "base_url": "https://fixture.test/api/latest",
             "revision": 1,
@@ -871,7 +873,7 @@ def test_trend_execution_dispatches_adapter_built_provider_request(runtime):
     ]
 
     receipt = runtime.direct.execute(
-        "trendcoffee",
+        "trend-coffee",
         "order.place",
         {
             "order_type": "take-out",

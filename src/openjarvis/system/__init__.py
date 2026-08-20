@@ -3,6 +3,7 @@
 from openjarvis.system.builder import SystemBuilder
 from openjarvis.system.bundles import (
     AgentRuntime,
+    DataPlaneRuntime,
     Observability,
     Scheduling,
     SecurityContext,
@@ -13,6 +14,7 @@ from openjarvis.system.protocols import OrchestratorDeps
 
 __all__ = [
     "AgentRuntime",
+    "DataPlaneRuntime",
     "JarvisSystem",
     "Observability",
     "OrchestratorDeps",

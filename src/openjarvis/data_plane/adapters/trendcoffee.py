@@ -71,6 +71,15 @@ class TrendCoffeeAdapter:
             return MatchResult(True, provider="trendcoffee", confidence=1.0)
         return MatchResult(False)
 
+    @staticmethod
+    def known_read_targets() -> tuple[str, ...]:
+        """The bounded public GETs required for a complete read capability."""
+        return (f"{_BASE_URL}/branch", f"{_BASE_URL}/products")
+
+    @staticmethod
+    def source_id() -> str:
+        return "trend-coffee"
+
     def compile(
         self, evidence: DiscoveryEvidence | Sequence[DiscoveryEvidence]
     ) -> SourceCapability:
@@ -147,7 +156,7 @@ class TrendCoffeeAdapter:
         )
         now = datetime.now(timezone.utc)
         return SourceCapability(
-            source_id="trendcoffee",
+            source_id="trend-coffee",
             provider="trendcoffee",
             origin=_ORIGIN,
             base_url=_BASE_URL,
@@ -190,7 +199,7 @@ class TrendCoffeeAdapter:
             for item in cast(list[dict[str, object]], items)
         )
         return NormalizedBatch(
-            source_id="trendcoffee",
+            source_id="trend-coffee",
             resource_type=resource_type,
             records=records,
             synced_at=_utc_now(),
