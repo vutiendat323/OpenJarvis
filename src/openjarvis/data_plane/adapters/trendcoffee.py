@@ -59,9 +59,13 @@ class TrendCoffeeAdapter:
             return MatchResult(True, provider="trendcoffee", confidence=1.0)
         return MatchResult(False)
 
-    def compile(self, evidence: Sequence[DiscoveryEvidence]) -> SourceCapability:
+    def compile(
+        self, evidence: DiscoveryEvidence | Sequence[DiscoveryEvidence]
+    ) -> SourceCapability:
         """Compile the fixed provider contract from attributable GET evidence."""
-        evidence_tuple = tuple(evidence)
+        evidence_tuple = (
+            (evidence,) if isinstance(evidence, DiscoveryEvidence) else tuple(evidence)
+        )
         required_reads = {f"{_BASE_URL}/branch", f"{_BASE_URL}/products"}
         observed_reads = {
             item.source_url.rstrip("?")

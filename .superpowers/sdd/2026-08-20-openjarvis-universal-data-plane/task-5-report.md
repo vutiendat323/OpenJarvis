@@ -47,7 +47,7 @@ evidence contains only a content hash and publisher origin, not an asset path.
 
 ```
 POSTHOG_DISABLED=true uv run pytest tests/data_plane -q
-# 82 passed, 1 skipped
+# 83 passed, 1 skipped
 
 OPENJARVIS_LIVE_TREND_READ=1 POSTHOG_DISABLED=true \\
   uv run pytest tests/data_plane/test_trendcoffee_live.py -q -m live
@@ -66,3 +66,19 @@ The live check issued GETs only for the publisher homepage,
 `/api/latest/branch`, and `/api/latest/products`. It compiled attributable
 evidence, normalized two non-empty batches, and invoked no browser observer.
 No live response body was committed.
+
+## Fix round 1
+
+- Corrected `StructuredSourceAdapter` to the binding contract:
+  `compile(evidence)` and `normalize(resource_type, payload)`. The Trend Coffee
+  implementation now accepts either one `DiscoveryEvidence` or a sequence;
+  one item is wrapped before normal validation, so incomplete evidence remains
+  a validation `ValueError`, not a shape `TypeError`.
+- Added a regression test that inspects the Protocol binding and calls the
+  adapter through the `StructuredSourceAdapter` type.
+- The live harness now creates a `BrowserObservationPort` mock and explicitly
+  calls `assert_not_called()`. `DiscoveryEngine` does not select or invoke
+  provider adapters yet, so routing this live provider read through it would
+  exercise generic discovery rather than this adapter and add non-ruling GETs.
+  The direct adapter harness therefore documents and checks the no-browser
+  boundary without adding a production abstraction.

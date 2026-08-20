@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 from pathlib import Path
 
 import pytest
 
 from openjarvis.data_plane.adapters import SourceAdapterRegistry, TrendCoffeeAdapter
-from openjarvis.data_plane.types import DiscoveryEvidence, TrustState
+from openjarvis.data_plane.types import (
+    DiscoveryEvidence,
+    StructuredSourceAdapter,
+    TrustState,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "trendcoffee"
 
@@ -84,6 +89,24 @@ def test_trend_adapter_normalizes_branch_product_and_variant(fixture_evidence):
         "size": "tiêu chuẩn",
         "price": 35000,
     }
+
+
+def test_structured_adapter_binding_accepts_evidence_and_resource_type(
+    fixture_evidence,
+):
+    adapter: StructuredSourceAdapter = TrendCoffeeAdapter()
+
+    assert tuple(inspect.signature(StructuredSourceAdapter.compile).parameters) == (
+        "self",
+        "evidence",
+    )
+    assert tuple(inspect.signature(StructuredSourceAdapter.normalize).parameters) == (
+        "self",
+        "resource_type",
+        "payload",
+    )
+    with pytest.raises(ValueError, match="requires attributable"):
+        adapter.compile(fixture_evidence[0])
 
 
 def test_trend_adapter_is_registered_from_the_adapter_package():

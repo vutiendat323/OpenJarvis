@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Protocol, TypeAlias
+from typing import Protocol, TypeAlias
 
 SourceId: TypeAlias = str
 ResourceType: TypeAlias = str
@@ -687,11 +687,11 @@ class StructuredSourceAdapter(Protocol):
 
     def match(self, evidence: DiscoveryEvidence) -> MatchResult: ...
 
-    def compile(
-        self, capability: SourceCapability, operation: OperationName
-    ) -> Any: ...
+    def compile(self, evidence: DiscoveryEvidence) -> SourceCapability: ...
 
-    def normalize(self, payload: object) -> NormalizedBatch: ...
+    def normalize(
+        self, resource_type: ResourceType, payload: object
+    ) -> NormalizedBatch: ...
 
 
 __all__ = [

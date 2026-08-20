@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+from unittest.mock import Mock
 
 import httpx
 import pytest
 
 from openjarvis.data_plane.adapters.trendcoffee import TrendCoffeeAdapter
+from openjarvis.data_plane.discovery import BrowserObservationPort
 from openjarvis.data_plane.types import DiscoveryEvidence
 
 pytestmark = pytest.mark.live
@@ -35,6 +37,10 @@ def test_live_trendcoffee_public_reads_are_normalizable():
     if os.environ.get("OPENJARVIS_LIVE_TREND_READ") != "1":
         pytest.skip("set OPENJARVIS_LIVE_TREND_READ=1")
 
+    # The direct provider adapter has no browser fallback binding. DiscoveryEngine
+    # does not dispatch provider adapters yet, so retain this explicit negative
+    # capability check at the direct adapter harness boundary.
+    browser_observer = Mock(spec=BrowserObservationPort)
     with httpx.Client(timeout=20.0, follow_redirects=False) as client:
         homepage = client.get("https://trendcoffee.net/")
         branches = client.get("https://trendcoffee.net/api/latest/branch")
@@ -74,3 +80,4 @@ def test_live_trendcoffee_public_reads_are_normalizable():
     assert capability.source_id == "trendcoffee"
     assert capability.base_url == "https://trendcoffee.net/api/latest"
     assert normalized_batch_count == 2
+    browser_observer.observe.assert_not_called()
