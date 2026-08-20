@@ -82,3 +82,16 @@ No live response body was committed.
   exercise generic discovery rather than this adapter and add non-ruling GETs.
   The direct adapter harness therefore documents and checks the no-browser
   boundary without adding a production abstraction.
+
+## Fix round 2
+
+- Replaced the disconnected observer mock with a live-gated `DiscoveryEngine`
+  invocation that injects the mock, uses a temporary `SQLiteCapabilityStore`,
+  sets `browser_fallback=False`, and explicitly asserts both
+  `browser_actions == 0` and `observer.observe.assert_not_called()`.
+- The store and safe `DiscoveryHttpClient` are closed in `finally`. The engine
+  run is deliberately separate from the provider adapter's three public GET
+  reads because provider-adapter dispatch is not part of `DiscoveryEngine` yet.
+- The engine budget is 10 seconds, each request uses the discovery client's
+  safe-method allowlist, and no browser or mutation path is reachable.
+- Reformatted all modified Python files, including `types.py`.

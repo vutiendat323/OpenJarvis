@@ -10,8 +10,14 @@ import httpx
 import pytest
 
 from openjarvis.data_plane.adapters.trendcoffee import TrendCoffeeAdapter
-from openjarvis.data_plane.discovery import BrowserObservationPort
-from openjarvis.data_plane.types import DiscoveryEvidence
+from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
+from openjarvis.data_plane.discovery import BrowserObservationPort, DiscoveryEngine
+from openjarvis.data_plane.discovery_http import DiscoveryHttpClient
+from openjarvis.data_plane.types import (
+    DiscoveryConstraints,
+    DiscoveryEvidence,
+    SourceRef,
+)
 
 pytestmark = pytest.mark.live
 
@@ -33,14 +39,26 @@ def _evidence(
     )
 
 
-def test_live_trendcoffee_public_reads_are_normalizable():
+def test_live_trendcoffee_public_reads_are_normalizable(tmp_path):
     if os.environ.get("OPENJARVIS_LIVE_TREND_READ") != "1":
         pytest.skip("set OPENJARVIS_LIVE_TREND_READ=1")
 
-    # The direct provider adapter has no browser fallback binding. DiscoveryEngine
-    # does not dispatch provider adapters yet, so retain this explicit negative
-    # capability check at the direct adapter harness boundary.
     browser_observer = Mock(spec=BrowserObservationPort)
+    store = SQLiteCapabilityStore(tmp_path / "trendcoffee-live.db")
+    discovery_http = DiscoveryHttpClient(timeout_seconds=5.0)
+    try:
+        discovery_result = DiscoveryEngine(
+            store,
+            http_client=discovery_http,
+            browser_observer=browser_observer,
+        ).discover(
+            SourceRef("https://trendcoffee.net"),
+            DiscoveryConstraints(budget_seconds=10.0, browser_fallback=False),
+        )
+    finally:
+        discovery_http.close()
+        store.close()
+
     with httpx.Client(timeout=20.0, follow_redirects=False) as client:
         homepage = client.get("https://trendcoffee.net/")
         branches = client.get("https://trendcoffee.net/api/latest/branch")
@@ -80,4 +98,5 @@ def test_live_trendcoffee_public_reads_are_normalizable():
     assert capability.source_id == "trendcoffee"
     assert capability.base_url == "https://trendcoffee.net/api/latest"
     assert normalized_batch_count == 2
+    assert discovery_result.browser_actions == 0
     browser_observer.observe.assert_not_called()

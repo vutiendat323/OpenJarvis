@@ -524,9 +524,7 @@ class StructuredResult:
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> StructuredResult:
         return cls(
-            items=tuple(
-                ResourceRecord.from_dict(dict(item)) for item in data["items"]
-            ),
+            items=tuple(ResourceRecord.from_dict(dict(item)) for item in data["items"]),
             version=int(data["version"]),
             synced_at=str(data["synced_at"]),
             stale=bool(data.get("stale", False)),
