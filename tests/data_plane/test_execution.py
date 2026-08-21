@@ -16,6 +16,7 @@ import respx
 
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.data_plane.adapters import TrendCoffeeAdapter
+from openjarvis.data_plane.approval import ExecutionApprovalGate
 from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
 from openjarvis.data_plane.errors import DataPlaneError, DataPlaneErrorCode
 from openjarvis.data_plane.execution import DirectExecutionEngine, ExecutionTransport
@@ -30,6 +31,7 @@ from openjarvis.data_plane.types import (
     TransportKind,
     TrustState,
 )
+from openjarvis.tools.approval_store import STATUS_APPROVED, ApprovalStore
 
 
 class FixtureAdapter:
@@ -188,6 +190,8 @@ def runtime(tmp_path):
     snapshots = StructuredSnapshotStore(path)
     bus = EventBus(record_history=True)
     transport = RecordingTransport()
+    approvals = ApprovalStore(str(tmp_path / "approvals.db"))
+    approval_gate = ExecutionApprovalGate(approvals)
     direct = DirectExecutionEngine(
         capabilities,
         snapshots,
@@ -201,11 +205,31 @@ def runtime(tmp_path):
         bus=bus,
         transport=transport,
         direct=direct,
+        approvals=approvals,
+        approval_gate=approval_gate,
     )
     yield result
     direct.close()
+    approvals.close()
     snapshots.close()
     capabilities.close()
+
+
+def _approved_execute(
+    runtime,
+    operation: str,
+    arguments: dict[str, object],
+    *,
+    source_id: str = "fixture",
+):
+    capability = runtime.capabilities.get(source_id)
+    assert capability is not None
+    pending = runtime.approval_gate.prepare(
+        source_id, operation, arguments, capability.revision
+    )
+    runtime.approvals.update_status(pending.id, STATUS_APPROVED)
+    grant = runtime.approval_gate.authorize(pending.id, pending.payload["request_hash"])
+    return runtime.direct.execute(source_id, operation, arguments, grant=grant)
 
 
 def test_sync_uses_validated_contract_and_commits_snapshot(runtime):
@@ -249,7 +273,7 @@ def test_sync_paginates_rest_resource_until_provider_has_no_next_page(runtime):
 def test_post_timeout_is_ambiguous_and_not_retried(runtime):
     runtime.transport.responses = [httpx.ReadTimeout("after send")]
 
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
 
     assert receipt.status is ReceiptStatus.UNKNOWN
     assert receipt.error_code == "mutation_ambiguous"
@@ -258,7 +282,7 @@ def test_post_timeout_is_ambiguous_and_not_retried(runtime):
 
 def test_verify_does_not_promote_an_ambiguous_mutation(runtime):
     runtime.transport.responses = [httpx.ReadTimeout("after send")]
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
 
     result = runtime.direct.verify(receipt.receipt_id)
 
@@ -273,7 +297,7 @@ def test_verify_is_a_separate_get_and_only_then_promotes_candidate(runtime):
         _response({"id": "order-1", "status": "created"}),
         _response({"id": "order-1", "status": "paid", "item": "coffee"}),
     ]
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
 
     before = runtime.snapshots.query(
         StructuredQuery(source_id="fixture", resource_type="order")
@@ -294,7 +318,7 @@ def test_verify_is_a_separate_get_and_only_then_promotes_candidate(runtime):
 
 def test_receipt_is_durable_and_excludes_credentials(runtime):
     runtime.transport.responses = [_response({"id": "order-1"})]
-    receipt = runtime.direct.execute("fixture", "order.place", {"card": "private"})
+    receipt = _approved_execute(runtime, "order.place", {"card": "private"})
     runtime.direct.close()
 
     reopened = DirectExecutionEngine(
@@ -321,7 +345,7 @@ def test_provider_response_secrets_are_redacted_before_receipt_persistence(runti
         _response({"id": "order-1", "authorization": "provider-secret"})
     ]
 
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
 
     assert "provider-secret" not in json.dumps(receipt.to_dict())
     assert "authorization" not in json.dumps(receipt.to_dict())
@@ -362,6 +386,14 @@ def test_http_transport_reuses_cookies_resolves_credentials_and_refreshes_csrf(
     direct = DirectExecutionEngine(
         capabilities, snapshots, adapters={"fixture": FixtureAdapter()}
     )
+    approvals = ApprovalStore(str(tmp_path / "approvals.db"))
+    approval_gate = ExecutionApprovalGate(approvals)
+    approved_runtime = SimpleNamespace(
+        capabilities=capabilities,
+        approvals=approvals,
+        approval_gate=approval_gate,
+        direct=direct,
+    )
     respx.get("https://fixture.test/api/branch").mock(
         return_value=httpx.Response(
             200,
@@ -377,13 +409,14 @@ def test_http_transport_reuses_cookies_resolves_credentials_and_refreshes_csrf(
         "openjarvis.data_plane.execution.get_tool_credential", return_value="secret"
     ):
         direct.sync("fixture", ["branch"])
-        direct.execute("fixture", "order.place", {"item": "coffee"})
+        _approved_execute(approved_runtime, "order.place", {"item": "coffee"})
 
     request = route.calls[0].request
     assert request.headers["authorization"] == "Bearer secret"
     assert request.headers["x-csrf"] == "token"
     assert request.headers["cookie"] == "csrf=token"
     direct.close()
+    approvals.close()
     snapshots.close()
     capabilities.close()
 
@@ -591,7 +624,7 @@ def test_missing_csrf_token_returns_failed_receipt_without_dispatch(runtime):
     capability_data["operations"] = operations
     runtime.capabilities.save(SourceCapability.from_dict(capability_data))
 
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
 
     assert receipt.status is ReceiptStatus.FAILED
     assert receipt.error_code == "authentication_expired"
@@ -607,7 +640,7 @@ def test_request_schema_rejection_happens_before_mutation_dispatch(runtime):
     capability_data["operations"] = operations
     runtime.capabilities.save(SourceCapability.from_dict(capability_data))
 
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
 
     assert receipt.status is ReceiptStatus.FAILED
     assert receipt.error_code == "schema_mismatch"
@@ -627,8 +660,8 @@ def test_idempotent_post_retries_only_when_a_key_is_supplied(runtime):
         _response({"id": "order-1"}),
     ]
 
-    receipt = runtime.direct.execute(
-        "fixture",
+    receipt = _approved_execute(
+        runtime,
         "order.place",
         {"item": "coffee", "Idempotency-Key": "request-key"},
     )
@@ -641,16 +674,17 @@ def test_idempotent_post_retries_only_when_a_key_is_supplied(runtime):
 def test_unsafe_redirect_is_rejected_without_replaying_mutation(runtime):
     runtime.transport.responses = [httpx.Response(307, headers={"location": "/orders"})]
 
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
 
-    assert receipt.status is ReceiptStatus.FAILED
+    assert receipt.status is ReceiptStatus.UNKNOWN
+    assert receipt.error_code == "mutation_ambiguous"
     assert len(runtime.transport.calls) == 1
 
 
 def test_public_receipts_hide_unverified_candidate_data(runtime):
     runtime.transport.responses = [_response({"id": "order-1", "qrCode": "qr-secret"})]
 
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
     reopened = runtime.direct.get_receipt(receipt.receipt_id)
 
     assert receipt.normalized == {}
@@ -661,7 +695,7 @@ def test_public_receipts_hide_unverified_candidate_data(runtime):
 
 def test_verify_rejects_receipt_after_capability_revision_changes(runtime):
     runtime.transport.responses = [_response({"id": "order-1"})]
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
     capability = runtime.capabilities.get("fixture")
     assert capability is not None
     runtime.capabilities.save(
@@ -677,7 +711,7 @@ def test_verify_rejects_receipt_after_capability_revision_changes(runtime):
 
 def test_verify_rejects_tampered_candidate_request_hash_before_observation(runtime):
     runtime.transport.responses = [_response({"id": "order-1"})]
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
     with runtime.direct._conn:
         runtime.direct._conn.execute(
             "UPDATE execution_receipts SET normalized_json = ? WHERE receipt_id = ?",
@@ -697,7 +731,7 @@ def test_verify_rejects_tampered_candidate_request_hash_before_observation(runti
 def test_connect_error_for_unsafe_request_creates_unknown_receipt(runtime):
     runtime.transport.responses = [httpx.ConnectError("connection dropped")]
 
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
 
     assert receipt.status is ReceiptStatus.UNKNOWN
     assert receipt.error_code == "mutation_ambiguous"
@@ -751,8 +785,8 @@ def test_request_schema_subset_rejects_extra_and_wrong_nested_values(runtime):
     capability_data["operations"] = operations
     runtime.capabilities.save(SourceCapability.from_dict(capability_data))
 
-    receipt = runtime.direct.execute(
-        "fixture", "order.place", {"item": {"size": "medium"}, "extra": True}
+    receipt = _approved_execute(
+        runtime, "order.place", {"item": {"size": "medium"}, "extra": True}
     )
 
     assert receipt.status is ReceiptStatus.FAILED
@@ -771,7 +805,7 @@ def test_injected_transport_owns_csrf_cookie_lookup(runtime):
     runtime.transport.csrf_value = "injected-token"
     runtime.transport.responses = [_response({"id": "order-1"})]
 
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
 
     assert receipt.status is ReceiptStatus.SUCCEEDED
     assert runtime.transport.calls[0]["headers"]["X-CSRF"] == "injected-token"
@@ -796,9 +830,7 @@ def test_payment_candidate_requires_matching_observed_order_reference(runtime):
         _response({"id": "order-1", "status": "paid"}),
     ]
 
-    receipt = runtime.direct.execute(
-        "fixture", "payment.initiate", {"order": "order-1"}
-    )
+    receipt = _approved_execute(runtime, "payment.initiate", {"order": "order-1"})
     result = runtime.direct.verify(receipt.receipt_id)
 
     assert receipt.normalized == {}
@@ -819,7 +851,7 @@ def test_verify_rejects_provider_candidate_and_observation_for_other_request(run
         _response({"id": "order-1", "item": "tea", "status": "paid"}),
     ]
 
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
     result = runtime.direct.verify(receipt.receipt_id)
 
     assert result.status is ReceiptStatus.FAILED
@@ -862,7 +894,7 @@ def test_execute_fails_before_dispatch_without_valid_correlation_claim(
 ):
     runtime.direct._adapters["fixture"] = adapter
 
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
 
     assert receipt.status is ReceiptStatus.FAILED
     assert receipt.error_code == "capability_quarantined"
@@ -889,7 +921,7 @@ def test_execute_fails_before_dispatch_without_valid_correlation_claim(
 def test_execute_rejects_every_malformed_private_hash_before_dispatch(runtime, claim):
     runtime.direct._adapters["fixture"] = InvalidHashClaimAdapter(claim)
 
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
 
     assert receipt.status is ReceiptStatus.FAILED
     assert receipt.error_code == "capability_quarantined"
@@ -919,14 +951,15 @@ def test_trend_execution_dispatches_adapter_built_provider_request(runtime):
         }
     ]
 
-    receipt = runtime.direct.execute(
-        "trend-coffee",
+    receipt = _approved_execute(
+        runtime,
         "order.place",
         {
             "order_type": "take-out",
             "branch_slug": "branch-1",
             "items": [{"quantity": 1, "variant_slug": "variant-1", "note": "ít đá"}],
         },
+        source_id="trend-coffee",
     )
 
     assert receipt.status is ReceiptStatus.SUCCEEDED
@@ -963,8 +996,8 @@ def test_path_placeholder_rejects_non_segment_values_before_dispatch(
     runtime.capabilities.save(SourceCapability.from_dict(capability_data))
     runtime.transport.responses = [_response({"id": "order-1"})]
 
-    receipt = runtime.direct.execute(
-        "fixture", "order.place", {"item": "coffee", "order_id": path_argument}
+    receipt = _approved_execute(
+        runtime, "order.place", {"item": "coffee", "order_id": path_argument}
     )
 
     assert receipt.status is ReceiptStatus.FAILED
@@ -982,8 +1015,8 @@ def test_path_placeholder_percent_encodes_valid_unicode_and_space(runtime):
     runtime.capabilities.save(SourceCapability.from_dict(capability_data))
     runtime.transport.responses = [_response({"id": "order-1"})]
 
-    receipt = runtime.direct.execute(
-        "fixture", "order.place", {"item": "coffee", "order_id": "cà phê"}
+    receipt = _approved_execute(
+        runtime, "order.place", {"item": "coffee", "order_id": "cà phê"}
     )
 
     assert receipt.status is ReceiptStatus.SUCCEEDED
@@ -1000,7 +1033,7 @@ def test_query_placeholder_encodes_a_single_query_component(runtime):
     runtime.capabilities.save(SourceCapability.from_dict(capability_data))
     runtime.transport.responses = [_response({"id": "order-1"})]
 
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "x&admin=true"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "x&admin=true"})
 
     assert receipt.status is ReceiptStatus.SUCCEEDED
     assert runtime.transport.calls[0]["url"].endswith(
@@ -1017,7 +1050,7 @@ def test_query_placeholder_missing_is_schema_mismatch(runtime):
     capability_data["operations"] = operations
     runtime.capabilities.save(SourceCapability.from_dict(capability_data))
 
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
 
     assert receipt.status is ReceiptStatus.FAILED
     assert receipt.error_code == "schema_mismatch"
@@ -1036,10 +1069,23 @@ def test_query_placeholder_nonserializable_is_schema_mismatch(runtime):
     operations["order.place"] = order
     capability_data["operations"] = operations
     runtime.capabilities.save(SourceCapability.from_dict(capability_data))
+    capability = runtime.capabilities.get("fixture")
+    assert capability is not None
+    pending = runtime.approval_gate.prepare(
+        "fixture",
+        "order.place",
+        {"item": "coffee", "filter": "valid"},
+        capability.revision,
+    )
+    runtime.approvals.update_status(pending.id, STATUS_APPROVED)
+    grant = runtime.approval_gate.authorize(pending.id, pending.payload["request_hash"])
 
     with pytest.raises(DataPlaneError) as raised:
         runtime.direct.execute(
-            "fixture", "order.place", {"item": "coffee", "filter": Unserializable()}
+            "fixture",
+            "order.place",
+            {"item": "coffee", "filter": Unserializable()},
+            grant=grant,
         )
 
     assert raised.value.code is DataPlaneErrorCode.SCHEMA_MISMATCH
@@ -1237,7 +1283,7 @@ def test_failed_verification_activation_leaves_candidate_out_of_snapshot(runtime
             {"id": "order-1", "status": "duplicate"},
         ),
     ]
-    receipt = runtime.direct.execute("fixture", "order.place", {"item": "coffee"})
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
 
     result = runtime.direct.verify(receipt.receipt_id)
 

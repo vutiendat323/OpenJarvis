@@ -7,6 +7,7 @@ from typing import Any
 
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
+from openjarvis.data_plane.approval import ApprovalError, execution_request_hash
 from openjarvis.data_plane.errors import DataPlaneError, DataPlaneErrorCode
 from openjarvis.data_plane.types import (
     ConsistencyMode,
@@ -39,12 +40,17 @@ class _DataPlaneTool(BaseTool):
         return None
 
     def _result(
-        self, payload: dict[str, object], *, success: bool = True
+        self,
+        payload: dict[str, object],
+        *,
+        success: bool = True,
+        metadata: dict[str, object] | None = None,
     ) -> ToolResult:
         return ToolResult(
             tool_name=self.spec.name,
             success=success,
             content=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            metadata=metadata or {},
         )
 
     def _error(self, error: DataPlaneError) -> ToolResult:
@@ -232,6 +238,7 @@ class SourceExecuteTool(_DataPlaneTool):
                     "source_id": {"type": "string"},
                     "operation": {"type": "string"},
                     "arguments": {"type": "object"},
+                    "approval_id": {"type": "string"},
                 },
                 "required": ["source_id", "operation", "arguments"],
             },
@@ -246,17 +253,85 @@ class SourceExecuteTool(_DataPlaneTool):
             return unavailable
         source_id = str(params.get("source_id", "")).strip()
         operation_name = str(params.get("operation", "")).strip()
+        arguments = params.get("arguments")
+        approval_id = str(params.get("approval_id", "")).strip()
+        if not source_id or not operation_name or not isinstance(arguments, dict):
+            return self._result(
+                {"error_code": "source_execute_arguments_invalid"}, success=False
+            )
         capability = self._runtime.discovery.get_capability(source_id)
         operation = capability.operations.get(operation_name) if capability else None
-        if operation is None or not operation.safe:
+        if (
+            capability is None
+            or operation is None
+            or operation.safe
+            or operation.trust is not TrustState.WRITE_VALIDATED
+        ):
             return self._result(
                 {"error_code": DataPlaneErrorCode.CAPABILITY_QUARANTINED.value},
                 success=False,
             )
-        return self._result(
-            {"error_code": DataPlaneErrorCode.CAPABILITY_QUARANTINED.value},
-            success=False,
+        if operation_name == "payment.initiate":
+            if (
+                set(arguments) != {"order", "paymentMethod"}
+                or not isinstance(arguments.get("order"), str)
+                or not str(arguments["order"]).strip()
+                or arguments.get("paymentMethod") != "bank-transfer"
+            ):
+                return self._result(
+                    {"error_code": "payment_arguments_invalid"}, success=False
+                )
+            if not self._verified_order_exists(source_id, arguments):
+                return self._result({"error_code": "order_not_verified"}, success=False)
+        gate = self._runtime.approval_gate
+        if gate is None:
+            return self._result({"error_code": "approval_unavailable"}, success=False)
+        try:
+            request_hash = execution_request_hash(
+                source_id, operation_name, arguments, capability.revision
+            )
+            if not approval_id:
+                pending = gate.prepare(
+                    source_id, operation_name, arguments, capability.revision
+                )
+                metadata = {
+                    "pending_approval": True,
+                    "approval_id": pending.id,
+                    "request_hash": request_hash,
+                }
+                return self._result(
+                    {"error_code": "approval_required"},
+                    success=False,
+                    metadata=metadata,
+                )
+            grant = gate.authorize(approval_id, request_hash)
+            receipt = self._runtime.direct.execute(
+                source_id, operation_name, arguments, grant=grant
+            )
+            return self._result(
+                {"receipt": receipt.to_dict()},
+                success=receipt.status is ReceiptStatus.SUCCEEDED,
+            )
+        except ApprovalError as error:
+            return self._result({"error_code": error.code}, success=False)
+        except DataPlaneError as error:
+            return self._error(error)
+
+    def _verified_order_exists(
+        self, source_id: str, arguments: dict[str, object]
+    ) -> bool:
+        order_id = arguments.get("order")
+        if not isinstance(order_id, str) or not order_id:
+            return False
+        result = self._runtime.snapshots.query(
+            StructuredQuery(
+                source_id=source_id,
+                resource_type="order",
+                filters={"slug": order_id},
+                limit=0,
+            )
         )
+        return any(item.resource_id == order_id for item in result.items)
 
 
 @ToolRegistry.register("source_verify")

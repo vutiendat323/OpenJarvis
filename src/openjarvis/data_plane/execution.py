@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import sqlite3
@@ -24,6 +23,11 @@ from openjarvis.core.credentials import get_tool_credential
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.registry import SourceAdapterRegistry
 from openjarvis.data_plane.adapters.generic import normalize_payload
+from openjarvis.data_plane.approval import (
+    ApprovalError,
+    ExecutionGrant,
+    execution_request_hash,
+)
 from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
 from openjarvis.data_plane.errors import DataPlaneError, DataPlaneErrorCode
 from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
@@ -40,6 +44,7 @@ from openjarvis.data_plane.types import (
     VerificationResult,
 )
 from openjarvis.security.ssrf import check_ssrf
+from openjarvis.tools.approval_store import STATUS_EXECUTED, STATUS_UNKNOWN
 
 _CREATE_SCHEMA_TABLE = """\
 CREATE TABLE IF NOT EXISTS data_plane_schema (
@@ -295,21 +300,49 @@ class DirectExecutionEngine:
         transport.set_adapters(adapters)
 
     def execute(
-        self, source_id: str, operation_name: str, arguments: dict[str, object]
+        self,
+        source_id: str,
+        operation_name: str,
+        arguments: dict[str, object],
+        *,
+        grant: ExecutionGrant | None = None,
     ) -> ExecutionReceipt:
-        capability = self._capability(source_id)
-        operation = self._operation(capability, operation_name)
+        try:
+            capability = self._capability(source_id)
+            operation = self._operation(capability, operation_name)
+        except (DataPlaneError, ValueError):
+            if grant is not None:
+                grant.reject()
+            raise
         if operation.safe:
+            if grant is not None:
+                grant.reject()
             raise DataPlaneError(
                 DataPlaneErrorCode.CAPABILITY_QUARANTINED,
                 "Use sync for validated read operations",
             )
         if operation.trust is not TrustState.WRITE_VALIDATED:
+            if grant is not None:
+                grant.reject()
             raise DataPlaneError(
                 DataPlaneErrorCode.CAPABILITY_QUARANTINED,
                 "Mutation capability is not write validated",
             )
-        request_hash = _request_hash(capability, operation_name, arguments)
+        if grant is None:
+            raise DataPlaneError(
+                DataPlaneErrorCode.CAPABILITY_QUARANTINED,
+                "Mutation requires an exact one-time approval grant",
+            )
+        try:
+            request_hash = execution_request_hash(
+                source_id, operation_name, arguments, capability.revision
+            )
+        except ApprovalError as exc:
+            grant.reject()
+            raise DataPlaneError(
+                DataPlaneErrorCode.SCHEMA_MISMATCH,
+                "Request arguments are not serializable",
+            ) from exc
         self._publish(
             EventType.SOURCE_EXECUTE_STARTED,
             source_id=source_id,
@@ -317,6 +350,7 @@ class DirectExecutionEngine:
             capability_revision=capability.revision,
         )
         verification_claim: dict[str, str] = {}
+        dispatch_started = False
         try:
             adapter = self._normalization_adapter(capability)
             provider_arguments = self._provider_request(adapter, operation, arguments)
@@ -324,7 +358,18 @@ class DirectExecutionEngine:
             verification_claim = self._verification_claim(
                 adapter, operation, provider_arguments
             )
-            payload = self._dispatch(capability, operation, provider_arguments)
+
+            def authorize_dispatch() -> None:
+                nonlocal dispatch_started
+                grant.consume(source_id, operation_name, arguments, capability.revision)
+                dispatch_started = True
+
+            payload = self._dispatch(
+                capability,
+                operation,
+                provider_arguments,
+                before_request=authorize_dispatch,
+            )
             self._validate_response(operation, payload)
             candidate = _redact_batch(self._normalize(capability, operation, payload))
             provider_ref = _provider_ref(candidate)
@@ -336,31 +381,44 @@ class DirectExecutionEngine:
                 provider_ref=provider_ref,
                 normalized=candidate.to_dict(),
             )
-        except httpx.TimeoutException:
-            receipt = self._new_receipt(
-                capability,
-                operation_name,
-                request_hash,
-                ReceiptStatus.UNKNOWN,
-                error_code=DataPlaneErrorCode.MUTATION_AMBIGUOUS.value,
-            )
-        except httpx.RequestError:
-            receipt = self._new_receipt(
-                capability,
-                operation_name,
-                request_hash,
-                ReceiptStatus.UNKNOWN,
-                error_code=DataPlaneErrorCode.MUTATION_AMBIGUOUS.value,
-            )
-        except DataPlaneError as exc:
-            receipt = self._new_receipt(
-                capability,
-                operation_name,
-                request_hash,
-                ReceiptStatus.FAILED,
-                error_code=exc.code.value,
-            )
-        self._save_receipt(receipt, verification_claim)
+        except ApprovalError as exc:
+            raise DataPlaneError(
+                DataPlaneErrorCode.CAPABILITY_QUARANTINED, exc.code
+            ) from exc
+        except Exception as exc:
+            if dispatch_started:
+                receipt = self._new_receipt(
+                    capability,
+                    operation_name,
+                    request_hash,
+                    ReceiptStatus.UNKNOWN,
+                    error_code=DataPlaneErrorCode.MUTATION_AMBIGUOUS.value,
+                )
+            elif isinstance(exc, DataPlaneError):
+                grant.reject()
+                receipt = self._new_receipt(
+                    capability,
+                    operation_name,
+                    request_hash,
+                    ReceiptStatus.FAILED,
+                    error_code=exc.code.value,
+                )
+            else:
+                grant.reject()
+                raise
+        try:
+            self._save_receipt(receipt, verification_claim)
+        except Exception:
+            if dispatch_started:
+                grant.finish(STATUS_UNKNOWN)
+            else:
+                grant.finish(STATUS_EXECUTED)
+            raise
+        grant.finish(
+            STATUS_UNKNOWN
+            if receipt.status is ReceiptStatus.UNKNOWN
+            else STATUS_EXECUTED
+        )
         self._publish(
             EventType.SOURCE_EXECUTE_RECEIPT_CREATED,
             source_id=source_id,
@@ -757,6 +815,8 @@ class DirectExecutionEngine:
         capability: SourceCapability,
         operation: OperationContract,
         arguments: dict[str, object],
+        *,
+        before_request: Callable[[], None] | None = None,
     ) -> object:
         try:
             path_template, separator, query_template = operation.path.partition("?")
@@ -787,6 +847,8 @@ class DirectExecutionEngine:
                 DataPlaneErrorCode.CAPABILITY_MISSING, "Transport unavailable"
             )
         headers = self._headers(capability, operation, url, arguments, transport)
+        if before_request is not None:
+            before_request()
         attempts = 0
         current_url = url
         while True:
@@ -1037,21 +1099,14 @@ def _request_hash(
     capability: SourceCapability, operation: str, arguments: dict[str, object]
 ) -> str:
     try:
-        value = json.dumps(
-            {
-                "revision": capability.revision,
-                "operation": operation,
-                "arguments": arguments,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
+        return execution_request_hash(
+            capability.source_id, operation, arguments, capability.revision
         )
-    except (TypeError, ValueError) as exc:
+    except ApprovalError as exc:
         raise DataPlaneError(
             DataPlaneErrorCode.SCHEMA_MISMATCH,
             "Request arguments are not serializable",
         ) from exc
-    return f"sha256:{hashlib.sha256(value.encode()).hexdigest()}"
 
 
 def _sync_receipt(

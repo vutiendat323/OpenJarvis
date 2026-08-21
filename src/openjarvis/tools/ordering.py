@@ -19,7 +19,11 @@ from typing import Any, Optional
 
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
-from openjarvis.merchants.port import MerchantPort
+from openjarvis.merchants.port import (
+    MerchantPort,
+    OrderApprovalRejected,
+    OrderApprovalRequired,
+)
 from openjarvis.tools._stubs import BaseTool, ToolSpec
 
 OBSERVES = {"observes": True}
@@ -77,9 +81,7 @@ class BranchListTool(_MerchantTool):
         if unavailable is not None:
             return unavailable
         branches = self._merchant.list_branches()
-        return self._ok(
-            "branch_list", {"branches": [asdict(b) for b in branches]}
-        )
+        return self._ok("branch_list", {"branches": [asdict(b) for b in branches]})
 
 
 @ToolRegistry.register("menu_search")
@@ -127,9 +129,7 @@ class MenuSearchTool(_MerchantTool):
         if branch not in {b.slug for b in self._merchant.list_branches()}:
             return self._fail("menu_search", "unknown_branch")
         products = self._merchant.search_menu(str(params.get("query", "")), branch)
-        return self._ok(
-            "menu_search", {"products": [asdict(p) for p in products]}
-        )
+        return self._ok("menu_search", {"products": [asdict(p) for p in products]})
 
 
 @ToolRegistry.register("menu_item")
@@ -175,9 +175,7 @@ class MenuItemTool(_MerchantTool):
         branch = str(params.get("branch", "")).strip()
         if not branch:
             return self._fail("menu_item", "branch_required")
-        product = self._merchant.get_product(
-            str(params.get("product", "")), branch
-        )
+        product = self._merchant.get_product(str(params.get("product", "")), branch)
         if product is None:
             return self._fail("menu_item", "unknown_product")
         return self._ok("menu_item", asdict(product))
@@ -346,6 +344,10 @@ class OrderPlaceTool(_MerchantTool):
                         "type": "string",
                         "description": "Branch slug from branch_list.",
                     },
+                    "approval_id": {
+                        "type": "string",
+                        "description": "Approval id returned by a pending order_place.",
+                    },
                 },
                 "required": ["type", "branch"],
             },
@@ -370,7 +372,22 @@ class OrderPlaceTool(_MerchantTool):
         if not self._merchant.read_cart().lines:
             return self._fail("order_place", "cart_empty")
         try:
-            order_id = self._merchant.place_order(order_type, branch)
+            order_id = self._merchant.place_order(
+                order_type, branch, str(params.get("approval_id", "")).strip()
+            )
+        except OrderApprovalRequired as exc:
+            return ToolResult(
+                tool_name="order_place",
+                success=False,
+                content=json.dumps({"error": "approval_required"}),
+                metadata={
+                    "pending_approval": True,
+                    "approval_id": exc.approval_id,
+                    "request_hash": exc.request_hash,
+                },
+            )
+        except OrderApprovalRejected as exc:
+            return self._fail("order_place", exc.code)
         except ValueError:
             return self._fail("order_place", "unknown_branch")
         return self._ok("order_place", {"placed": True, "order_id": order_id})

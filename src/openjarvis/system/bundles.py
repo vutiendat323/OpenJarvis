@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from openjarvis.agents.executor import AgentExecutor
     from openjarvis.agents.manager import AgentManager
     from openjarvis.agents.scheduler import AgentScheduler
+    from openjarvis.data_plane.approval import ExecutionApprovalGate
     from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
     from openjarvis.data_plane.discovery import DiscoveryEngine
     from openjarvis.data_plane.execution import DirectExecutionEngine
@@ -71,6 +72,7 @@ class DataPlaneRuntime:
     snapshots: StructuredSnapshotStore
     discovery: DiscoveryEngine
     direct: DirectExecutionEngine
+    approval_gate: ExecutionApprovalGate | None = None
     _closed: bool = field(default=False, init=False, repr=False)
 
     def close(self) -> None:
@@ -82,9 +84,12 @@ class DataPlaneRuntime:
         for owner in (
             self.discovery,
             self.direct,
+            self.approval_gate,
             self.snapshots,
             self.capabilities,
         ):
+            if owner is None:
+                continue
             try:
                 owner.close()
             except Exception as exc:

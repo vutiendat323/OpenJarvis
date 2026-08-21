@@ -190,8 +190,20 @@ class TrendCoffeeAdapter:
             items = result if isinstance(result, list) else []
         elif resource_type == "menu_item":
             items = result.get("items", []) if isinstance(result, dict) else []
-        elif resource_type in {"order", "payment"}:
+        elif resource_type == "order":
             items = [result] if isinstance(result, dict) else []
+        elif resource_type == "payment":
+            if not isinstance(result, dict) or not all(
+                _non_empty_string(result.get(field))
+                for field in ("qrCode", "slug", "status", "order")
+            ):
+                raise ValueError("Trend Coffee payment payload is invalid")
+            items = [
+                {
+                    field: result[field]
+                    for field in ("qrCode", "slug", "status", "order")
+                }
+            ]
         else:
             raise ValueError(f"Unsupported Trend Coffee resource type: {resource_type}")
         if not all(

@@ -6,10 +6,22 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from openjarvis.data_plane.approval import ExecutionApprovalGate
 from openjarvis.data_plane.errors import DataPlaneError, DataPlaneErrorCode
 from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
-from openjarvis.data_plane.types import NormalizedBatch, ResourceRecord
+from openjarvis.data_plane.types import (
+    ExecutionReceipt,
+    NormalizedBatch,
+    OperationContract,
+    ReceiptStatus,
+    ResourceRecord,
+    SourceCapability,
+    TransportKind,
+    TrustState,
+)
+from openjarvis.merchants.port import OrderApprovalRequired
 from openjarvis.system.bundles import DataPlaneRuntime
+from openjarvis.tools.approval_store import STATUS_APPROVED, ApprovalStore
 
 
 def _runtime(tmp_path) -> DataPlaneRuntime:
@@ -184,6 +196,62 @@ def test_place_order_preserves_an_empty_free_text_note(runtime):
     assert raised.value.code is DataPlaneErrorCode.CAPABILITY_QUARANTINED
     assert runtime.direct.execute.call_count == 0
     assert merchant.read_cart().lines[0].note == ""
+
+
+def test_approved_order_executes_once_and_only_then_clears_cart(runtime, tmp_path):
+    from openjarvis.merchants.trendcoffee import TrendCoffeeMerchant
+
+    operation = OperationContract(
+        "order.place",
+        "POST",
+        "/orders/public",
+        "order",
+        TrustState.WRITE_VALIDATED,
+        False,
+    )
+    capability = SourceCapability(
+        source_id="trend-coffee",
+        provider="trendcoffee",
+        origin="https://trendcoffee.net",
+        base_url="https://trendcoffee.net/api/latest",
+        auth_mode="none",
+        credential_ref="",
+        transport=TransportKind.REST,
+        operations={"order.place": operation},
+        fingerprint="sha256:" + "a" * 64,
+        schema_hash="sha256:" + "b" * 64,
+        evidence=(),
+        validated_at="2026-08-20T00:00:00+00:00",
+        expires_at="2099-01-01T00:00:00+00:00",
+        revision=2,
+    )
+    runtime.capabilities.get.return_value = capability
+    approval_store = ApprovalStore(str(tmp_path / "order-approvals.db"))
+    runtime.approval_gate = ExecutionApprovalGate(approval_store, owns_store=True)
+    runtime.direct.execute.return_value = ExecutionReceipt(
+        receipt_id="receipt-1",
+        source_id="trend-coffee",
+        operation="order.place",
+        capability_revision=2,
+        request_hash="request-hash",
+        status=ReceiptStatus.SUCCEEDED,
+        provider_ref="order-1",
+        created_at="2026-08-20T00:00:00+00:00",
+    )
+    merchant = TrendCoffeeMerchant(runtime)
+    merchant.add_to_cart("d5de540d4c", 2, "ít đá")
+
+    with pytest.raises(OrderApprovalRequired) as raised:
+        merchant.place_order("take-out", "ba9355f797")
+    approval_store.update_status(raised.value.approval_id, STATUS_APPROVED)
+    order_id = merchant.place_order("take-out", "ba9355f797", raised.value.approval_id)
+
+    assert order_id == "order-1"
+    assert runtime.direct.execute.call_count == 1
+    assert runtime.direct.execute.call_args.kwargs["grant"].request_hash == (
+        raised.value.request_hash
+    )
+    assert merchant.read_cart().lines == ()
 
 
 @pytest.mark.parametrize(

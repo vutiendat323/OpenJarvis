@@ -24,6 +24,10 @@ from openjarvis.data_plane.adapters.generic import (
     is_graphql_declaration,
     is_openapi_declaration,
 )
+from openjarvis.data_plane.approval import (
+    parse_trusted_write_operations,
+    promote_trusted_writes,
+)
 from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
 from openjarvis.data_plane.discovery_http import DiscoveryHttpClient
 from openjarvis.data_plane.errors import DataPlaneError, DataPlaneErrorCode
@@ -83,12 +87,16 @@ class DiscoveryEngine:
         browser_observer: BrowserObservationPort | None = None,
         event_bus: EventBus | None = None,
         clock: Callable[[], float] = time.monotonic,
+        trusted_write_operations: str = "",
     ) -> None:
         self._store = capability_store
         self.http = http_client or DiscoveryHttpClient()
         self._browser_observer = browser_observer
         self._event_bus = event_bus
         self._clock = clock
+        self._trusted_write_operations = parse_trusted_write_operations(
+            trusted_write_operations
+        )
         self._closed = False
 
     @property
@@ -109,6 +117,7 @@ class DiscoveryEngine:
                 DataPlaneErrorCode.CAPABILITY_MISSING,
                 f"No capability exists for source {source_id!r}",
             )
+        prior = self._reconcile_write_trust(prior)
         return self._discover(
             SourceRef(prior.origin),
             DiscoveryConstraints(),
@@ -119,6 +128,20 @@ class DiscoveryEngine:
 
     def get_capability(self, source_id: str) -> SourceCapability | None:
         return self._store.get(source_id)
+
+    def _reconcile_write_trust(self, capability: SourceCapability) -> SourceCapability:
+        evaluated = promote_trusted_writes(capability, self._trusted_write_operations)
+        current = {
+            name: operation.trust for name, operation in capability.operations.items()
+        }
+        desired = {
+            name: operation.trust for name, operation in evaluated.operations.items()
+        }
+        if current == desired:
+            return capability
+        persisted = replace(evaluated, revision=capability.revision + 1)
+        self._store.save(persisted)
+        return persisted
 
     def close(self) -> None:
         """Release the owned discovery HTTP client exactly once."""
@@ -675,15 +698,27 @@ class DiscoveryEngine:
     ) -> DiscoveryResult:
         if prior is not None and (
             capability.origin != prior.origin
+            or capability.fingerprint != prior.fingerprint
             or capability.schema_hash != prior.schema_hash
         ):
             return self._mismatch_result(prior, evidence, started_at)
 
+        promoted = promote_trusted_writes(capability, self._trusted_write_operations)
         if prior is None or prior.provider == "generic":
-            self._store.save(capability)
-            persisted = capability
+            self._store.save(promoted)
+            persisted = promoted
         else:
-            persisted = prior
+            prior_trust = {
+                name: operation.trust for name, operation in prior.operations.items()
+            }
+            promoted_trust = {
+                name: operation.trust for name, operation in promoted.operations.items()
+            }
+            if prior_trust != promoted_trust:
+                persisted = replace(promoted, revision=prior.revision + 1)
+                self._store.save(persisted)
+            else:
+                persisted = prior
         self._publish(
             EventType.SOURCE_CAPABILITY_VALIDATED,
             {

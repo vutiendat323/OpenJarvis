@@ -7,14 +7,17 @@ import threading
 from typing import TYPE_CHECKING
 
 from openjarvis.data_plane.adapters.trendcoffee import TrendCoffeeAdapter
+from openjarvis.data_plane.approval import ApprovalError, execution_request_hash
 from openjarvis.data_plane.errors import DataPlaneError, DataPlaneErrorCode
-from openjarvis.data_plane.types import StructuredQuery
+from openjarvis.data_plane.types import ReceiptStatus, StructuredQuery, TrustState
 from openjarvis.merchants.port import (
     ORDER_TYPES,
     Branch,
     Cart,
     CartLine,
     Order,
+    OrderApprovalRejected,
+    OrderApprovalRequired,
     Product,
     Variant,
 )
@@ -109,7 +112,9 @@ class TrendCoffeeMerchant:
             lines = tuple(self._lines.values())
             return Cart(lines=lines, total=sum(line.line_total for line in lines))
 
-    def place_order(self, order_type: str, branch_slug: str) -> str:
+    def place_order(
+        self, order_type: str, branch_slug: str, approval_id: str = ""
+    ) -> str:
         with self._lock:
             if order_type not in ORDER_TYPES:
                 raise ValueError("invalid_order_type")
@@ -119,25 +124,62 @@ class TrendCoffeeMerchant:
             if not cart.lines:
                 raise ValueError("cart_empty")
             lines = self._validated_order_lines(cart.lines, branch_slug)
-            TrendCoffeeAdapter().build_request(
+            arguments = {
+                "order_type": order_type,
+                "branch_slug": branch_slug,
+                "items": [
+                    {
+                        "quantity": line.quantity,
+                        "variant_slug": line.variant_slug,
+                        "note": line.note,
+                    }
+                    for line in lines
+                ],
+            }
+            TrendCoffeeAdapter().build_request("order.place", arguments)
+            capability = self._runtime.capabilities.get(self._source_id)
+            operation = capability.operations.get("order.place") if capability else None
+            gate = self._runtime.approval_gate
+            if (
+                capability is None
+                or operation is None
+                or gate is None
+                or operation.trust is not TrustState.WRITE_VALIDATED
+            ):
+                raise DataPlaneError(
+                    DataPlaneErrorCode.CAPABILITY_QUARANTINED,
+                    "Trend Coffee order capability is not write validated",
+                )
+            request_hash = execution_request_hash(
+                self._source_id,
                 "order.place",
-                {
-                    "order_type": order_type,
-                    "branch_slug": branch_slug,
-                    "items": [
-                        {
-                            "quantity": line.quantity,
-                            "variant_slug": line.variant_slug,
-                            "note": line.note,
-                        }
-                        for line in lines
-                    ],
-                },
+                arguments,
+                capability.revision,
             )
-            raise DataPlaneError(
-                DataPlaneErrorCode.CAPABILITY_QUARANTINED,
-                "Trend Coffee orders require Task 9 approval before execution",
+            if not approval_id:
+                pending = gate.prepare(
+                    self._source_id,
+                    "order.place",
+                    arguments,
+                    capability.revision,
+                )
+                raise OrderApprovalRequired(pending.id, request_hash)
+            try:
+                grant = gate.authorize(approval_id, request_hash)
+            except ApprovalError as exc:
+                raise OrderApprovalRejected(exc.code) from exc
+            receipt = self._runtime.direct.execute(
+                self._source_id, "order.place", arguments, grant=grant
             )
+            if (
+                receipt.status is not ReceiptStatus.SUCCEEDED
+                or not receipt.provider_ref
+            ):
+                raise OrderApprovalRejected(
+                    receipt.error_code or "order_execution_failed"
+                )
+            self._lines.clear()
+            return receipt.provider_ref
 
     def read_order(self, order_id: str) -> Order | None:
         for record in self._records("order"):

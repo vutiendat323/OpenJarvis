@@ -1217,6 +1217,18 @@ def test_refresh_demotes_changed_schema_before_returning_prior_capability(
     assert capability_store.get("example.test") == refreshed.capability
 
 
+def _assert_prior_reads_preserved_and_unconfigured_write_demoted(
+    capability_store, prior, result
+):
+    assert result.capability is not None
+    assert result.capability.revision == prior.revision + 1
+    assert result.capability.operations["order.place"].trust is (TrustState.QUARANTINED)
+    for name, operation in prior.operations.items():
+        if operation.safe:
+            assert result.capability.operations[name].trust is operation.trust
+    assert capability_store.get(prior.source_id) == result.capability
+
+
 @pytest.mark.parametrize(
     "error_code",
     [
@@ -1226,7 +1238,7 @@ def test_refresh_demotes_changed_schema_before_returning_prior_capability(
         DataPlaneErrorCode.RATE_LIMITED,
     ],
 )
-def test_refresh_transient_failure_preserves_prior_trust_and_error_code(
+def test_refresh_transient_failure_preserves_prior_reads_and_error_code(
     capability_store,
     error_code,
 ):
@@ -1240,10 +1252,8 @@ def test_refresh_transient_failure_preserves_prior_trust_and_error_code(
 
     assert result.error_code == error_code.value
     assert result.state is TrustState.READ_VALIDATED
-    assert result.capability == prior
-    assert capability_store.get("example.test") == prior
-    assert result.capability.operations["order.place"].trust is (
-        TrustState.WRITE_VALIDATED
+    _assert_prior_reads_preserved_and_unconfigured_write_demoted(
+        capability_store, prior, result
     )
 
 
@@ -1254,7 +1264,7 @@ def test_refresh_transient_failure_preserves_prior_trust_and_error_code(
         (503, DataPlaneErrorCode.PROVIDER_UNAVAILABLE),
     ],
 )
-def test_refresh_rate_limit_or_unavailable_response_preserves_prior_trust(
+def test_refresh_rate_limit_or_unavailable_response_preserves_prior_reads(
     capability_store,
     status_code,
     expected_error,
@@ -1266,8 +1276,9 @@ def test_refresh_rate_limit_or_unavailable_response_preserves_prior_trust(
     result = DiscoveryEngine(capability_store, http_client=http).refresh("example.test")
 
     assert result.error_code == expected_error.value
-    assert result.capability == prior
-    assert capability_store.get("example.test") == prior
+    _assert_prior_reads_preserved_and_unconfigured_write_demoted(
+        capability_store, prior, result
+    )
 
 
 @pytest.mark.parametrize(
@@ -1277,7 +1288,7 @@ def test_refresh_rate_limit_or_unavailable_response_preserves_prior_trust(
         (503, DataPlaneErrorCode.PROVIDER_UNAVAILABLE),
     ],
 )
-def test_refresh_validation_response_preserves_prior_and_reports_transient_error(
+def test_refresh_validation_response_preserves_reads_and_reports_transient_error(
     capability_store,
     status_code,
     expected_error,
@@ -1309,10 +1320,8 @@ def test_refresh_validation_response_preserves_prior_and_reports_transient_error
     result = DiscoveryEngine(capability_store, http_client=http).refresh("example.test")
 
     assert result.error_code == expected_error.value
-    assert result.capability == prior
-    assert capability_store.get("example.test") == prior
-    assert result.capability.operations["order.place"].trust is (
-        TrustState.WRITE_VALIDATED
+    _assert_prior_reads_preserved_and_unconfigured_write_demoted(
+        capability_store, prior, result
     )
     assert any(urlsplit(call.url).path == "/products" for call in http.calls)
 
@@ -1325,7 +1334,7 @@ def test_refresh_validation_response_preserves_prior_and_reports_transient_error
         DataPlaneErrorCode.DISCOVERY_BUDGET_EXCEEDED,
     ],
 )
-def test_refresh_validation_transport_error_preserves_prior_and_error_code(
+def test_refresh_validation_transport_error_preserves_reads_and_error_code(
     capability_store,
     error_code,
 ):
@@ -1356,10 +1365,8 @@ def test_refresh_validation_transport_error_preserves_prior_and_error_code(
     result = DiscoveryEngine(capability_store, http_client=http).refresh("example.test")
 
     assert result.error_code == error_code.value
-    assert result.capability == prior
-    assert capability_store.get("example.test") == prior
-    assert result.capability.operations["order.place"].trust is (
-        TrustState.WRITE_VALIDATED
+    _assert_prior_reads_preserved_and_unconfigured_write_demoted(
+        capability_store, prior, result
     )
     assert any(urlsplit(call.url).path == "/products" for call in http.calls)
 

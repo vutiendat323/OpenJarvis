@@ -77,6 +77,23 @@ class Order:
     status: str
 
 
+class OrderApprovalRequired(Exception):
+    """The exact prepared order must be approved before placement."""
+
+    def __init__(self, approval_id: str, request_hash: str) -> None:
+        super().__init__("order_approval_required")
+        self.approval_id = approval_id
+        self.request_hash = request_hash
+
+
+class OrderApprovalRejected(Exception):
+    """An existing order approval could not authorize this exact request."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 class MerchantPort(Protocol):
     """The whole merchant surface. Nothing else may be called from a tool."""
 
@@ -84,9 +101,7 @@ class MerchantPort(Protocol):
 
     def search_menu(self, query: str, branch_slug: str) -> List[Product]: ...
 
-    def get_product(
-        self, product_slug: str, branch_slug: str
-    ) -> Optional[Product]: ...
+    def get_product(self, product_slug: str, branch_slug: str) -> Optional[Product]: ...
 
     def add_to_cart(self, variant_slug: str, quantity: int, note: str) -> str: ...
 
@@ -94,7 +109,9 @@ class MerchantPort(Protocol):
 
     def read_cart(self) -> Cart: ...
 
-    def place_order(self, order_type: str, branch_slug: str) -> str: ...
+    def place_order(
+        self, order_type: str, branch_slug: str, approval_id: str = ""
+    ) -> str: ...
 
     def read_order(self, order_id: str) -> Optional[Order]: ...
 
@@ -106,6 +123,8 @@ __all__ = [
     "CartLine",
     "MerchantPort",
     "Order",
+    "OrderApprovalRejected",
+    "OrderApprovalRequired",
     "Product",
     "Variant",
 ]

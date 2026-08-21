@@ -40,22 +40,22 @@ def _product(slug, name, category, available, sizes) -> Product:
 
 
 _CATALOGUE: Tuple[Product, ...] = (
-    _product("ca-phe-den", "Cà phê đen", "coffee", True,
-             [("std", "tiêu chuẩn", 35_000)]),
-    _product("ca-phe-sua", "Cà phê sữa", "coffee", True,
-             [("std", "tiêu chuẩn", 39_000)]),
-    _product("americano", "Americano", "coffee", True,
-             [("std", "tiêu chuẩn", 50_000)]),
-    _product("espresso", "Espresso", "coffee", True,
-             [("std", "tiêu chuẩn", 45_000)]),
-    _product("latte", "Latte", "coffee", True,
-             [("m", "vừa", 55_000), ("l", "lớn", 61_000)]),
-    _product("tra-dao", "Trà đào", "tea", True,
-             [("m", "vừa", 45_000), ("l", "lớn", 52_000)]),
-    _product("banh-mi", "Bánh mì", "food", True,
-             [("std", "tiêu chuẩn", 35_000)]),
-    _product("tiramisu", "Tiramisu", "food", False,
-             [("std", "tiêu chuẩn", 64_000)]),
+    _product(
+        "ca-phe-den", "Cà phê đen", "coffee", True, [("std", "tiêu chuẩn", 35_000)]
+    ),
+    _product(
+        "ca-phe-sua", "Cà phê sữa", "coffee", True, [("std", "tiêu chuẩn", 39_000)]
+    ),
+    _product("americano", "Americano", "coffee", True, [("std", "tiêu chuẩn", 50_000)]),
+    _product("espresso", "Espresso", "coffee", True, [("std", "tiêu chuẩn", 45_000)]),
+    _product(
+        "latte", "Latte", "coffee", True, [("m", "vừa", 55_000), ("l", "lớn", 61_000)]
+    ),
+    _product(
+        "tra-dao", "Trà đào", "tea", True, [("m", "vừa", 45_000), ("l", "lớn", 52_000)]
+    ),
+    _product("banh-mi", "Bánh mì", "food", True, [("std", "tiêu chuẩn", 35_000)]),
+    _product("tiramisu", "Tiramisu", "food", False, [("std", "tiêu chuẩn", 64_000)]),
 )
 
 # Menus are per branch, as they are on a real chain. The second branch carries
@@ -112,9 +112,7 @@ class FakeMerchant:
             if needle in product.name.lower() or needle in product.category
         ]
 
-    def get_product(
-        self, product_slug: str, branch_slug: str
-    ) -> Optional[Product]:
+    def get_product(self, product_slug: str, branch_slug: str) -> Optional[Product]:
         if product_slug not in _MENUS.get(branch_slug, ()):
             return None
         return self._products.get(product_slug)
@@ -154,7 +152,9 @@ class FakeMerchant:
     def remove_from_cart(self, line_id: str) -> bool:
         return self._lines.pop(line_id, None) is not None
 
-    def place_order(self, order_type: str, branch_slug: str) -> str:
+    def place_order(
+        self, order_type: str, branch_slug: str, approval_id: str = ""
+    ) -> str:
         if order_type not in ORDER_TYPES:
             raise ValueError(order_type)
         if branch_slug not in _MENUS:

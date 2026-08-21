@@ -635,11 +635,13 @@ class SystemBuilder:
 
         from openjarvis.core.registry import SourceAdapterRegistry
         from openjarvis.data_plane.adapters import generic, trendcoffee
+        from openjarvis.data_plane.approval import ExecutionApprovalGate
         from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
         from openjarvis.data_plane.discovery import DiscoveryEngine
         from openjarvis.data_plane.execution import DirectExecutionEngine
         from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
         from openjarvis.system.bundles import DataPlaneRuntime
+        from openjarvis.tools.approval_store import ApprovalStore
 
         for key, module in (("generic", generic), ("trendcoffee", trendcoffee)):
             if not SourceAdapterRegistry.contains(key):
@@ -658,18 +660,31 @@ class SystemBuilder:
         snapshots = None
         discovery = None
         direct = None
+        approval_gate = None
         try:
             capabilities = SQLiteCapabilityStore(db_path)
             snapshots = StructuredSnapshotStore(db_path)
-            discovery = DiscoveryEngine(capabilities, event_bus=bus)
+            discovery = DiscoveryEngine(
+                capabilities,
+                event_bus=bus,
+                trusted_write_operations=config.data_plane.trusted_write_operations,
+            )
             direct = DirectExecutionEngine(capabilities, snapshots, bus=bus)
-            runtime = DataPlaneRuntime(capabilities, snapshots, discovery, direct)
+            approval_gate = ExecutionApprovalGate(ApprovalStore(), owns_store=True)
+            runtime = DataPlaneRuntime(
+                capabilities,
+                snapshots,
+                discovery,
+                direct,
+                approval_gate,
+            )
         except Exception:
             self._close_partial_data_plane_owners(
                 capabilities,
                 snapshots,
                 discovery,
                 direct,
+                approval_gate,
             )
             raise
         self._unowned_data_plane = runtime
