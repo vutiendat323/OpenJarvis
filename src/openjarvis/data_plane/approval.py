@@ -20,6 +20,39 @@ from openjarvis.tools.approval_store import (
 
 _IDENTIFIER = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _FINGERPRINT = re.compile(r"^sha256:[0-9a-f]{64}$")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+# The operator must see what they are authorizing, so the preview carries the
+# actual argument values -- bounded so a hostile provider argument cannot bloat
+# the persisted payload, and stripped of control characters so it cannot forge
+# structure in whatever surface renders it.
+_PREVIEW_MAX_TEXT = 120
+_PREVIEW_MAX_ITEMS = 20
+_PREVIEW_MAX_DEPTH = 3
+
+
+def _preview_text(value: str) -> str:
+    text = _CONTROL.sub(" ", value)
+    return text if len(text) <= _PREVIEW_MAX_TEXT else text[:_PREVIEW_MAX_TEXT] + "..."
+
+
+def _preview_value(value: object, depth: int = 0) -> object:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _preview_text(value)
+    if depth >= _PREVIEW_MAX_DEPTH:
+        return "<nested>"
+    if isinstance(value, dict):
+        return {
+            _preview_text(str(key)): _preview_value(item, depth + 1)
+            for key, item in list(value.items())[:_PREVIEW_MAX_ITEMS]
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _preview_value(item, depth + 1) for item in list(value)[:_PREVIEW_MAX_ITEMS]
+        ]
+    return "<omitted>"
 
 
 class ApprovalError(Exception):
@@ -205,7 +238,7 @@ class ExecutionApprovalGate:
             payload={
                 "source_id": source_id,
                 "operation": operation,
-                "preview": {"argument_keys": sorted(arguments)},
+                "preview": _preview_value(dict(sorted(arguments.items()))),
                 "capability_revision": capability_revision,
                 "request_hash": request_hash,
             },

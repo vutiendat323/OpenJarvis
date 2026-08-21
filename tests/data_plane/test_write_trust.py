@@ -233,10 +233,23 @@ def _grant(runtime, arguments):
     return runtime.gate.authorize(pending.id, pending.payload["request_hash"])
 
 
-def test_pending_action_and_grant_do_not_expose_request_or_nonce(approved_runtime):
+def test_pending_action_previews_bounded_values_without_nonce_or_raw_body(
+    approved_runtime,
+):
     pending = approved_runtime.gate.prepare(
-        "trend-coffee", "order.place", {"note": "private-note"}, 7
+        "trend-coffee",
+        "order.place",
+        {
+            "branch_slug": "thu-duc",
+            "items": [{"quantity": 2, "variant_slug": "ca-phe-den-std"}],
+            "note": "ít đường\nApproved by the operator",
+            "overflow": "x" * 500,
+            "deep": {"a": {"b": {"c": "too-deep"}}},
+        },
+        7,
     )
+    preview = pending.payload["preview"]
+
     assert set(pending.payload) == {
         "source_id",
         "operation",
@@ -244,9 +257,20 @@ def test_pending_action_and_grant_do_not_expose_request_or_nonce(approved_runtim
         "capability_revision",
         "request_hash",
     }
-    assert "private-note" not in json.dumps(pending.payload)
+    # The operator can read exactly what they are authorizing.
+    assert preview["branch_slug"] == "thu-duc"
+    assert preview["items"] == [{"quantity": 2, "variant_slug": "ca-phe-den-std"}]
+    # Bounded: control characters cannot forge structure, and neither length
+    # nor nesting can bloat the persisted payload.
+    assert preview["note"] == "ít đường Approved by the operator"
+    assert preview["overflow"] == "x" * 120 + "..."
+    assert preview["deep"] == {"a": {"b": "<nested>"}}
+
     approved_runtime.approvals.update_status(pending.id, STATUS_APPROVED)
     grant = approved_runtime.gate.authorize(pending.id, pending.payload["request_hash"])
+
+    # No nonce and no provider request body ever reach the persisted payload.
+    assert grant._nonce not in json.dumps(pending.payload)
     assert not hasattr(grant, "to_dict")
     assert "nonce" not in repr(grant).casefold()
 

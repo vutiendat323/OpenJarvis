@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from openjarvis.tools.approval_store import (
     STATUS_APPROVED,
+    STATUS_DENIED,
     STATUS_EXECUTED,
     STATUS_EXECUTING,
     TIER_HIGH,
@@ -85,4 +86,16 @@ def test_terminal_execution_cannot_be_reapproved_for_replay(tmp_path):
 
     assert changed is False
     assert store.get_action(action.id).status == STATUS_EXECUTED
+    store.close()
+
+
+def test_a_denied_action_can_still_be_re_approved(tmp_path):
+    """Only claimed and finished executions are terminal.  Every pre-existing
+    proactive decision flow keeps flipping a decision as it always could."""
+    store = ApprovalStore(str(tmp_path / "approvals.db"))
+    action = _approved_action(store)
+    assert store.update_status(action.id, STATUS_DENIED)
+
+    assert store.update_status(action.id, STATUS_APPROVED)
+    assert store.get_action(action.id).status == STATUS_APPROVED
     store.close()

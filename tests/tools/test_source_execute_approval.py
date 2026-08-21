@@ -7,13 +7,14 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from openjarvis.data_plane.approval import ExecutionApprovalGate
+from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
 from openjarvis.data_plane.types import (
     ExecutionReceipt,
+    NormalizedBatch,
     OperationContract,
     ReceiptStatus,
     ResourceRecord,
     SourceCapability,
-    StructuredResult,
     TransportKind,
     TrustState,
 )
@@ -74,31 +75,39 @@ class _Direct:
         )
 
 
-def _tool(tmp_path, *, order_items=()):
+def _tool(tmp_path, *, verified_orders=()):
+    """Wire the tool over a real snapshot store, so the payment precondition is
+    exercised against the same query semantics production uses."""
     store = ApprovalStore(str(tmp_path / "approvals.db"))
     gate = ExecutionApprovalGate(store)
     direct = _Direct()
     capability = _capability()
+    snapshots = StructuredSnapshotStore(tmp_path / "structured.db")
+    if verified_orders:
+        snapshots.upsert(
+            NormalizedBatch(
+                source_id="trend-coffee",
+                resource_type="order",
+                records=tuple(
+                    ResourceRecord(slug, {"slug": slug, "status": "confirmed"})
+                    for slug in verified_orders
+                ),
+                synced_at="2026-08-20T00:00:00+00:00",
+            )
+        )
     runtime = SimpleNamespace(
         discovery=SimpleNamespace(get_capability=lambda source_id: capability),
         direct=direct,
         approval_gate=gate,
-        snapshots=SimpleNamespace(
-            query=lambda query: StructuredResult(
-                items=tuple(order_items),
-                version=1 if order_items else 0,
-                synced_at="",
-                stale=False,
-            )
-        ),
+        snapshots=snapshots,
     )
     tool = SourceExecuteTool()
     tool._runtime = runtime
-    return tool, store, direct
+    return tool, store, direct, snapshots
 
 
 def test_source_execute_queues_then_consumes_exact_approval(tmp_path):
-    tool, store, direct = _tool(tmp_path)
+    tool, store, direct, snapshots = _tool(tmp_path)
     arguments = {"order_type": "take-out", "branch_slug": "b1", "items": []}
 
     pending = tool.execute(
@@ -119,10 +128,11 @@ def test_source_execute_queues_then_consumes_exact_approval(tmp_path):
     assert json.loads(done.content)["receipt"]["receipt_id"] == "receipt-1"
     assert len(direct.calls) == 1
     store.close()
+    snapshots.close()
 
 
 def test_changed_argument_rejects_approval_without_direct_execution(tmp_path):
-    tool, store, direct = _tool(tmp_path)
+    tool, store, direct, snapshots = _tool(tmp_path)
     original = {"order_type": "take-out", "branch_slug": "b1", "items": []}
     pending = tool.execute(
         source_id="trend-coffee", operation="order.place", arguments=original
@@ -144,10 +154,11 @@ def test_changed_argument_rejects_approval_without_direct_execution(tmp_path):
     assert direct.calls == []
     assert store.get_action(approval_id).status == STATUS_APPROVED
     store.close()
+    snapshots.close()
 
 
 def test_payment_requires_verified_order_before_approval_is_prepared(tmp_path):
-    tool, store, direct = _tool(tmp_path)
+    tool, store, direct, snapshots = _tool(tmp_path)
 
     rejected = tool.execute(
         source_id="trend-coffee",
@@ -160,13 +171,28 @@ def test_payment_requires_verified_order_before_approval_is_prepared(tmp_path):
     assert store.list_pending() == []
     assert direct.calls == []
     store.close()
+    snapshots.close()
+
+
+def test_payment_for_another_order_than_the_verified_one_is_rejected(tmp_path):
+    tool, store, direct, snapshots = _tool(tmp_path, verified_orders=("order-1",))
+
+    rejected = tool.execute(
+        source_id="trend-coffee",
+        operation="payment.initiate",
+        arguments={"order": "order-2", "paymentMethod": "bank-transfer"},
+    )
+
+    assert rejected.success is False
+    assert json.loads(rejected.content) == {"error_code": "order_not_verified"}
+    assert store.list_pending() == []
+    assert direct.calls == []
+    store.close()
+    snapshots.close()
 
 
 def test_verified_order_payment_still_requires_its_own_exact_approval(tmp_path):
-    tool, store, direct = _tool(
-        tmp_path,
-        order_items=(ResourceRecord("order-1", {"slug": "order-1"}),),
-    )
+    tool, store, direct, snapshots = _tool(tmp_path, verified_orders=("order-1",))
     arguments = {"order": "order-1", "paymentMethod": "bank-transfer"}
 
     pending = tool.execute(
@@ -186,13 +212,11 @@ def test_verified_order_payment_still_requires_its_own_exact_approval(tmp_path):
     assert done.success is True
     assert len(direct.calls) == 1
     store.close()
+    snapshots.close()
 
 
 def test_payment_rejects_non_allowlisted_shape_before_approval(tmp_path):
-    tool, store, direct = _tool(
-        tmp_path,
-        order_items=(ResourceRecord("order-1", {"slug": "order-1"}),),
-    )
+    tool, store, direct, snapshots = _tool(tmp_path, verified_orders=("order-1",))
 
     rejected = tool.execute(
         source_id="trend-coffee",
@@ -209,3 +233,4 @@ def test_payment_rejects_non_allowlisted_shape_before_approval(tmp_path):
     assert store.list_pending() == []
     assert direct.calls == []
     store.close()
+    snapshots.close()

@@ -379,18 +379,15 @@ class ApprovalStore:
             if row is None:
                 return False
             current = str(row[0])
-            allowed = (
-                status == current
-                or (
-                    current == STATUS_PENDING
-                    and status in {STATUS_APPROVED, STATUS_DENIED}
-                )
-                or (
-                    current == STATUS_APPROVED
-                    and status in {STATUS_DENIED, STATUS_EXECUTED}
-                )
-            )
-            if not allowed:
+            # An execution approval that has been claimed or finished is
+            # terminal: only claim_execution/finish_execution may move it, so a
+            # replay cannot re-approve it. Every pre-existing decision flow is
+            # untouched.
+            if current != status and current in {
+                STATUS_EXECUTING,
+                STATUS_EXECUTED,
+                STATUS_UNKNOWN,
+            }:
                 return False
             if notification_sent is not None:
                 changed = self._conn.execute(
