@@ -172,9 +172,17 @@ class DiscoveryHttpClient:
                         DataPlaneErrorCode.DISCOVERY_BUDGET_EXCEEDED,
                         "Discovery deadline exceeded while streaming response",
                     )
+                # iter_bytes() already decodes any Content-Encoding, so the
+                # headers describing the encoded form no longer apply to
+                # `body` and must be dropped or httpx double-decodes it.
+                headers = [
+                    (name, value)
+                    for name, value in streamed.headers.raw
+                    if name.lower() not in (b"content-encoding", b"content-length")
+                ]
                 return httpx.Response(
                     status_code=streamed.status_code,
-                    headers=streamed.headers,
+                    headers=headers,
                     content=bytes(body),
                     request=streamed.request,
                     extensions=streamed.extensions,

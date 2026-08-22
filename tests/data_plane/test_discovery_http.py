@@ -1,5 +1,7 @@
+import gzip
 from unittest.mock import patch
 
+import brotli
 import httpx
 import pytest
 import respx
@@ -153,3 +155,34 @@ def test_retry_after_is_honored_within_the_discovery_deadline():
     assert response.status_code == 200
     assert sleeps == [0.5]
     assert route.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "encoding, compress",
+    [
+        ("br", brotli.compress),
+        ("gzip", gzip.compress),
+        (None, lambda data: data),
+    ],
+)
+def test_discovery_http_decodes_compressed_bodies(encoding, compress):
+    body = b"<html>real page body</html>" * 5
+    encoded = compress(body)
+    headers = {"content-length": str(len(encoded))}
+    if encoding is not None:
+        headers["content-encoding"] = encoding
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=encoded, headers=headers, request=request)
+
+    transport = httpx.MockTransport(handler)
+    client = DiscoveryHttpClient(
+        max_response_bytes=1024,
+        client=httpx.Client(transport=transport),
+    )
+
+    with patch("openjarvis.data_plane.discovery_http.check_ssrf", return_value=None):
+        response = client.fetch("https://example.test/compressed")
+
+    assert response.status_code == 200
+    assert response.content == body
