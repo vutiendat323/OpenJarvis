@@ -83,7 +83,15 @@ def test_a_prohibited_task_already_in_the_database_fails_at_execution(scheduler,
     with pytest.raises(ValueError, match="scheduler_tool_not_allowed"):
         scheduler._execute_task(ScheduledTask.from_dict(store.get_task("legacy-1")))
 
-    assert store.get_run_logs("legacy-1") == []
+    # Refusing is not enough: the row must stop coming due, or every poll cycle
+    # re-fires it forever. It is quarantined with a record of why.
+    quarantined = store.get_task("legacy-1")
+    assert quarantined["status"] == "failed"
+    assert quarantined["next_run"] is None
+    assert store.get_due_tasks("2099-01-01T00:00:00+00:00") == []
+    (run,) = store.get_run_logs("legacy-1")
+    assert run["success"] == 0
+    assert "scheduler_tool_not_allowed" in run["error"]
 
 
 def test_non_data_plane_scheduled_tools_are_unaffected(scheduler):

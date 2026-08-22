@@ -125,7 +125,6 @@ def run_read_only(config, source: str) -> dict[str, Any]:
     try:
         started = time.monotonic()
         cold = payload(call_tool(cold_system, "source_discover", source_ref=source))
-        cold_seconds = time.monotonic() - started
         discovery = cold.get("discovery", {})
         capability = discovery.get("capability")
         if (
@@ -138,6 +137,18 @@ def run_read_only(config, source: str) -> dict[str, Any]:
                 f"error_code={discovery.get('error_code')!r}"
             )
         source_id = str(capability["source_id"])
+        cold_browser_actions = int(discovery.get("browser_actions", 0))
+        # The engine already knows which reads need nothing but engine-supplied
+        # paging; that list is the scope of both syncs.
+        resources = cold_system.data_plane.direct.syncable_resources(source_id)
+        cold_synced = call_tool(
+            cold_system, "source_sync", source_id=source_id, resources=resources
+        )
+        # Timed after the sync, so `cold latency` and `warm latency` below are
+        # the same operation on either side of the restart.
+        cold_seconds = time.monotonic() - started
+        if not cold_synced.success:
+            raise HarnessError(f"cold sync failed: {payload(cold_synced)}")
         print(f"cold discovery: {source_id} rev {capability['revision']}")
         for stage, elapsed_ms in recorder.stage_timings:
             print(f"  stage {stage:<24} {elapsed_ms:8.1f} ms")
@@ -150,10 +161,12 @@ def run_read_only(config, source: str) -> dict[str, Any]:
     try:
         warm = payload(call_tool(warm_system, "source_discover", source_ref=source))
         cache_hit = bool(warm.get("discovery", {}).get("cache_hit"))
-        browser_actions = int(warm.get("discovery", {}).get("browser_actions", 0))
-        # The engine already knows which reads need nothing but engine-supplied
-        # paging; that list is the warm path's scope.
-        resources = warm_system.data_plane.direct.syncable_resources(source_id)
+        # Both passes, not just the warm one: the warm `source_discover` answers
+        # from the capability cache, where `browser_actions` is 0 by
+        # construction, so only the cold response can ever report a real one.
+        browser_actions = cold_browser_actions + int(
+            warm.get("discovery", {}).get("browser_actions", 0)
+        )
         started = time.monotonic()
         synced = call_tool(
             warm_system,
@@ -166,7 +179,7 @@ def run_read_only(config, source: str) -> dict[str, Any]:
             raise HarnessError(f"warm sync failed: {payload(synced)}")
         if browser_actions:
             raise HarnessError(
-                f"warm path performed {browser_actions} browser actions; "
+                f"discovery performed {browser_actions} browser actions; "
                 "discovery is HTTP-first only"
             )
         freshness = _snapshot_freshness(warm_system, source_id, resources)

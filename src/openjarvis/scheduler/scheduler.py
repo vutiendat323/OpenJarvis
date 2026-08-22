@@ -233,17 +233,41 @@ class TaskScheduler:
                     try:
                         self._execute_task(task)
                     except ValueError as exc:
-                        # A rejected task must not starve the rest of the batch.
+                        # Already quarantined by `_execute_task`; logged once,
+                        # and the rest of the batch still runs.
                         logger.error("Task %s rejected: %s", task.id, exc)
             except Exception:
                 logger.exception("Scheduler poll error")
             self._stop_event.wait(timeout=self._poll_interval)
 
+    def _quarantine_task(self, task: ScheduledTask, reason: str) -> None:
+        """Stop a rejected task coming due again, and record why it never ran."""
+        at = _now_iso()
+        with self._lock:
+            self._store.log_run(
+                task_id=task.id,
+                started_at=at,
+                finished_at=at,
+                success=False,
+                error=reason,
+            )
+            d = self._store.get_task(task.id)
+            if d is not None:
+                d["status"] = "failed"
+                d["next_run"] = None
+                self._store.update_task(d)
+
     def _execute_task(self, task: ScheduledTask) -> None:
         """Execute a single due task and log the result."""
         # Also validated here, not only in `create_task`: a prohibited task
-        # persisted before this guard existed must still never run.
-        validate_scheduled_tools(task.tools)
+        # persisted before this guard existed must still never run. Quarantine
+        # it on the way out, or `get_due_tasks` hands back the same row on every
+        # poll cycle forever.
+        try:
+            validate_scheduled_tools(task.tools)
+        except ValueError as exc:
+            self._quarantine_task(task, str(exc))
+            raise
         started_at = _now_iso()
 
         # Publish start event
