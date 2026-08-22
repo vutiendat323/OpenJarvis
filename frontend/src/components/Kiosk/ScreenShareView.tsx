@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react';
-import { Maximize2 } from 'lucide-react';
 import { useDraggableResizable } from '@/hooks/useDraggableResizable';
 
 export function ScreenShareView({
@@ -56,14 +55,11 @@ export function ScreenShareView({
         className="w-full h-full object-contain pointer-events-none"
       />
 
-      {/* Subtle bottom-right corner resize handle (Google AI Studio style) */}
+      {/* Invisible bottom-right corner resize handle */}
       <div
         {...resizeHandlers}
-        title="Resize"
-        className="absolute bottom-1.5 right-1.5 p-1 rounded-md bg-black/50 hover:bg-black/80 text-white/60 hover:text-white cursor-nwse-resize touch-none transition-colors"
-      >
-        <Maximize2 size={12} className="rotate-90" />
-      </div>
+        className="absolute bottom-0 right-0 w-7 h-7 cursor-nwse-resize touch-none z-10"
+      />
     </div>
   );
 }
