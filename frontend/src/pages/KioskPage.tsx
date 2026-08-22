@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { X } from 'lucide-react';
+import { X, ScreenShare, ScreenShareOff } from 'lucide-react';
 
 import { AudioVisualizer } from '@/components/Visualizer/AudioVisualizer';
 import { VisualizerControls } from '@/components/Visualizer/VisualizerControls';
 import { KioskOverlay } from '@/components/Kiosk/KioskOverlay';
+import { ScreenShareView } from '@/components/Kiosk/ScreenShareView';
 import { currentVoiceTurnRows } from '@/components/Chat/voiceTurnRows';
 import { useKioskState, type KioskState } from '@/hooks/useKioskState';
 import { usePipecatVoiceMode } from '@/hooks/usePipecatVoiceMode';
+import { useScreenShare } from '@/hooks/useScreenShare';
 import { useUiLanguage } from '@/hooks/useUiLanguage';
 import { shouldShimmerVoiceStatus, voiceStatusLabel } from '@/hooks/voiceUiText';
 import { useAppStore } from '@/lib/store';
@@ -52,6 +54,7 @@ export function KioskPage() {
     },
   });
   const { state: kioskState, micEnabled } = useKioskState();
+  const share = useScreenShare();
   const { language: uiLanguage, setLanguage: setUiLanguage } = useUiLanguage();
   const navigate = useNavigate();
   const createConversation = useAppStore((state) => state.createConversation);
@@ -96,11 +99,15 @@ export function KioskPage() {
 
   return (
     <div className="relative flex-1 h-full overflow-hidden select-none" style={{ background: '#06060f' }}>
-      <iframe
-        src="/display.html"
-        title="Display"
-        className="absolute inset-0 h-full w-full border-0"
-      />
+      {share.status === 'live' ? (
+        <ScreenShareView stream={share.stream} />
+      ) : (
+        <iframe
+          src="/display.html"
+          title="Display"
+          className="absolute inset-0 h-full w-full border-0"
+        />
+      )}
       <KioskOverlay showOverlay={settings.showOverlay} uiLanguage={uiLanguage} />
       <div aria-hidden className="absolute inset-0 pointer-events-none transition-all duration-1000" style={{ background: GLOW[voice.status], zIndex: 0 }} />
       <AudioVisualizer getFrequencyData={voice.getFrequencyData} settings={settings} />
@@ -109,6 +116,18 @@ export function KioskPage() {
       <button onClick={() => navigate('/')} title="Exit kiosk" className="absolute top-4 right-4 z-30 w-9 h-9 rounded-full flex items-center justify-center cursor-pointer transition-colors" style={{ background: 'rgba(255,255,255,.06)', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>
         <X size={16} />
       </button>
+
+      {!share.unavailable && (
+        <button
+          onClick={share.status === 'live' ? share.stop : share.start}
+          title={share.status === 'live' ? 'Stop sharing' : 'Share Screen'}
+          className="absolute top-4 left-4 z-30 h-9 px-3 rounded-full flex items-center gap-1.5 cursor-pointer transition-colors text-[12px] font-medium"
+          style={{ background: 'rgba(255,255,255,.06)', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}
+        >
+          {share.status === 'live' ? <ScreenShareOff size={14} /> : <ScreenShare size={14} />}
+          {share.status === 'live' ? 'Stop sharing' : 'Share Screen'}
+        </button>
+      )}
 
       {voice.error && kioskState === 'active' && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 px-4 py-2.5 rounded-xl text-[12px] max-w-[90%]" style={{ background: 'rgba(255,80,80,.12)', border: '1px solid rgba(255,80,80,.3)', color: '#ffb4b4' }}>
