@@ -15,7 +15,9 @@ export function ChatPage() {
       <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
         {!share.unavailable && (
           <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
-            <span className="text-[13px]" style={{ color: 'var(--color-text-secondary)' }}>Screen share</span>
+            <span className="text-[13px]" style={{ color: share.status === 'error' && share.error ? '#ff8080' : 'var(--color-text-secondary)' }}>
+              {share.status === 'error' && share.error ? share.error : 'Screen share'}
+            </span>
             <button
               onClick={share.status === 'live' ? share.stop : share.start}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium cursor-pointer transition-colors"

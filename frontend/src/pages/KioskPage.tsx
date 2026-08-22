@@ -129,6 +129,12 @@ export function KioskPage() {
         </button>
       )}
 
+      {share.status === 'error' && share.error && (
+        <div className="absolute top-16 left-4 z-30 px-3 py-2 rounded-xl text-[12px] max-w-[70%]" style={{ background: 'rgba(255,80,80,.12)', border: '1px solid rgba(255,80,80,.3)', color: '#ffb4b4' }}>
+          {share.error}
+        </div>
+      )}
+
       {voice.error && kioskState === 'active' && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 px-4 py-2.5 rounded-xl text-[12px] max-w-[90%]" style={{ background: 'rgba(255,80,80,.12)', border: '1px solid rgba(255,80,80,.3)', color: '#ffb4b4' }}>
           {voice.error}
