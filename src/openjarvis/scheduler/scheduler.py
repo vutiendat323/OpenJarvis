@@ -17,6 +17,39 @@ logger = logging.getLogger(__name__)
 SCHEDULER_TASK_START = "scheduler_task_start"
 SCHEDULER_TASK_END = "scheduler_task_end"
 
+# Background work may refresh read snapshots and may never choose or perform a
+# business mutation, so only `source_sync` is schedulable. Named here rather
+# than derived from the tool registry: the scheduler must reject a prohibited
+# tool whether or not the Data Plane is built into this process at all.
+_DATA_PLANE_TOOLS = frozenset(
+    {
+        "source_discover",
+        "source_sync",
+        "structured_query",
+        "source_execute",
+        "source_verify",
+    }
+)
+_SCHEDULABLE_DATA_PLANE_TOOLS = frozenset({"source_sync"})
+
+
+def split_tools(tools: Any) -> List[str]:
+    """Split a task's ``tools`` field, which may be a list or a CSV string."""
+    raw = tools if isinstance(tools, list) else str(tools or "").split(",")
+    return [str(name).strip() for name in raw if str(name).strip()]
+
+
+def validate_scheduled_tools(tools: Any) -> None:
+    """Reject a scheduled tool list that carries a prohibited Data Plane tool."""
+    prohibited = sorted(
+        set(split_tools(tools)) & (_DATA_PLANE_TOOLS - _SCHEDULABLE_DATA_PLANE_TOOLS)
+    )
+    if prohibited:
+        raise ValueError(
+            "scheduler_tool_not_allowed: "
+            f"{', '.join(prohibited)} may not run on a schedule"
+        )
+
 
 @dataclass(slots=True)
 class ScheduledTask:
@@ -133,6 +166,7 @@ class TaskScheduler:
         **kwargs: Any,
     ) -> ScheduledTask:
         """Create and persist a new scheduled task."""
+        validate_scheduled_tools(kwargs.get("tools", ""))
         task = ScheduledTask(
             id=uuid.uuid4().hex[:16],
             prompt=prompt,
@@ -196,13 +230,20 @@ class TaskScheduler:
                     due = self._store.get_due_tasks(now)
                 for task_dict in due:
                     task = ScheduledTask.from_dict(task_dict)
-                    self._execute_task(task)
+                    try:
+                        self._execute_task(task)
+                    except ValueError as exc:
+                        # A rejected task must not starve the rest of the batch.
+                        logger.error("Task %s rejected: %s", task.id, exc)
             except Exception:
                 logger.exception("Scheduler poll error")
             self._stop_event.wait(timeout=self._poll_interval)
 
     def _execute_task(self, task: ScheduledTask) -> None:
         """Execute a single due task and log the result."""
+        # Also validated here, not only in `create_task`: a prohibited task
+        # persisted before this guard existed must still never run.
+        validate_scheduled_tools(task.tools)
         started_at = _now_iso()
 
         # Publish start event
@@ -218,14 +259,7 @@ class TaskScheduler:
 
         try:
             if self._system is not None:
-                raw_tools = (
-                    task.tools
-                    if isinstance(task.tools, list)
-                    else task.tools.split(",")
-                )
-                tools_list = (
-                    [t.strip() for t in raw_tools if t.strip()] if task.tools else []
-                )
+                tools_list = split_tools(task.tools)
                 ask_kwargs: Dict[str, Any] = {
                     "agent": task.agent,
                     "tools": tools_list if tools_list else None,
@@ -349,4 +383,6 @@ __all__ = [
     "SCHEDULER_TASK_START",
     "ScheduledTask",
     "TaskScheduler",
+    "split_tools",
+    "validate_scheduled_tools",
 ]

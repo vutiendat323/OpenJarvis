@@ -47,11 +47,19 @@ source_id = "trend-coffee"
 enabled = true
 source_url = "https://trendcoffee.net/"
 discovery_budget_seconds = 60
-browser_fallback = true
+# The config field survives, but Task 10 was cancelled and no observer
+# implements it -- leaving this true would advertise a stage that cannot run.
+browser_fallback = false
+# Stays empty. An authorized live run supplies exact
+# provider:operation:fingerprint entries in a temporary config and removes them
+# afterwards; nothing here grants a standing write.
 trusted_write_operations = ""
 
 [tools]
-enabled = "branch_list,menu_search,menu_item,cart_add,cart_remove,cart_view,order_place,order_verify,display_menu,display_cart,display_clear"
+# The three display_* tools drive the customer-facing screen
+# (server/static/display.html via the WS bridge) and are unrelated to the
+# Data Plane; they stay enabled.
+enabled = "source_discover,source_sync,structured_query,source_execute,source_verify,branch_list,menu_search,menu_item,cart_add,cart_remove,cart_view,order_place,order_verify,http_request,shell_exec,display_menu,display_cart,display_clear"
 
 [server]
 host = "127.0.0.1"
