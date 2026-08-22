@@ -99,14 +99,13 @@ export function KioskPage() {
 
   return (
     <div className="relative flex-1 h-full overflow-hidden select-none" style={{ background: '#06060f' }}>
-      {share.status === 'live' ? (
-        <ScreenShareView stream={share.stream} />
-      ) : (
-        <iframe
-          src="/display.html"
-          title="Display"
-          className="absolute inset-0 h-full w-full border-0"
-        />
+      <iframe
+        src="/display.html"
+        title="Display"
+        className="absolute inset-0 h-full w-full border-0"
+      />
+      {share.status === 'live' && (
+        <ScreenShareView stream={share.stream} floating />
       )}
       <KioskOverlay showOverlay={settings.showOverlay} uiLanguage={uiLanguage} />
       <div aria-hidden className="absolute inset-0 pointer-events-none transition-all duration-1000" style={{ background: GLOW[voice.status], zIndex: 0 }} />
