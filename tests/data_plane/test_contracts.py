@@ -74,4 +74,4 @@ def test_data_plane_error_keeps_details_out_of_string_form():
 
 def test_data_plane_event_wire_values_are_dotted():
     assert EventType.SOURCE_DISCOVERY_STARTED.value == "source.discovery.started"
-    assert EventType.ARTIFACT_ROLLED_BACK.value == "artifact.rolled_back"
+    assert EventType.SOURCE_VERIFY_COMPLETED.value == "source.verify.completed"

@@ -641,7 +641,7 @@ class SystemBuilder:
         from openjarvis.data_plane.execution import DirectExecutionEngine
         from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
         from openjarvis.system.bundles import DataPlaneRuntime
-        from openjarvis.tools.approval_store import ApprovalStore
+        from openjarvis.tools.proactive_tools import get_store
 
         for key, module in (("generic", generic), ("trendcoffee", trendcoffee)):
             if not SourceAdapterRegistry.contains(key):
@@ -654,8 +654,6 @@ class SystemBuilder:
         if not config.data_plane.db_path:
             db_path = data_dir / "structured.db"
             config.data_plane.db_path = str(db_path)
-        if not config.data_plane.artifact_dir:
-            config.data_plane.artifact_dir = str(data_dir / "artifacts")
         capabilities = None
         snapshots = None
         discovery = None
@@ -670,7 +668,10 @@ class SystemBuilder:
                 trusted_write_operations=config.data_plane.trusted_write_operations,
             )
             direct = DirectExecutionEngine(capabilities, snapshots, bus=bus)
-            approval_gate = ExecutionApprovalGate(ApprovalStore(), owns_store=True)
+            # One store per process: the approval UI, the proactive agent and
+            # the Data Plane gate must address the same database, and a second
+            # `ApprovalStore()` only coincidentally resolves the same file.
+            approval_gate = ExecutionApprovalGate(get_store(), owns_store=False)
             runtime = DataPlaneRuntime(
                 capabilities,
                 snapshots,

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import secrets
 import threading
 from dataclasses import dataclass, field, replace
 
@@ -161,7 +160,6 @@ class ExecutionGrant:
     operation: str
     capability_revision: int
     request_hash: str
-    _nonce: str = field(repr=False)
     _store: ApprovalStore = field(repr=False)
     _used: bool = field(default=False, init=False, repr=False)
     _lock: threading.Lock = field(
@@ -184,8 +182,7 @@ class ExecutionGrant:
                 raise ApprovalError("approval_grant_consumed")
             self._used = True
             if (
-                not self._nonce
-                or self.source_id != source_id
+                self.source_id != source_id
                 or self.operation != operation
                 or self.capability_revision != capability_revision
                 or self.request_hash != actual_hash
@@ -282,7 +279,6 @@ class ExecutionApprovalGate:
             operation=operation,
             capability_revision=revision,
             request_hash=request_hash,
-            _nonce=secrets.token_urlsafe(32),
             _store=self._store,
         )
 

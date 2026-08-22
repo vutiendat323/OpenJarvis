@@ -229,7 +229,10 @@ def build_system(
     config = load_config(PRESET)
     config.data_plane.db_path = str(tmp_path / "structured.db")
     config.data_plane.trusted_write_operations = trusted_write_operations
-    config.tools.enabled = f"{config.tools.enabled},{FIXTURE_MCP_TOOL}"
+    # `shell_exec` is deliberately absent from the shipped kiosk preset (public
+    # terminal, untrusted provider data); the trust-boundary test below needs a
+    # raw shell result, so it is widened here, test-locally, and never shipped.
+    config.tools.enabled = f"{config.tools.enabled},shell_exec,{FIXTURE_MCP_TOOL}"
 
     engine = MagicMock()
     engine.health.return_value = True
@@ -328,6 +331,20 @@ def runtime(tmp_path, provider):
     yield SimpleNamespace(system=system, client=TestClient(app), provider=provider)
     approval_routes._store = original_store
     system.close()
+
+
+def test_data_plane_gate_shares_the_process_approval_store(system):
+    """One store per process, so the approval UI and the gate cannot diverge.
+
+    `ApprovalStore` takes a `db_path`; a second `ApprovalStore()` built for the
+    gate only coincidentally resolves the same file as the one the approval UI
+    and the proactive agent use.
+    """
+    from openjarvis.tools.proactive_tools import get_store
+
+    assert system.data_plane.approval_gate._store is get_store()
+    # A shared store must not be closed out from under the UI.
+    assert system.data_plane.approval_gate._owns_store is False
 
 
 def test_cold_then_warm_path_persists_and_uses_no_browser(tmp_path, provider):

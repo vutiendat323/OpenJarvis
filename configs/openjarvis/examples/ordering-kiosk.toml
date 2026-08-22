@@ -59,7 +59,12 @@ trusted_write_operations = ""
 # The three display_* tools drive the customer-facing screen
 # (server/static/display.html via the WS bridge) and are unrelated to the
 # Data Plane; they stay enabled.
-enabled = "source_discover,source_sync,structured_query,source_execute,source_verify,branch_list,menu_search,menu_item,cart_add,cart_remove,cart_view,order_place,order_verify,http_request,shell_exec,display_menu,display_cart,display_clear"
+# `http_request` is the spec's investigative read tool -- it is how an operator
+# inspects a provider response by hand. `shell_exec` is deliberately absent: the
+# kiosk is a public terminal whose threat model treats provider JSON and page
+# text as prompt-injection-bearing, and this preset declares no capability
+# policy, so an enabled `shell_exec` would be unrestricted shell on injection.
+enabled = "source_discover,source_sync,structured_query,source_execute,source_verify,branch_list,menu_search,menu_item,cart_add,cart_remove,cart_view,order_place,order_verify,http_request,display_menu,display_cart,display_clear"
 
 [server]
 host = "127.0.0.1"

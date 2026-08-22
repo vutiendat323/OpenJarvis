@@ -24,7 +24,10 @@ structured_query cached / refresh_if_stale
 ```
 
 1. `structured_query` with `consistency = "cached"` answers most questions.
-   Use `"refresh_if_stale"` when the answer has to be current.
+   Use `"refresh_if_stale"` when the answer has to be current. That mode
+   re-syncs when the snapshot is older than `max_age_seconds` (default 60);
+   pass a smaller value for prices or availability you need fresher, and `0`
+   to skip the age check entirely.
 2. `source_sync` when the snapshot is missing or stale. This runs through the
    capability that was already validated — it is the warm path.
 3. `source_discover` only when no capability exists for the source, or the one

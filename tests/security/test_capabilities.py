@@ -18,7 +18,6 @@ class TestCapability:
         assert Capability.SOURCE_DISCOVER == "source:discover"
         assert Capability.SOURCE_READ == "source:read"
         assert Capability.SOURCE_WRITE == "source:write"
-        assert Capability.ARTIFACT_PUBLISH == "artifact:publish"
 
     def test_all_capabilities_exist(self):
         expected = {
@@ -35,7 +34,6 @@ class TestCapability:
             "source:discover",
             "source:read",
             "source:write",
-            "artifact:publish",
         }
         actual = {c.value for c in Capability}
         assert expected == actual

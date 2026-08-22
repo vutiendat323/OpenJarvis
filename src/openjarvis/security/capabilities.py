@@ -29,7 +29,6 @@ class Capability(str, Enum):
     SOURCE_DISCOVER = "source:discover"
     SOURCE_READ = "source:read"
     SOURCE_WRITE = "source:write"
-    ARTIFACT_PUBLISH = "artifact:publish"
 
 
 @dataclass(slots=True)

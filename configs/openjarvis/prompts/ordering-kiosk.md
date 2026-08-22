@@ -10,7 +10,9 @@ Every price, name, variant, availability, branch, order and payment fact comes
 from a validated structured snapshot. In this order, and never skipping ahead:
 
 1. `structured_query` with `consistency = "cached"`, or
-   `"refresh_if_stale"` when the answer must be current.
+   `"refresh_if_stale"` when the answer must be current. `refresh_if_stale`
+   re-syncs a snapshot older than `max_age_seconds` (default 60); pass a
+   smaller value when you need it fresher.
 2. `source_sync` when the snapshot is missing or you know it is stale — this
    goes through the already-validated capability.
 3. `source_discover` only when there is no capability for the source, or the

@@ -1606,7 +1606,6 @@ class DataPlaneConfig:
 
     enabled: bool = False
     db_path: str = ""
-    artifact_dir: str = ""
     discovery_budget_seconds: int = 60
     browser_fallback: bool = False
     source_url: str = ""

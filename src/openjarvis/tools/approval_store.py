@@ -278,10 +278,19 @@ class ApprovalStore:
                 action = PendingAction.from_row(row)
                 now = datetime.now(timezone.utc).isoformat()
                 if action.expires_at <= now:
+                    # Never overwrite a terminal status: a mutation already
+                    # `executing` when the TTL passes must keep its row so
+                    # `finish_execution` can record how it ended.
                     self._conn.execute(
                         "UPDATE pending_actions SET status = ?, decision_at = ? "
-                        "WHERE id = ?",
-                        (STATUS_EXPIRED, now, action_id),
+                        "WHERE id = ? AND status IN (?, ?)",
+                        (
+                            STATUS_EXPIRED,
+                            now,
+                            action_id,
+                            STATUS_PENDING,
+                            STATUS_APPROVED,
+                        ),
                     )
                     self._conn.commit()
                     return ApprovalClaim("rejected", "approval_expired")

@@ -91,10 +91,6 @@ class EventType(str, Enum):
     SOURCE_EXECUTE_STARTED = "source.execute.started"
     SOURCE_EXECUTE_RECEIPT_CREATED = "source.execute.receipt_created"
     SOURCE_VERIFY_COMPLETED = "source.verify.completed"
-    ARTIFACT_PUBLISHED = "artifact.published"
-    ARTIFACT_ACTIVATED = "artifact.activated"
-    ARTIFACT_REJECTED = "artifact.rejected"
-    ARTIFACT_ROLLED_BACK = "artifact.rolled_back"
 
 
 @dataclass(slots=True)

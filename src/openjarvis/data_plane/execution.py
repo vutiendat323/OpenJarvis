@@ -61,10 +61,19 @@ CREATE TABLE IF NOT EXISTS execution_receipts (
     status TEXT NOT NULL,
     provider_ref TEXT NOT NULL DEFAULT '',
     normalized_json TEXT NOT NULL DEFAULT '{}',
+    error_code TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 )
 """
+# Additive migrations for installs created before the column existed.
+_MIGRATE_RECEIPTS = [
+    "ALTER TABLE execution_receipts ADD COLUMN error_code TEXT NOT NULL DEFAULT ''",
+]
 _RETRY_STATUSES = frozenset({429, 503})
+# A provider (or an attacker owning one response header) can send
+# `Retry-After: 999999`; the sleep runs on a worker thread holding an
+# httpx.Client long after ToolExecutor has reported a timeout, so it is capped.
+_MAX_RETRY_AFTER_SECONDS = 5.0
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
@@ -554,6 +563,7 @@ class DirectExecutionEngine:
             status=ReceiptStatus(row["status"]),
             provider_ref=row["provider_ref"],
             normalized=dict(json.loads(row["normalized_json"])) if private else {},
+            error_code=row["error_code"],
             created_at=row["created_at"],
         )
 
@@ -637,6 +647,11 @@ class DirectExecutionEngine:
                 elif len(rows) != 1 or rows[0]["version"] != 3:
                     raise RuntimeError("unsupported data-plane schema version")
                 self._conn.execute(_CREATE_RECEIPTS_TABLE)
+                for statement in _MIGRATE_RECEIPTS:
+                    try:
+                        self._conn.execute(statement)
+                    except sqlite3.OperationalError:
+                        pass  # column already present
             except BaseException:
                 self._conn.rollback()
                 raise
@@ -898,7 +913,7 @@ class DirectExecutionEngine:
                 and attempts < 1
             ):
                 attempts += 1
-                self._sleep(_retry_after(response))
+                self._sleep(min(_retry_after(response), _MAX_RETRY_AFTER_SECONDS))
                 continue
             if response.status_code >= 400:
                 code = (
@@ -1029,8 +1044,8 @@ class DirectExecutionEngine:
                 """
                 INSERT INTO execution_receipts (
                     receipt_id, source_id, operation, capability_revision, request_hash,
-                    status, provider_ref, normalized_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, provider_ref, normalized_json, error_code, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     receipt.receipt_id,
@@ -1049,6 +1064,7 @@ class DirectExecutionEngine:
                         sort_keys=True,
                         separators=(",", ":"),
                     ),
+                    receipt.error_code,
                     receipt.created_at,
                 ),
             )

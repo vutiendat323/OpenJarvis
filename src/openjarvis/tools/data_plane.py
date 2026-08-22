@@ -20,6 +20,11 @@ from openjarvis.data_plane.types import (
 from openjarvis.system.bundles import DataPlaneRuntime
 from openjarvis.tools._stubs import BaseTool, ToolSpec
 
+# `refresh_if_stale` is documented to the Agent as "use it when the answer must
+# be current", and the Agent is never told to pass `max_age_seconds`. A zero
+# default made the mode a no-op on any non-empty store.
+_DEFAULT_MAX_AGE_SECONDS = 60
+
 _OBSERVES = {"observes": True}
 _MUTATES = {"mutates": True}
 
@@ -171,7 +176,15 @@ class StructuredQueryTool(_DataPlaneTool):
                     "resource_type": {"type": "string"},
                     "filters": {"type": "object"},
                     "consistency": {"type": "string"},
-                    "max_age_seconds": {"type": "integer"},
+                    "max_age_seconds": {
+                        "type": "integer",
+                        "description": (
+                            "How old a snapshot may be, in seconds, before "
+                            "consistency='refresh_if_stale' re-syncs it. "
+                            f"Defaults to {_DEFAULT_MAX_AGE_SECONDS}; 0 disables "
+                            "the age check entirely."
+                        ),
+                    },
                     "limit": {"type": "integer"},
                 },
                 "required": ["source_id", "resource_type"],
@@ -191,7 +204,9 @@ class StructuredQueryTool(_DataPlaneTool):
                 resource_type=str(params.get("resource_type", "")).strip(),
                 filters=dict(params.get("filters", {})),
                 consistency=ConsistencyMode(str(params.get("consistency", "cached"))),
-                max_age_seconds=int(params.get("max_age_seconds", 0)),
+                max_age_seconds=int(
+                    params.get("max_age_seconds", _DEFAULT_MAX_AGE_SECONDS)
+                ),
                 limit=int(params.get("limit", 100)),
             )
         except (TypeError, ValueError):
@@ -244,6 +259,10 @@ class SourceExecuteTool(_DataPlaneTool):
             },
             category="data_plane",
             required_capabilities=["source:write"],
+            # Worst case dispatch is one 10s request, one capped Retry-After
+            # sleep and one retry; the default 30s could cut a live mutation
+            # off mid-flight and report it as a plain failure.
+            timeout_seconds=45.0,
             metadata=dict(_MUTATES),
         )
 

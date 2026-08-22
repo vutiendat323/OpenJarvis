@@ -29,6 +29,18 @@ from openjarvis.tools._stubs import BaseTool, ToolSpec
 OBSERVES = {"observes": True}
 MUTATES = {"mutates": True}
 
+# The codes `MerchantPort.place_order` raises as `ValueError`.
+ORDER_PLACE_ERROR_CODES = frozenset(
+    {
+        "invalid_order_type",
+        "unknown_branch",
+        "cart_empty",
+        "cart_line_invalid",
+        "cart_line_unavailable",
+        "cart_line_price_changed",
+    }
+)
+
 
 class _MerchantTool(BaseTool):
     """Shared plumbing: the injected merchant and the failure when it is absent."""
@@ -388,8 +400,16 @@ class OrderPlaceTool(_MerchantTool):
             )
         except OrderApprovalRejected as exc:
             return self._fail("order_place", exc.code)
-        except ValueError:
-            return self._fail("order_place", "unknown_branch")
+        except ValueError as exc:
+            # `place_order` raises a distinct code per failure; flattening them
+            # all to `unknown_branch` hid `cart_line_price_changed`, which the
+            # customer has to be told about. Unrecognised prose (an adapter
+            # message, say) is not passed through to the Agent as a code.
+            code = str(exc)
+            return self._fail(
+                "order_place",
+                code if code in ORDER_PLACE_ERROR_CODES else "order_place_failed",
+            )
         return self._ok("order_place", {"placed": True, "order_id": order_id})
 
 

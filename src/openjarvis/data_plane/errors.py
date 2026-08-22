@@ -18,7 +18,6 @@ class DataPlaneErrorCode(str, Enum):
     DISCOVERY_UNSAFE_METHOD = "discovery_unsafe_method"
     MUTATION_AMBIGUOUS = "mutation_ambiguous"
     VERIFICATION_FAILED = "verification_failed"
-    ARTIFACT_REJECTED = "artifact_rejected"
 
 
 class DataPlaneError(RuntimeError):

@@ -681,6 +681,29 @@ def test_unsafe_redirect_is_rejected_without_replaying_mutation(runtime):
     assert len(runtime.transport.calls) == 1
 
 
+def test_ambiguous_receipt_keeps_its_error_code_across_a_restart(runtime):
+    """A `MUTATION_AMBIGUOUS` receipt is exactly the one a human investigates.
+
+    The reason must survive the process, not live only in the returned object.
+    """
+    runtime.transport.responses = [httpx.Response(307, headers={"location": "/orders"})]
+    receipt = _approved_execute(runtime, "order.place", {"item": "coffee"})
+    assert receipt.error_code == "mutation_ambiguous"
+    runtime.direct.close()
+
+    reopened = DirectExecutionEngine(
+        runtime.capabilities,
+        runtime.snapshots,
+        adapters={"fixture": FixtureAdapter()},
+    )
+    loaded = reopened.get_receipt(receipt.receipt_id)
+
+    assert loaded is not None
+    assert loaded.status is ReceiptStatus.UNKNOWN
+    assert loaded.error_code == "mutation_ambiguous"
+    reopened.close()
+
+
 def test_public_receipts_hide_unverified_candidate_data(runtime):
     runtime.transport.responses = [_response({"id": "order-1", "qrCode": "qr-secret"})]
 

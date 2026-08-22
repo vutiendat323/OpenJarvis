@@ -260,9 +260,19 @@ class ToolExecutor:
                     EventType.TOOL_TIMEOUT,
                     {"tool": tool_call.name, "timeout": timeout},
                 )
+            content = f"Tool '{tool_call.name}' timed out after {timeout:.0f}s."
+            if tool.spec.metadata.get("mutates"):
+                # A mutation that outran its timeout may still have been
+                # dispatched. That is `unknown`, not a retryable failure --
+                # verify before ever calling this tool again.
+                content += (
+                    " The mutation may already have been dispatched;"
+                    " its outcome is unknown. Verify it with source_verify"
+                    " before retrying -- do not re-execute."
+                )
             result = ToolResult(
                 tool_name=tool_call.name,
-                content=(f"Tool '{tool_call.name}' timed out after {timeout:.0f}s."),
+                content=content,
                 success=False,
             )
         except Exception as exc:

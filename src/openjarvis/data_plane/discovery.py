@@ -177,6 +177,7 @@ class DiscoveryEngine:
         if not force_refresh:
             cached = self._store.get(source_id)
             if _is_cache_valid(cached, requested_origin):
+                cached = self._reconcile_write_trust(cached)
                 result = DiscoveryResult(
                     source_id=source_id,
                     state=TrustState.READ_VALIDATED,

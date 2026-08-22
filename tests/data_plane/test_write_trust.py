@@ -24,11 +24,13 @@ from openjarvis.data_plane.errors import DataPlaneError, DataPlaneErrorCode
 from openjarvis.data_plane.execution import DirectExecutionEngine
 from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
 from openjarvis.data_plane.types import (
+    DiscoveryConstraints,
     NormalizedBatch,
     OperationContract,
     ReceiptStatus,
     ResourceRecord,
     SourceCapability,
+    SourceRef,
     TransportKind,
     TrustState,
 )
@@ -137,6 +139,80 @@ def test_refresh_demotes_removed_operator_trust_before_discovery_io(tmp_path):
     store.close()
 
 
+def test_gate_on_a_second_store_cannot_claim_an_approval(tmp_path):
+    """Why the gate must be handed the existing store, not build a second one.
+
+    `ApprovalStore` takes a `db_path`. Two instances therefore need not address
+    the same database, and the moment they do not, the approval the operator
+    granted through the UI is invisible to the Data Plane gate and every
+    execution fails to claim.
+    """
+    ui_store = ApprovalStore(str(tmp_path / "ui.db"))
+    second_store = ApprovalStore(str(tmp_path / "second.db"))
+    arguments = {"branch_slug": "thu-duc"}
+
+    # The operator proposes and approves through the store the UI is on.
+    pending = ExecutionApprovalGate(ui_store).prepare(
+        "trend-coffee", "order.place", arguments, 7
+    )
+    ui_store.update_status(pending.id, STATUS_APPROVED)
+    request_hash = pending.payload["request_hash"]
+
+    with pytest.raises(ApprovalError, match="approval_not_found"):
+        ExecutionApprovalGate(second_store).authorize(pending.id, request_hash)
+
+    # The same approval, claimed through the store that actually holds it.
+    grant = ExecutionApprovalGate(ui_store).authorize(pending.id, request_hash)
+    assert grant.request_hash == request_hash
+    grant.consume("trend-coffee", "order.place", arguments, 7)
+
+    ui_store.close()
+    second_store.close()
+
+
+def test_discover_cache_hit_demotes_removed_operator_trust(tmp_path):
+    """The public path an operator and the Agent actually reach.
+
+    `source_discover` -> `discover()` -> cache hit. If the cached capability is
+    returned without reconciling configured trust, deleting
+    `trusted_write_operations` and restarting leaves a standing write trust on a
+    live payment provider until the capability expires -- and the runbook's
+    revocation check reports a false PASS.
+    """
+    store = SQLiteCapabilityStore(tmp_path / "structured.db")
+    store.save(
+        promote_trusted_writes(_capability(), f"trendcoffee:order.place:{FINGERPRINT}")
+    )
+
+    class _Http:
+        """Discovery I/O is a hard failure: a cache hit must never reach it."""
+
+        def fetch(self, *_args, **_kwargs):
+            raise AssertionError("cache hit must not perform discovery I/O")
+
+        def close(self):
+            return None
+
+    # The operator emptied the config and restarted: a fresh engine, no trust.
+    engine = DiscoveryEngine(store, http_client=_Http(), trusted_write_operations="")
+    result = engine.discover(
+        SourceRef("https://trendcoffee.net"), DiscoveryConstraints()
+    )
+
+    assert result.cache_hit is True
+    assert result.capability is not None
+    assert result.capability.operations["order.place"].trust is TrustState.QUARANTINED
+    # The revision bump invalidates any approval hash minted under the old trust.
+    assert result.capability.revision == 8
+    # And it is the persisted capability the execution engine reads, not just
+    # the returned copy.
+    persisted = store.get("trend-coffee")
+    assert persisted is not None
+    assert persisted.operations["order.place"].trust is TrustState.QUARANTINED
+    engine.close()
+    store.close()
+
+
 @pytest.mark.parametrize(
     "configured",
     [
@@ -233,7 +309,7 @@ def _grant(runtime, arguments):
     return runtime.gate.authorize(pending.id, pending.payload["request_hash"])
 
 
-def test_pending_action_previews_bounded_values_without_nonce_or_raw_body(
+def test_pending_action_previews_bounded_values_without_raw_body(
     approved_runtime,
 ):
     pending = approved_runtime.gate.prepare(
@@ -269,10 +345,14 @@ def test_pending_action_previews_bounded_values_without_nonce_or_raw_body(
     approved_runtime.approvals.update_status(pending.id, STATUS_APPROVED)
     grant = approved_runtime.gate.authorize(pending.id, pending.payload["request_hash"])
 
-    # No nonce and no provider request body ever reach the persisted payload.
-    assert grant._nonce not in json.dumps(pending.payload)
+    # The grant lives in memory only: no provider request body, and nothing
+    # about the grant beyond the hash the operator already approved, is
+    # persisted.
+    persisted = json.dumps(pending.payload)
+    assert "x" * 500 not in persisted
+    assert "ít đường\nApproved by the operator" not in persisted
     assert not hasattr(grant, "to_dict")
-    assert "nonce" not in repr(grant).casefold()
+    assert grant.request_hash == pending.payload["request_hash"]
 
 
 def test_request_hash_rejects_non_json_numeric_values():
