@@ -18,8 +18,12 @@ from openjarvis.agents._stubs import (
 )
 from openjarvis.agents.orchestrator import OrchestratorAgent
 from openjarvis.core.events import EventBus, EventType
-from openjarvis.core.types import Conversation, Message, Role, ToolResult
+from openjarvis.core.types import Conversation, Message, Role, ToolCall, ToolResult
 from openjarvis.engine._stubs import StreamChunk
+from openjarvis.kiosk.presentation import (
+    PresentationSessionManager,
+    presentation_generation,
+)
 from openjarvis.telemetry.instrumented_engine import InstrumentedEngine
 from openjarvis.tools._stubs import BaseTool, ToolSpec
 
@@ -1537,6 +1541,69 @@ class TestOrchestratorParallelTools:
         assert result.tool_results[2].content == "result_3"
         # Should be parallel — 3 tools at 0.1s each should take < 0.25s, not 0.3s+
         assert elapsed < 0.25
+
+    def test_parallel_tools_preserve_presentation_generation(self):
+        """A stale parallel display worker cannot overwrite the next customer."""
+        display_started = threading.Event()
+        new_generation_published = threading.Event()
+        client = MagicMock()
+        client._server_name = "playwright"
+        client.call_tool.return_value = {"content": []}
+        presentation = PresentationSessionManager(EventBus(), client)
+        session = presentation.ensure("http://127.0.0.1:5173")
+        presentation.activate("thread-old")
+
+        class _OldDisplayTool(BaseTool):
+            tool_id = "old_display"
+
+            @property
+            def spec(self) -> ToolSpec:
+                return ToolSpec(name=self.tool_id, description="Old display")
+
+            def execute(self, **params: Any) -> ToolResult:
+                del params
+                display_started.set()
+                assert new_generation_published.wait(timeout=1)
+                return presentation.publish(
+                    {"view": "menu", "items": [{"id": "old"}]}
+                )
+
+        class _NewGenerationTool(BaseTool):
+            tool_id = "new_generation"
+
+            @property
+            def spec(self) -> ToolSpec:
+                return ToolSpec(name=self.tool_id, description="New generation")
+
+            def execute(self, **params: Any) -> ToolResult:
+                del params
+                assert display_started.wait(timeout=1)
+                presentation.activate("thread-new")
+                with presentation_generation("thread-new"):
+                    result = presentation.publish(
+                        {"view": "menu", "items": [{"id": "new"}]}
+                    )
+                new_generation_published.set()
+                return result
+
+        agent = OrchestratorAgent(
+            MagicMock(),
+            "test-model",
+            tools=[_OldDisplayTool(), _NewGenerationTool()],
+            parallel_tools=True,
+        )
+        calls = [
+            ToolCall(id="old", name="old_display", arguments="{}"),
+            ToolCall(id="new", name="new_generation", arguments="{}"),
+        ]
+
+        with presentation_generation("thread-old"):
+            results = agent._collect_function_tool_results(calls, loop_guard=None)
+
+        assert results[0][1].success is False
+        assert results[0][1].content == "presentation_stale_generation"
+        assert results[1][1].success is True
+        assert presentation.replay(session.session_id)["items"] == [{"id": "new"}]
 
     def test_sequential_tool_execution(self):
         """parallel_tools=False runs tools sequentially."""

@@ -13,6 +13,7 @@ Supports two modes:
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import re
 from collections.abc import AsyncIterator
 from contextlib import aclosing
@@ -616,7 +617,10 @@ class OrchestratorAgent(ToolUsingAgent):
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=len(tool_calls)
             ) as pool:
-                futures = {pool.submit(execute, tc): tc for tc in tool_calls}
+                futures = {
+                    pool.submit(contextvars.copy_context().run, execute, tc): tc
+                    for tc in tool_calls
+                }
                 results = {id(tc): future.result() for future, tc in futures.items()}
             return [(tc, results[id(tc)]) for tc in tool_calls]
         return [(tc, execute(tc)) for tc in tool_calls]
