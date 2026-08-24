@@ -169,6 +169,12 @@ def test_display_bill_keeps_only_merchant_bill_fields_and_normalizes_total():
 
 def test_display_payment_qr_drops_every_field_outside_the_verified_view():
     tool, recorder = _wired(DisplayPaymentQrTool)
+    tool._payment_snapshot_verified = lambda payment: payment == {
+        "order_id": "order-1",
+        "payment_slug": "payment-1",
+        "status": "pending",
+        "qr_code": "merchant-opaque-qr",
+    }
 
     result = tool.execute(
         order_id="order-1",
@@ -187,6 +193,42 @@ def test_display_payment_qr_drops_every_field_outside_the_verified_view():
         "status": "pending",
         "qr_code": "merchant-opaque-qr",
     }
+
+
+def test_display_payment_qr_rejects_an_arbitrary_nonempty_value_without_publishing():
+    tool, recorder = _wired(DisplayPaymentQrTool)
+
+    result = tool.execute(
+        order_id="order-1",
+        payment_slug="payment-invented",
+        status="pending",
+        qr_code="agent-invented-qr",
+    )
+
+    assert result == ToolResult(
+        tool_name="display_payment_qr",
+        content="payment_snapshot_unverified",
+        success=False,
+    )
+    assert recorder.events == []
+
+
+def test_display_payment_qr_rejects_a_missing_payment_identifier():
+    tool, recorder = _wired(DisplayPaymentQrTool)
+    tool._payment_snapshot_verified = lambda payment: True
+
+    result = tool.execute(
+        order_id="order-1",
+        status="pending",
+        qr_code="merchant-opaque-qr",
+    )
+
+    assert result == ToolResult(
+        tool_name="display_payment_qr",
+        content="payment_snapshot_unverified",
+        success=False,
+    )
+    assert recorder.events == []
 
 
 def test_display_payment_qr_rejects_an_empty_qr_without_publishing():

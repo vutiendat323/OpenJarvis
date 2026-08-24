@@ -12,7 +12,7 @@ test does not classify them as either.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.registry import ToolRegistry
@@ -193,6 +193,12 @@ class DisplayPaymentQrTool(_DisplayTool):
 
     tool_id = "display_payment_qr"
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._payment_snapshot_verified: Optional[
+            Callable[[dict[str, Any]], bool]
+        ] = None
+
     @property
     def spec(self) -> ToolSpec:
         return ToolSpec(
@@ -226,6 +232,21 @@ class DisplayPaymentQrTool(_DisplayTool):
                 success=False,
             )
         payment = _picked(params, _PAYMENT_QR_FIELDS)
+        complete = all(
+            isinstance(payment.get(field), str) and payment[field].strip()
+            for field in _PAYMENT_QR_FIELDS
+        )
+        verifier = self._payment_snapshot_verified
+        try:
+            verified = complete and verifier is not None and verifier(payment)
+        except Exception:
+            verified = False
+        if not verified:
+            return ToolResult(
+                tool_name="display_payment_qr",
+                content="payment_snapshot_unverified",
+                success=False,
+            )
         return self._publish({"view": "payment_qr", **payment})
 
 

@@ -1,10 +1,9 @@
 # ordering-kiosk-mcp.toml -- ordering kiosk PLUS live browser interaction.
 #
-# This is `ordering-kiosk.toml` with Playwright MCP added, so the Agent can
-# navigate, click and type on a real site when the Data Plane has no validated
-# contract for what the customer asked. The Data Plane stays the preferred
-# path; the browser is the fallback, and nothing it observes becomes a trusted
-# capability or a snapshot.
+# This is `ordering-kiosk.toml` with Playwright MCP added for explicit,
+# attended browser tasks. The Data Plane remains direct-first;
+# `browser_fallback = false`, and nothing the browser observes becomes a
+# trusted capability or snapshot.
 #
 # SECURITY: this preset deliberately breaks the hardening `ordering-kiosk.toml`
 # ships with. It grants 21 browser click/type/navigate tools to an agent whose

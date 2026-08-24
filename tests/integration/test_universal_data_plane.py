@@ -421,6 +421,19 @@ def test_payment_qr_reaches_a_snapshot_only_after_verification(runtime):
     assert "qrCode" not in json.dumps([payment.content, payment.metadata])
     assert presentation.payloads == []
 
+    unverified = call_tool(
+        runtime.system,
+        "display_payment_qr",
+        order_id=ORDER_ID,
+        payment_slug="payment-1",
+        status="pending",
+        qr_code=runtime.provider.payment_response["qrCode"],
+    )
+    assert unverified.success is False
+    assert unverified.tool_name == "display_payment_qr"
+    assert unverified.content == "payment_snapshot_unverified"
+    assert presentation.payloads == []
+
     before = call_tool(
         runtime.system,
         "structured_query",
@@ -448,6 +461,19 @@ def test_payment_qr_reaches_a_snapshot_only_after_verification(runtime):
     assert presentation.payloads == []
 
     payment_snapshot = payload(snapshot)["result"]["items"][0]["payload"]
+    mismatched = call_tool(
+        runtime.system,
+        "display_payment_qr",
+        order_id=payment_snapshot["order"],
+        payment_slug=payment_snapshot["slug"],
+        status=payment_snapshot["status"],
+        qr_code="agent-invented-qr",
+    )
+    assert mismatched.success is False
+    assert mismatched.tool_name == "display_payment_qr"
+    assert mismatched.content == "payment_snapshot_unverified"
+    assert presentation.payloads == []
+
     displayed = call_tool(
         runtime.system,
         "display_payment_qr",

@@ -541,6 +541,11 @@ class SystemBuilder:
             if merchant is not None:
                 self._inject_ordering_merchant(tool, merchant)
             self._inject_data_plane_runtime(tool, data_plane, config)
+            self._inject_payment_snapshot_verifier(
+                tool,
+                data_plane,
+                getattr(getattr(config, "merchants", None), "source_id", ""),
+            )
         display_bill = next(
             (
                 tool
@@ -655,6 +660,38 @@ class SystemBuilder:
         tool._runtime = runtime
         tool._discovery_budget_seconds = config.data_plane.discovery_budget_seconds
         tool._browser_fallback = config.data_plane.browser_fallback
+
+    @staticmethod
+    def _inject_payment_snapshot_verifier(tool, runtime, source_id: str) -> None:
+        if (
+            runtime is None
+            or not source_id
+            or tool.spec.name != "display_payment_qr"
+            or not hasattr(tool, "_payment_snapshot_verified")
+        ):
+            return
+
+        from openjarvis.data_plane.types import StructuredQuery
+
+        def payment_snapshot_verified(payment: dict[str, object]) -> bool:
+            filters = {
+                "order": payment["order_id"],
+                "slug": payment["payment_slug"],
+                "status": payment["status"],
+                "qrCode": payment["qr_code"],
+            }
+            return bool(
+                runtime.snapshots.query(
+                    StructuredQuery(
+                        source_id=source_id,
+                        resource_type="payment",
+                        filters=filters,
+                        limit=1,
+                    )
+                ).items
+            )
+
+        tool._payment_snapshot_verified = payment_snapshot_verified
 
     def _build_data_plane(self, config, bus):
         if not config.data_plane.enabled:
