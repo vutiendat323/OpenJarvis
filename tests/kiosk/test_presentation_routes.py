@@ -12,7 +12,10 @@ from fastapi.testclient import TestClient
 
 import openjarvis.kiosk.routes as kiosk_routes
 from openjarvis.core.events import EventBus
-from openjarvis.kiosk.presentation import PresentationSessionManager
+from openjarvis.kiosk.presentation import (
+    PresentationSessionManager,
+    PresentationUnavailableError,
+)
 from openjarvis.server.app import create_app
 
 
@@ -95,6 +98,20 @@ def test_ensure_returns_503_when_presentation_is_unavailable(
     client.app.state.presentation_session_manager = PresentationSessionManager(
         EventBus(), None
     )
+
+    response = client.post(
+        "/api/kiosk/presentation/ensure",
+        json={"display_origin": "http://127.0.0.1:5173"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "presentation_unavailable"}
+
+
+def test_ensure_returns_503_when_manager_reports_an_mcp_failure(
+    client: TestClient, manager: _FakePresentationManager
+) -> None:
+    manager.ensure_error = PresentationUnavailableError("browser_navigate unavailable")
 
     response = client.post(
         "/api/kiosk/presentation/ensure",

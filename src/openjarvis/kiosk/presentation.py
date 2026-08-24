@@ -55,11 +55,9 @@ class PresentationSessionManager:
         with self._lock:
             if self._session is not None:
                 return self._session
-            client = self._require_client()
             live_tab_index = _selected_tab_index(
-                client.call_tool("browser_tabs", {"action": "list"})
+                self._call_tool("browser_tabs", {"action": "list"})
             )
-            client.call_tool("browser_tabs", {"action": "new"})
             session_id = uuid4().hex
             session = PresentationSession(
                 session_id=session_id,
@@ -67,12 +65,15 @@ class PresentationSessionManager:
                 live_tab_index=live_tab_index,
             )
             try:
-                client.call_tool("browser_navigate", {"url": session.display_url})
-            finally:
-                client.call_tool(
+                self._call_tool("browser_tabs", {"action": "new"})
+                self._call_tool("browser_navigate", {"url": session.display_url})
+                self._call_tool(
                     "browser_tabs",
                     {"action": "select", "index": session.live_tab_index},
                 )
+            except PresentationUnavailableError:
+                self._restore_live_tab(live_tab_index)
+                raise
             self._session = session
             return session
 
@@ -138,22 +139,49 @@ class PresentationSessionManager:
             session = self._session
             if session is None:
                 return False
-            client = self._require_client()
-            tab_list = _tool_text(client.call_tool("browser_tabs", {"action": "list"}))
-            encoded_url = quote(session.display_url, safe=":/?=&")
-            if encoded_url in tab_list:
-                return False
-            client.call_tool("browser_tabs", {"action": "new"})
-            client.call_tool("browser_navigate", {"url": session.display_url})
-            client.call_tool(
-                "browser_tabs", {"action": "select", "index": session.live_tab_index}
-            )
-            return True
+            try:
+                tab_list = _tool_text(
+                    self._call_tool("browser_tabs", {"action": "list"})
+                )
+                encoded_url = quote(session.display_url, safe=":/?=&")
+                if encoded_url in tab_list:
+                    return False
+                self._call_tool("browser_tabs", {"action": "new"})
+                self._call_tool("browser_navigate", {"url": session.display_url})
+                self._call_tool(
+                    "browser_tabs",
+                    {"action": "select", "index": session.live_tab_index},
+                )
+                return True
+            except PresentationUnavailableError:
+                self._restore_live_tab(session.live_tab_index)
+                raise
 
     def _require_client(self) -> Any:
         if self._client is None:
             raise PresentationUnavailableError("presentation_unavailable")
         return self._client
+
+    def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Call Playwright and normalize protocol and transport failures."""
+        try:
+            result = self._require_client().call_tool(name, arguments)
+        except PresentationUnavailableError:
+            raise
+        except Exception as exc:
+            raise PresentationUnavailableError(f"{name} unavailable") from exc
+        if not isinstance(result, dict) or result.get("isError"):
+            raise PresentationUnavailableError(f"{name} returned an MCP error")
+        return result
+
+    def _restore_live_tab(self, live_tab_index: int) -> None:
+        """Best-effort rollback that must not replace the primary MCP failure."""
+        try:
+            self._call_tool(
+                "browser_tabs", {"action": "select", "index": live_tab_index}
+            )
+        except PresentationUnavailableError:
+            pass
 
 
 def _normalize_display_origin(display_origin: str) -> str:
@@ -184,8 +212,6 @@ def _selected_tab_index(result: dict[str, Any]) -> int:
 
 def _tool_text(result: dict[str, Any]) -> str:
     """Keep the current MCP response-shape parsing at this boundary."""
-    if result.get("isError"):
-        raise PresentationUnavailableError("browser_tabs returned an MCP error")
     content = result.get("content", [])
     if isinstance(content, str):
         return content

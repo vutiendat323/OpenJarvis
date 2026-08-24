@@ -29,7 +29,7 @@
 # LoopGuard remains the real brake against a runaway loop.
 #
 # Usage:
-#   OPENJARVIS_CONFIG=configs/openjarvis/examples/ordering-kiosk.toml jarvis serve
+#   OPENJARVIS_CONFIG=configs/openjarvis/examples/ordering-kiosk-mcp.toml jarvis serve
 
 [engine]
 default = "ollama"
@@ -71,9 +71,8 @@ browser_fallback = false
 trusted_write_operations = ""
 
 [tools]
-# The three display_* tools drive the customer-facing screen
-# (server/static/display.html via the WS bridge) and are unrelated to the
-# Data Plane; they stay enabled.
+# The five display_* tools drive the React `/customer-display` route through
+# the WebSocket bridge and are unrelated to the Data Plane; they stay enabled.
 # `http_request` is the spec's investigative read tool -- it is how an operator
 # inspects a provider response by hand. `shell_exec` is deliberately absent: the
 # kiosk is a public terminal whose threat model treats provider JSON and page

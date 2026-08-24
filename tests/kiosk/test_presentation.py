@@ -19,17 +19,20 @@ class _FakeMCPClient:
         self._server_name = server_name
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.tab_list_text = "0: http://127.0.0.1:5173/kiosk"
-        self.tab_list_is_error = False
-        self.navigate_error: Exception | None = None
+        self.failures: dict[tuple[str, str | None], Exception | str] = {}
 
     def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
         self.calls.append((name, arguments))
+        action = arguments.get("action")
+        failure = self.failures.get(
+            (name, action if isinstance(action, str) else None)
+        )
+        if isinstance(failure, Exception):
+            raise failure
+        if failure == "is_error":
+            return {"content": [], "isError": True}
         if name == "browser_tabs" and arguments == {"action": "list"}:
-            if self.tab_list_is_error:
-                return {"content": [], "isError": True}
             return {"content": [{"type": "text", "text": self.tab_list_text}]}
-        if name == "browser_navigate" and self.navigate_error is not None:
-            raise self.navigate_error
         return {"content": []}
 
 
@@ -63,13 +66,48 @@ def test_ensure_reselects_the_live_tab_when_display_navigation_raises(
     """Would fail if a transient navigation error left the new tab selected."""
     client = _FakeMCPClient(server_name="playwright")
     client.tab_list_text = "3: (current) kiosk home"
-    client.navigate_error = RuntimeError("navigation failed")
+    client.failures[("browser_navigate", None)] = RuntimeError("navigation failed")
     manager = PresentationSessionManager(bus, client)
 
-    with pytest.raises(RuntimeError, match="navigation failed"):
+    with pytest.raises(PresentationUnavailableError) as exc_info:
         manager.ensure("http://127.0.0.1:5173")
 
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
     assert client.calls[-1] == ("browser_tabs", {"action": "select", "index": 3})
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("browser_tabs", {"action": "list"}),
+        ("browser_tabs", {"action": "new"}),
+        ("browser_navigate", {"url": "ignored"}),
+        ("browser_tabs", {"action": "select", "index": 0}),
+    ],
+)
+@pytest.mark.parametrize("failure", ["is_error", RuntimeError("transport failed")])
+def test_ensure_rejects_each_mcp_lifecycle_failure_without_committing_a_session(
+    bus: EventBus,
+    tool_name: str,
+    arguments: dict[str, object],
+    failure: Exception | str,
+) -> None:
+    """Would fail if a failed bootstrap operation became an active session."""
+    client = _FakeMCPClient(server_name="playwright")
+    action = arguments.get("action")
+    client.failures[(tool_name, action if isinstance(action, str) else None)] = failure
+    manager = PresentationSessionManager(bus, client)
+
+    with pytest.raises(PresentationUnavailableError):
+        manager.ensure("http://127.0.0.1:5173")
+
+    result = manager.publish({"view": "menu"})
+    assert result.success is False
+    assert result.content == "presentation_unavailable"
+    if tool_name == "browser_tabs" and arguments == {"action": "list"}:
+        assert client.calls == [("browser_tabs", {"action": "list"})]
+    else:
+        assert client.calls[-1] == ("browser_tabs", {"action": "select", "index": 0})
 
 
 def test_find_playwright_client_uses_only_the_playwright_server_name() -> None:
@@ -170,7 +208,7 @@ def test_publish_fails_safely_when_recovery_tab_listing_is_an_mcp_error(
     manager = PresentationSessionManager(bus, client)
     session = manager.ensure("http://127.0.0.1:5173")
     manager.mark_display_disconnected(session.session_id)
-    client.tab_list_is_error = True
+    client.failures[("browser_tabs", "list")] = "is_error"
     calls_before_recovery = len(client.calls)
 
     with pytest.raises(PresentationUnavailableError, match="browser_tabs"):
@@ -178,7 +216,53 @@ def test_publish_fails_safely_when_recovery_tab_listing_is_an_mcp_error(
 
     assert client.calls[calls_before_recovery:] == [
         ("browser_tabs", {"action": "list"}),
+        ("browser_tabs", {"action": "select", "index": session.live_tab_index}),
     ]
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("browser_tabs", {"action": "list"}),
+        ("browser_tabs", {"action": "new"}),
+        ("browser_navigate", {"url": "ignored"}),
+        ("browser_tabs", {"action": "select", "index": 0}),
+    ],
+)
+@pytest.mark.parametrize("failure", ["is_error", RuntimeError("transport failed")])
+def test_recovery_rejects_each_mcp_lifecycle_failure_without_publishing(
+    bus: EventBus,
+    tool_name: str,
+    arguments: dict[str, object],
+    failure: Exception | str,
+) -> None:
+    """Would fail if a failed recovery operation emitted a display update."""
+    client = _FakeMCPClient(server_name="playwright")
+    manager = PresentationSessionManager(bus, client)
+    session = manager.ensure("http://127.0.0.1:5173")
+    manager.mark_display_disconnected(session.session_id)
+    action = arguments.get("action")
+    client.failures[(tool_name, action if isinstance(action, str) else None)] = failure
+    calls_before_recovery = len(client.calls)
+
+    with pytest.raises(PresentationUnavailableError):
+        manager.publish({"view": "menu"})
+
+    assert bus.history == []
+    assert manager.replay(session.session_id) == {
+        "view": "none",
+        "presentation_session_id": session.session_id,
+    }
+    if tool_name == "browser_tabs" and arguments == {"action": "list"}:
+        assert client.calls[calls_before_recovery:] == [
+            ("browser_tabs", {"action": "list"}),
+            ("browser_tabs", {"action": "select", "index": session.live_tab_index}),
+        ]
+    else:
+        assert client.calls[-1] == (
+            "browser_tabs",
+            {"action": "select", "index": session.live_tab_index},
+        )
 
 
 def test_mark_display_connected_skips_recovery_when_the_page_reconnects(
