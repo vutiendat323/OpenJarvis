@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import openjarvis.kiosk.routes as kiosk_routes
@@ -33,6 +34,9 @@ class _FakePresentationManager:
 
     def reset(self, session_id: str) -> bool:
         return session_id == self.session_id
+
+    def replay(self, session_id: str):
+        return {"view": "none"} if session_id == self.session_id else None
 
 
 @pytest.fixture
@@ -158,3 +162,70 @@ def test_create_app_stores_the_composed_presentation_manager(
     )
 
     assert app.state.presentation_session_manager is manager
+
+
+@pytest.mark.asyncio
+async def test_reset_drains_a_late_voice_publication_before_clearing_replay() -> None:
+    bus = EventBus(record_history=True)
+    mcp_client = Mock()
+    mcp_client._server_name = "playwright"
+    mcp_client.call_tool.return_value = {"content": []}
+    presentation = PresentationSessionManager(bus, mcp_client)
+    session = presentation.ensure("http://127.0.0.1:5173")
+    presentation.publish({"view": "cart", "lines": [], "total": 0})
+
+    async def active_voice_turn() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            presentation.publish({"view": "menu", "items": [{"id": "late"}]})
+
+    voice_task = asyncio.create_task(active_voice_turn())
+    await asyncio.sleep(0)
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                pipecat_voice_task=voice_task,
+                presentation_session_manager=presentation,
+            )
+        )
+    )
+
+    try:
+        response = await kiosk_routes.reset_presentation(session.session_id, request)
+    finally:
+        if not voice_task.done():
+            voice_task.cancel()
+            await asyncio.gather(voice_task, return_exceptions=True)
+
+    assert response == {"ok": True}
+    assert presentation.replay(session.session_id) == {
+        "view": "none",
+        "presentation_session_id": session.session_id,
+    }
+    assert bus.history[-1].data["view"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_reset_for_another_session_does_not_cancel_the_active_voice_task(
+    manager: _FakePresentationManager,
+) -> None:
+    voice_task = asyncio.create_task(asyncio.Event().wait())
+    await asyncio.sleep(0)
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                pipecat_voice_task=voice_task,
+                presentation_session_manager=manager,
+            )
+        )
+    )
+
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await kiosk_routes.reset_presentation("other-session", request)
+        assert exc_info.value.status_code == 404
+        assert not voice_task.done()
+    finally:
+        voice_task.cancel()
+        await asyncio.gather(voice_task, return_exceptions=True)

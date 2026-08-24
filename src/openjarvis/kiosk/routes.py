@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -60,6 +62,14 @@ async def reset_presentation(session_id: str, request: Request):
     manager = getattr(request.app.state, "presentation_session_manager", None)
     if manager is None:
         raise HTTPException(status_code=503, detail="presentation_unavailable")
+    if manager.replay(session_id) is None:
+        raise HTTPException(status_code=404, detail="presentation_session_not_found")
+    voice_task = getattr(request.app.state, "pipecat_voice_task", None)
+    if isinstance(voice_task, asyncio.Future) and not voice_task.done():
+        voice_task.cancel()
+        await asyncio.gather(voice_task, return_exceptions=True)
+        if getattr(request.app.state, "pipecat_voice_task", None) is voice_task:
+            request.app.state.pipecat_voice_task = None
     if not manager.reset(session_id):
         raise HTTPException(status_code=404, detail="presentation_session_not_found")
     return {"ok": True}

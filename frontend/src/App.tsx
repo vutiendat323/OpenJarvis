@@ -19,9 +19,17 @@ import { OptInModal } from './components/OptInModal';
 
 import { UpdateChecker } from './components/Desktop/UpdateChecker';
 import { track, hashId } from './lib/analytics';
+import { appRouteMode } from './appRoute';
 
 export default function App() {
   const location = useLocation();
+  if (appRouteMode(location.pathname) === 'customer-display') {
+    return <CustomerDisplayPage />;
+  }
+  return <ApplicationShell />;
+}
+
+function ApplicationShell() {
   const [setupDone, setSetupDone] = useState(!isTauri());
   const handleSetupReady = useCallback(() => {
     setSetupDone(true);
@@ -198,7 +206,6 @@ export default function App() {
         </Route>
         {/* Unified kiosk page — full-screen, no layout chrome */}
         <Route path="kiosk" element={<KioskPage />} />
-        <Route path="customer-display" element={<CustomerDisplayPage />} />
       </Routes>
       <Toaster position="bottom-right" />
       {commandPaletteOpen && <CommandPalette />}

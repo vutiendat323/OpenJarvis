@@ -87,8 +87,7 @@ export function KioskPage() {
     }
     if (command === 'end') {
       startedRef.current = false;
-      void voice.end();
-      resetPresentation();
+      void presentationLifecycle.endVoiceThenReset(voice.end).catch(() => {});
       return;
     }
     if (command !== 'start') return;
@@ -99,8 +98,7 @@ export function KioskPage() {
     presentationLifecycle.markActive();
     void voice.start(threadId, selectedModel).then(() => {
       if (epoch !== policyEpochRef.current || !micEnabledRef.current) {
-        void voice.end();
-        resetPresentation();
+        void presentationLifecycle.endVoiceThenReset(voice.end).catch(() => {});
       }
     }).catch(() => {});
   }, [createConversation, micEnabled, presentationLifecycle, resetPresentation, selectedModel, voice.enabled, voice.end, voice.start]);
@@ -108,10 +106,11 @@ export function KioskPage() {
   useEffect(() => () => {
     if (startedRef.current) {
       startedRef.current = false;
-      void voice.end();
+      void presentationLifecycle.endVoiceThenReset(voice.end).catch(() => {});
+    } else {
+      resetPresentation();
     }
-    resetPresentation();
-  }, [resetPresentation, voice.end]);
+  }, [presentationLifecycle, resetPresentation, voice.end]);
 
   const rows = currentVoiceTurnRows({ ...voice, assistantText: voice.assistantCaptionText });
   const voiceStatusShimmers = shouldShimmerVoiceStatus(voice.status);

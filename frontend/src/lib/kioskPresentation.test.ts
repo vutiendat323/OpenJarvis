@@ -70,4 +70,23 @@ describe('kiosk presentation lifecycle', () => {
     lifecycle.requestReset();
     expect(reset).toHaveBeenCalledTimes(2);
   });
+
+  it('waits for voice teardown before requesting presentation reset', async () => {
+    let finishVoiceEnd: (() => void) | undefined;
+    const endVoice = vi.fn(() => new Promise<void>((resolve) => {
+      finishVoiceEnd = resolve;
+    }));
+    const reset = vi.fn().mockResolvedValue(undefined);
+    const lifecycle = createKioskPresentationLifecycle(reset);
+    lifecycle.setSessionId('session-1');
+
+    const teardown = lifecycle.endVoiceThenReset(endVoice);
+    const duplicateTeardown = lifecycle.endVoiceThenReset(endVoice);
+    expect(endVoice).toHaveBeenCalledOnce();
+    expect(reset).not.toHaveBeenCalled();
+
+    finishVoiceEnd?.();
+    await Promise.all([teardown, duplicateTeardown]);
+    expect(reset).toHaveBeenCalledOnce();
+  });
 });
