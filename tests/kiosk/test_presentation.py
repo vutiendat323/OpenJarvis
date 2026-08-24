@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import openjarvis.kiosk.presentation as presentation_module
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.kiosk.presentation import (
     PresentationSessionManager,
@@ -167,6 +168,19 @@ def test_publish_without_an_active_session_returns_unavailable(bus: EventBus) ->
     assert result.success is False
     assert result.content == "presentation_unavailable"
     assert bus.history == []
+
+
+def test_voice_generation_can_activate_before_display_ensure(bus: EventBus) -> None:
+    """Would fail if non-blocking Voice start outran presentation bootstrap."""
+    manager = PresentationSessionManager(bus, _FakeMCPClient(server_name="playwright"))
+
+    assert manager.activate("thread-1") is True
+    session = manager.ensure("http://127.0.0.1:5173")
+    with presentation_module.presentation_generation("thread-1"):
+        result = manager.publish({"view": "menu", "items": [{"id": "latte"}]})
+
+    assert result.success is True
+    assert manager.active_generation(session.session_id) == "thread-1"
 
 
 def test_reset_clears_previous_customer_state(bus: EventBus) -> None:

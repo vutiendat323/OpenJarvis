@@ -40,6 +40,22 @@ describe('kiosk presentation API', () => {
     );
   });
 
+  it('correlates a reset with the active voice generation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await resetPresentationSession('session-1', 'thread-1');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/kiosk/presentation/session-1/reset',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ generation: 'thread-1' }),
+      },
+    );
+  });
+
   it('raises concise errors for non-OK responses', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }));
 
@@ -66,7 +82,7 @@ describe('kiosk presentation lifecycle', () => {
     lifecycle.requestReset();
     expect(reset).toHaveBeenCalledTimes(1);
 
-    lifecycle.markActive();
+    lifecycle.markActive('thread-1');
     lifecycle.requestReset();
     expect(reset).toHaveBeenCalledTimes(2);
   });
@@ -88,5 +104,16 @@ describe('kiosk presentation lifecycle', () => {
     finishVoiceEnd?.();
     await Promise.all([teardown, duplicateTeardown]);
     expect(reset).toHaveBeenCalledOnce();
+  });
+
+  it('drops a pre-ensure reset when a new voice generation becomes active', () => {
+    const reset = vi.fn().mockResolvedValue(undefined);
+    const lifecycle = createKioskPresentationLifecycle(reset);
+
+    lifecycle.requestReset();
+    lifecycle.markActive('thread-1');
+    lifecycle.setSessionId('session-1');
+
+    expect(reset).not.toHaveBeenCalled();
   });
 });

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
 from threading import RLock
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
@@ -15,6 +17,21 @@ from openjarvis.core.types import ToolResult
 
 class PresentationUnavailableError(RuntimeError):
     """Raised when the customer display cannot be backed by Playwright."""
+
+
+_PRESENTATION_GENERATION: ContextVar[str | None] = ContextVar(
+    "openjarvis_presentation_generation", default=None
+)
+
+
+@contextmanager
+def presentation_generation(generation: str | None) -> Iterator[None]:
+    """Correlate display publications made by one native Voice session."""
+    token = _PRESENTATION_GENERATION.set(generation)
+    try:
+        yield
+    finally:
+        _PRESENTATION_GENERATION.reset(token)
 
 
 @dataclass(slots=True)
@@ -48,6 +65,7 @@ class PresentationSessionManager:
         self._client = find_playwright_client([client]) if client is not None else None
         self._lock = RLock()
         self._session: PresentationSession | None = None
+        self._active_generation: str | None = None
 
     def ensure(self, display_origin: str) -> PresentationSession:
         """Create one display tab, returning the existing session on later calls."""
@@ -86,6 +104,16 @@ class PresentationSessionManager:
                     content="presentation_unavailable",
                     success=False,
                 )
+            publication_generation = _PRESENTATION_GENERATION.get()
+            if (
+                publication_generation is not None
+                and publication_generation != self._active_generation
+            ):
+                return ToolResult(
+                    tool_name="presentation",
+                    content="presentation_stale_generation",
+                    success=False,
+                )
             if not self._session.display_connected:
                 self.recover_display_tab()
             normalized = deepcopy(payload)
@@ -96,11 +124,27 @@ class PresentationSessionManager:
                 tool_name="presentation", content="presentation_published"
             )
 
-    def reset(self, session_id: str) -> bool:
+    def activate(self, generation: str) -> bool:
+        """Make one native Voice session authoritative for publications."""
+        with self._lock:
+            self._active_generation = generation
+            return True
+
+    def active_generation(self, session_id: str) -> str | None:
+        """Return the active publication generation for one display session."""
+        with self._lock:
+            if self._session is None or self._session.session_id != session_id:
+                return None
+            return self._active_generation
+
+    def reset(self, session_id: str, *, generation: str | None = None) -> bool:
         """Replace only the active session's display state with the blank view."""
         with self._lock:
             if self._session is None or self._session.session_id != session_id:
                 return False
+            if generation is not None and self._active_generation != generation:
+                return False
+            self._active_generation = None
             self._session.last_payload = {
                 "view": "none",
                 "presentation_session_id": self._session.session_id,
@@ -231,4 +275,5 @@ __all__ = [
     "PresentationSessionManager",
     "PresentationUnavailableError",
     "find_playwright_client",
+    "presentation_generation",
 ]

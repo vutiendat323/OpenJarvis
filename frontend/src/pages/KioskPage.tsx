@@ -95,7 +95,7 @@ export function KioskPage() {
     const threadId = createConversation(selectedModel);
     threadIdRef.current = threadId;
     startedRef.current = true;
-    presentationLifecycle.markActive();
+    presentationLifecycle.markActive(threadId);
     void voice.start(threadId, selectedModel).then(() => {
       if (epoch !== policyEpochRef.current || !micEnabledRef.current) {
         void presentationLifecycle.endVoiceThenReset(voice.end).catch(() => {});

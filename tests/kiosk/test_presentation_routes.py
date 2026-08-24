@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -11,6 +12,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+import openjarvis.kiosk.presentation as presentation_module
 import openjarvis.kiosk.routes as kiosk_routes
 from openjarvis.core.events import EventBus
 from openjarvis.kiosk.presentation import (
@@ -229,3 +231,112 @@ async def test_reset_for_another_session_does_not_cancel_the_active_voice_task(
     finally:
         voice_task.cancel()
         await asyncio.gather(voice_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_reset_rejects_detached_sync_publication() -> None:
+    """A shielded sync worker from a reset generation cannot publish late."""
+    bus = EventBus(record_history=True)
+    mcp_client = Mock()
+    mcp_client._server_name = "playwright"
+    mcp_client.call_tool.return_value = {"content": []}
+    presentation = PresentationSessionManager(bus, mcp_client)
+    session = presentation.ensure("http://127.0.0.1:5173")
+    generation = "thread-old"
+    presentation.activate(generation)
+    worker_started = threading.Event()
+    publish_after_reset = threading.Event()
+    detached_worker: asyncio.Task | None = None
+    late_result = None
+
+    def publish_late() -> None:
+        nonlocal late_result
+        worker_started.set()
+        publish_after_reset.wait(timeout=1)
+        late_result = presentation.publish({"view": "menu", "items": [{"id": "late"}]})
+
+    async def active_voice_turn() -> None:
+        nonlocal detached_worker
+        with presentation_module.presentation_generation(generation):
+            detached_worker = asyncio.create_task(asyncio.to_thread(publish_late))
+            await asyncio.shield(detached_worker)
+
+    voice_task = asyncio.create_task(active_voice_turn())
+    assert await asyncio.to_thread(worker_started.wait, 1)
+    state = SimpleNamespace(
+        pipecat_voice_task=voice_task,
+        pipecat_voice_generation=generation,
+        presentation_session_manager=presentation,
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+
+    response = await kiosk_routes.reset_presentation(
+        session.session_id,
+        request,
+        SimpleNamespace(generation=generation),
+    )
+    publish_after_reset.set()
+    assert detached_worker is not None
+    await detached_worker
+
+    assert response == {"ok": True}
+    assert late_result is not None
+    assert late_result.success is False
+    assert late_result.content == "presentation_stale_generation"
+    assert presentation.replay(session.session_id)["view"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_delayed_old_reset_preserves_new_voice_generation() -> None:
+    """An old reset cannot cancel or clear a newly installed Voice task."""
+    bus = EventBus(record_history=True)
+    mcp_client = Mock()
+    mcp_client._server_name = "playwright"
+    mcp_client.call_tool.return_value = {"content": []}
+    presentation = PresentationSessionManager(bus, mcp_client)
+    session = presentation.ensure("http://127.0.0.1:5173")
+    old_generation = "thread-old"
+    new_generation = "thread-new"
+    presentation.activate(old_generation)
+    old_cancelled = asyncio.Event()
+    finish_old_cancellation = asyncio.Event()
+
+    async def old_voice_turn() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            old_cancelled.set()
+            await finish_old_cancellation.wait()
+
+    old_task = asyncio.create_task(old_voice_turn())
+    await asyncio.sleep(0)
+    state = SimpleNamespace(
+        pipecat_voice_task=old_task,
+        pipecat_voice_generation=old_generation,
+        presentation_session_manager=presentation,
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+    reset_task = asyncio.create_task(
+        kiosk_routes.reset_presentation(
+            session.session_id,
+            request,
+            SimpleNamespace(generation=old_generation),
+        )
+    )
+    await old_cancelled.wait()
+
+    presentation.activate(new_generation)
+    with presentation_module.presentation_generation(new_generation):
+        presentation.publish({"view": "menu", "items": [{"id": "new"}]})
+    new_task = asyncio.create_task(asyncio.Event().wait())
+    state.pipecat_voice_task = new_task
+    state.pipecat_voice_generation = new_generation
+    finish_old_cancellation.set()
+
+    try:
+        assert await reset_task == {"ok": True}
+        assert not new_task.done()
+        assert presentation.replay(session.session_id)["items"] == [{"id": "new"}]
+    finally:
+        new_task.cancel()
+        await asyncio.gather(new_task, return_exceptions=True)

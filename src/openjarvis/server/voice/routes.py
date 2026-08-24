@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from openjarvis.kiosk.presentation import presentation_generation
 from openjarvis.server.voice.llm import message_text
 from openjarvis.server.voice.persistence import session_store_for
 from openjarvis.server.voice.pipeline import (
@@ -338,9 +339,18 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
             request.app.state.pipecat_voice_context = context
             # Not awaited: the handshake must answer now, and the pipeline
             # lives for as long as the peer connection does.
-            request.app.state.pipecat_voice_task = asyncio.create_task(
-                run_until_disconnected(worker, context, connection)
+            generation = session.chat_thread_id
+            presentation = getattr(
+                request.app.state, "presentation_session_manager", None
             )
+            if presentation is not None:
+                presentation.activate(generation)
+            with presentation_generation(generation):
+                task = asyncio.create_task(
+                    run_until_disconnected(worker, context, connection)
+                )
+            request.app.state.pipecat_voice_generation = generation
+            request.app.state.pipecat_voice_task = task
         except Exception:
             sessions.end_session(session.voice_session_id, reason="pipeline_failed")
             raise
