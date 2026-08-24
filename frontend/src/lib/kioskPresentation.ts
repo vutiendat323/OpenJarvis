@@ -22,3 +22,42 @@ export async function resetPresentationSession(sessionId: string): Promise<void>
   );
   if (!response.ok) throw new Error('Unable to reset customer display');
 }
+
+export interface KioskPresentationLifecycle {
+  markActive: () => void;
+  requestReset: () => void;
+  setSessionId: (sessionId: string) => void;
+}
+
+export function createKioskPresentationLifecycle(
+  resetSession: (sessionId: string) => Promise<void> = resetPresentationSession,
+): KioskPresentationLifecycle {
+  let sessionId: string | undefined;
+  let resetRequired = true;
+  let resetPending = false;
+
+  const runReset = (id: string) => {
+    void resetSession(id).catch(() => {});
+  };
+
+  return {
+    markActive: () => {
+      resetRequired = true;
+    },
+    requestReset: () => {
+      if (!resetRequired) return;
+      resetRequired = false;
+      if (sessionId) {
+        runReset(sessionId);
+      } else {
+        resetPending = true;
+      }
+    },
+    setSessionId: (id: string) => {
+      sessionId = id;
+      if (!resetPending) return;
+      resetPending = false;
+      runReset(id);
+    },
+  };
+}

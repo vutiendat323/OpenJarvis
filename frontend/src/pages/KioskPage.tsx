@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { X, ScreenShare, ScreenShareOff } from 'lucide-react';
 
@@ -13,7 +13,7 @@ import { useScreenShare } from '@/hooks/useScreenShare';
 import { useUiLanguage } from '@/hooks/useUiLanguage';
 import { shouldShimmerVoiceStatus, voiceStatusLabel } from '@/hooks/voiceUiText';
 import { useAppStore } from '@/lib/store';
-import { ensurePresentationSession, resetPresentationSession } from '@/lib/kioskPresentation';
+import { createKioskPresentationLifecycle, ensurePresentationSession } from '@/lib/kioskPresentation';
 import { VISUALIZER_DEFAULTS } from '@/components/Visualizer/types';
 import type { VisualizerSettings, VoiceStatus } from '@/components/Visualizer/types';
 import type { LocalVoiceStatus } from '@/hooks/voiceStatus';
@@ -61,30 +61,22 @@ export function KioskPage() {
   const createConversation = useAppStore((state) => state.createConversation);
   const selectedModel = useAppStore((state) => state.selectedModel);
   const startedRef = useRef(false);
-  const presentationSessionIdRef = useRef<string | undefined>(undefined);
+  const presentationLifecycleRef = useRef<ReturnType<typeof createKioskPresentationLifecycle> | null>(null);
+  if (presentationLifecycleRef.current === null) {
+    presentationLifecycleRef.current = createKioskPresentationLifecycle();
+  }
+  const presentationLifecycle = presentationLifecycleRef.current;
+  const resetPresentation = presentationLifecycle.requestReset;
   const policyEpochRef = useRef(0);
   const micEnabledRef = useRef(micEnabled);
 
   micEnabledRef.current = micEnabled;
 
-  const resetPresentation = useCallback(() => {
-    const sessionId = presentationSessionIdRef.current;
-    if (sessionId) void resetPresentationSession(sessionId).catch(() => {});
-  }, []);
-
   useEffect(() => {
-    let mounted = true;
     void ensurePresentationSession(window.location.origin).then((sessionId) => {
-      if (mounted) {
-        presentationSessionIdRef.current = sessionId;
-      } else {
-        void resetPresentationSession(sessionId).catch(() => {});
-      }
+      presentationLifecycle.setSessionId(sessionId);
     }).catch(() => {});
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  }, [presentationLifecycle]);
 
   useEffect(() => {
     const epoch = ++policyEpochRef.current;
@@ -104,13 +96,14 @@ export function KioskPage() {
     const threadId = createConversation(selectedModel);
     threadIdRef.current = threadId;
     startedRef.current = true;
+    presentationLifecycle.markActive();
     void voice.start(threadId, selectedModel).then(() => {
       if (epoch !== policyEpochRef.current || !micEnabledRef.current) {
         void voice.end();
         resetPresentation();
       }
     }).catch(() => {});
-  }, [createConversation, micEnabled, resetPresentation, selectedModel, voice.enabled, voice.end, voice.start]);
+  }, [createConversation, micEnabled, presentationLifecycle, resetPresentation, selectedModel, voice.enabled, voice.end, voice.start]);
 
   useEffect(() => () => {
     if (startedRef.current) {

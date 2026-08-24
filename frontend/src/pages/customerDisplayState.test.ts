@@ -65,6 +65,22 @@ describe('reduceCustomerDisplay', () => {
       items: [{ id: 'latte', name: 'Latte', price: 45000 }],
     });
   });
+
+  it('ignores null and non-record event data without throwing', () => {
+    const state: CustomerDisplayState = {
+      view: 'menu',
+      items: [{ id: 'latte', name: 'Latte', price: 45000 }],
+    };
+
+    for (const data of [null, 'not-an-object']) {
+      const event = {
+        type: 'display_update',
+        timestamp: 0,
+        data,
+      } as unknown as AgentEvent;
+      expect(reduceCustomerDisplay(state, event, 'A')).toBe(state);
+    }
+  });
 });
 
 describe('isSafeQrImageSource', () => {

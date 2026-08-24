@@ -101,6 +101,7 @@ function pickRows<T>(value: unknown, pick: (row: unknown) => T | null): T[] | nu
 function matchingData(event: AgentEvent, sessionId: string): Record<string, unknown> | null {
   if (
     event.type !== 'display_update'
+    || !isRecord(event.data)
     || event.data.presentation_session_id !== sessionId
   ) {
     return null;

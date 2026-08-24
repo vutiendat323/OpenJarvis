@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  createKioskPresentationLifecycle,
   ensurePresentationSession,
   resetPresentationSession,
 } from './kioskPresentation';
@@ -46,5 +47,27 @@ describe('kiosk presentation API', () => {
       .rejects.toThrow('Unable to start customer display');
     await expect(resetPresentationSession('session-1'))
       .rejects.toThrow('Unable to reset customer display');
+  });
+});
+
+describe('kiosk presentation lifecycle', () => {
+  it('defers and coalesces reset requests until the ensured session resolves', () => {
+    const reset = vi.fn().mockResolvedValue(undefined);
+    const lifecycle = createKioskPresentationLifecycle(reset);
+
+    lifecycle.requestReset();
+    lifecycle.requestReset();
+    expect(reset).not.toHaveBeenCalled();
+
+    lifecycle.setSessionId('session-1');
+    expect(reset).toHaveBeenCalledTimes(1);
+    expect(reset).toHaveBeenLastCalledWith('session-1');
+
+    lifecycle.requestReset();
+    expect(reset).toHaveBeenCalledTimes(1);
+
+    lifecycle.markActive();
+    lifecycle.requestReset();
+    expect(reset).toHaveBeenCalledTimes(2);
   });
 });
