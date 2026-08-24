@@ -66,10 +66,13 @@ class PresentationSessionManager:
                 display_url=f"{origin}/customer-display?session={session_id}",
                 live_tab_index=live_tab_index,
             )
-            client.call_tool("browser_navigate", {"url": session.display_url})
-            client.call_tool(
-                "browser_tabs", {"action": "select", "index": session.live_tab_index}
-            )
+            try:
+                client.call_tool("browser_navigate", {"url": session.display_url})
+            finally:
+                client.call_tool(
+                    "browser_tabs",
+                    {"action": "select", "index": session.live_tab_index},
+                )
             self._session = session
             return session
 
@@ -181,6 +184,8 @@ def _selected_tab_index(result: dict[str, Any]) -> int:
 
 def _tool_text(result: dict[str, Any]) -> str:
     """Keep the current MCP response-shape parsing at this boundary."""
+    if result.get("isError"):
+        raise PresentationUnavailableError("browser_tabs returned an MCP error")
     content = result.get("content", [])
     if isinstance(content, str):
         return content

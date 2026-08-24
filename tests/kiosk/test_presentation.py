@@ -19,11 +19,17 @@ class _FakeMCPClient:
         self._server_name = server_name
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.tab_list_text = "0: http://127.0.0.1:5173/kiosk"
+        self.tab_list_is_error = False
+        self.navigate_error: Exception | None = None
 
     def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
         self.calls.append((name, arguments))
         if name == "browser_tabs" and arguments == {"action": "list"}:
+            if self.tab_list_is_error:
+                return {"content": [], "isError": True}
             return {"content": [{"type": "text", "text": self.tab_list_text}]}
+        if name == "browser_navigate" and self.navigate_error is not None:
+            raise self.navigate_error
         return {"content": []}
 
 
@@ -35,18 +41,35 @@ def bus() -> EventBus:
 def test_ensure_creates_display_tab_once_and_reselects_live_tab(bus: EventBus) -> None:
     """Would fail if bootstrap creates a second tab or leaves it selected."""
     client = _FakeMCPClient(server_name="playwright")
+    client.tab_list_text = "0: http://127.0.0.1:5173/kiosk\n2: (current) kiosk home"
     manager = PresentationSessionManager(bus, client)
 
     first = manager.ensure("http://127.0.0.1:5173")
     second = manager.ensure("http://127.0.0.1:5173")
 
     assert second is first
+    assert first.live_tab_index == 2
     assert client.calls == [
         ("browser_tabs", {"action": "list"}),
         ("browser_tabs", {"action": "new"}),
         ("browser_navigate", {"url": first.display_url}),
         ("browser_tabs", {"action": "select", "index": first.live_tab_index}),
     ]
+
+
+def test_ensure_reselects_the_live_tab_when_display_navigation_raises(
+    bus: EventBus,
+) -> None:
+    """Would fail if a transient navigation error left the new tab selected."""
+    client = _FakeMCPClient(server_name="playwright")
+    client.tab_list_text = "3: (current) kiosk home"
+    client.navigate_error = RuntimeError("navigation failed")
+    manager = PresentationSessionManager(bus, client)
+
+    with pytest.raises(RuntimeError, match="navigation failed"):
+        manager.ensure("http://127.0.0.1:5173")
+
+    assert client.calls[-1] == ("browser_tabs", {"action": "select", "index": 3})
 
 
 def test_find_playwright_client_uses_only_the_playwright_server_name() -> None:
@@ -136,6 +159,25 @@ def test_publish_recovers_a_disconnected_display_tab_without_navigating_live_tab
         ("browser_tabs", {"action": "new"}),
         ("browser_navigate", {"url": session.display_url}),
         ("browser_tabs", {"action": "select", "index": session.live_tab_index}),
+    ]
+
+
+def test_publish_fails_safely_when_recovery_tab_listing_is_an_mcp_error(
+    bus: EventBus,
+) -> None:
+    """Would fail if a failed tab listing created a duplicate display tab."""
+    client = _FakeMCPClient(server_name="playwright")
+    manager = PresentationSessionManager(bus, client)
+    session = manager.ensure("http://127.0.0.1:5173")
+    manager.mark_display_disconnected(session.session_id)
+    client.tab_list_is_error = True
+    calls_before_recovery = len(client.calls)
+
+    with pytest.raises(PresentationUnavailableError, match="browser_tabs"):
+        manager.publish({"view": "menu"})
+
+    assert client.calls[calls_before_recovery:] == [
+        ("browser_tabs", {"action": "list"}),
     ]
 
 
