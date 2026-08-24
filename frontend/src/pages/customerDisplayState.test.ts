@@ -81,6 +81,50 @@ describe('reduceCustomerDisplay', () => {
       expect(reduceCustomerDisplay(state, event, 'A')).toBe(state);
     }
   });
+
+  it('accepts a normalized bill and drops invented line fields', () => {
+    expect(reduceCustomerDisplay(waitingState, displayEvent('A', {
+      view: 'bill',
+      order_id: 'order-1',
+      status: 'placed',
+      order_type: 'take-out',
+      branch: 'br-thu-duc',
+      lines: [{
+        name: 'Cà phê đen',
+        quantity: 2,
+        line_total: 70000,
+        html: '<script>x</script>',
+      }],
+      total: 70000,
+      receipt_id: 'invented-receipt',
+    }), 'A')).toEqual({
+      view: 'bill',
+      order_id: 'order-1',
+      status: 'placed',
+      order_type: 'take-out',
+      branch: 'br-thu-duc',
+      lines: [{ name: 'Cà phê đen', quantity: 2, line_total: 70000 }],
+      total: 70000,
+    });
+  });
+
+  it('accepts only the normalized payment QR fields', () => {
+    expect(reduceCustomerDisplay(waitingState, displayEvent('A', {
+      view: 'payment_qr',
+      order_id: 'order-1',
+      payment_slug: 'payment-1',
+      status: 'pending',
+      qr_code: 'merchant-opaque-qr',
+      html: '<img src=x onerror=alert(1)>',
+      receipt_id: 'receipt-that-must-not-be-shown',
+    }), 'A')).toEqual({
+      view: 'payment_qr',
+      order_id: 'order-1',
+      payment_slug: 'payment-1',
+      status: 'pending',
+      qr_code: 'merchant-opaque-qr',
+    });
+  });
 });
 
 describe('isSafeQrImageSource', () => {

@@ -28,6 +28,8 @@ DISPLAYS = {"displays": True}
 # gets it dropped here rather than at render time.
 _ITEM_FIELDS = ("id", "name", "price", "available", "image_url", "note")
 _LINE_FIELDS = ("name", "size", "note", "quantity", "line_total")
+_BILL_FIELDS = ("order_id", "status", "order_type", "branch", "lines", "total")
+_PAYMENT_QR_FIELDS = ("order_id", "payment_slug", "status", "qr_code")
 
 
 class _DisplayTool(BaseTool):
@@ -139,6 +141,92 @@ class DisplayCartTool(_DisplayTool):
         return self._publish(
             {"view": "cart", "lines": [line for line in lines if line], "total": total}
         )
+
+
+@ToolRegistry.register("display_bill")
+class DisplayBillTool(_DisplayTool):
+    """Put a merchant-read order on the customer's screen."""
+
+    tool_id = "display_bill"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="display_bill",
+            description=(
+                "Show an order bill exactly as order_verify read it from the "
+                "merchant. Pass order_id, status, order_type, branch, lines "
+                "and total from that verified readback; do not invent them."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "order_id": {"type": "string"},
+                    "status": {"type": "string"},
+                    "order_type": {"type": "string"},
+                    "branch": {"type": "string"},
+                    "lines": {"type": "array", "items": {"type": "object"}},
+                    "total": {"type": "integer"},
+                },
+                "required": list(_BILL_FIELDS),
+            },
+            category="display",
+            metadata=dict(DISPLAYS),
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        bill = _picked(params, _BILL_FIELDS)
+        rows = bill.get("lines") or []
+        lines = [_picked(row, _LINE_FIELDS) for row in rows]
+        try:
+            total = int(bill.get("total", 0) or 0)
+        except (TypeError, ValueError):
+            total = 0
+        bill["lines"] = [line for line in lines if line]
+        bill["total"] = total
+        return self._publish({"view": "bill", **bill})
+
+
+@ToolRegistry.register("display_payment_qr")
+class DisplayPaymentQrTool(_DisplayTool):
+    """Put a verified merchant payment QR value on the customer's screen."""
+
+    tool_id = "display_payment_qr"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="display_payment_qr",
+            description=(
+                "Show the QR value from a verified payment snapshot. Call "
+                "this explicitly only after source_verify and a subsequent "
+                "structured_query(resource_type='payment'); never use an "
+                "unverified source_execute receipt."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "order_id": {"type": "string"},
+                    "payment_slug": {"type": "string"},
+                    "status": {"type": "string"},
+                    "qr_code": {"type": "string"},
+                },
+                "required": list(_PAYMENT_QR_FIELDS),
+            },
+            category="display",
+            metadata=dict(DISPLAYS),
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        qr_code = params.get("qr_code")
+        if not isinstance(qr_code, str) or not qr_code.strip():
+            return ToolResult(
+                tool_name="display_payment_qr",
+                content="qr_code_required",
+                success=False,
+            )
+        payment = _picked(params, _PAYMENT_QR_FIELDS)
+        return self._publish({"view": "payment_qr", **payment})
 
 
 @ToolRegistry.register("display_clear")

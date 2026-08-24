@@ -5,7 +5,13 @@ from __future__ import annotations
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolResult
 from openjarvis.kiosk.presentation import PresentationSessionManager
-from openjarvis.tools.display import DisplayCartTool, DisplayClearTool, DisplayMenuTool
+from openjarvis.tools.display import (
+    DisplayBillTool,
+    DisplayCartTool,
+    DisplayClearTool,
+    DisplayMenuTool,
+    DisplayPaymentQrTool,
+)
 
 
 class _Recorder:
@@ -34,7 +40,13 @@ def _wired(cls):
 def test_display_tools_are_neither_mutations_nor_observations():
     """They draw; they do not touch merchant state, so the doctrine test
     must not classify them."""
-    for cls in (DisplayMenuTool, DisplayCartTool, DisplayClearTool):
+    for cls in (
+        DisplayMenuTool,
+        DisplayCartTool,
+        DisplayBillTool,
+        DisplayPaymentQrTool,
+        DisplayClearTool,
+    ):
         metadata = cls().spec.metadata
         assert metadata == {"displays": True}
         assert cls().spec.category == "display"
@@ -111,6 +123,88 @@ def test_display_cart_keeps_size_and_note_but_drops_invented_fields():
     assert line["note"] == "ít đường"
     assert set(line) <= {"name", "size", "note", "quantity", "line_total"}
     assert "html" not in line
+
+
+def test_display_bill_keeps_only_merchant_bill_fields_and_normalizes_total():
+    tool, recorder = _wired(DisplayBillTool)
+
+    result = tool.execute(
+        order_id="order-1",
+        status="placed",
+        order_type="take-out",
+        branch="br-thu-duc",
+        lines=[
+            {
+                "name": "Cà phê đen",
+                "size": "tiêu chuẩn",
+                "note": "ít đường",
+                "quantity": 2,
+                "line_total": 70_000,
+                "html": "<script>x</script>",
+            }
+        ],
+        total="70000",
+        receipt_id="invented-receipt",
+    )
+
+    assert result.success is True
+    assert recorder.events[0].data == {
+        "view": "bill",
+        "order_id": "order-1",
+        "status": "placed",
+        "order_type": "take-out",
+        "branch": "br-thu-duc",
+        "lines": [
+            {
+                "name": "Cà phê đen",
+                "size": "tiêu chuẩn",
+                "note": "ít đường",
+                "quantity": 2,
+                "line_total": 70_000,
+            }
+        ],
+        "total": 70_000,
+    }
+
+
+def test_display_payment_qr_drops_every_field_outside_the_verified_view():
+    tool, recorder = _wired(DisplayPaymentQrTool)
+
+    result = tool.execute(
+        order_id="order-1",
+        payment_slug="payment-1",
+        status="pending",
+        qr_code="merchant-opaque-qr",
+        html="<img src=x onerror=alert(1)>",
+        receipt_id="receipt-that-must-not-be-shown",
+    )
+
+    assert result.success is True
+    assert recorder.events[0].data == {
+        "view": "payment_qr",
+        "order_id": "order-1",
+        "payment_slug": "payment-1",
+        "status": "pending",
+        "qr_code": "merchant-opaque-qr",
+    }
+
+
+def test_display_payment_qr_rejects_an_empty_qr_without_publishing():
+    tool, recorder = _wired(DisplayPaymentQrTool)
+
+    result = tool.execute(
+        order_id="order-1",
+        payment_slug="payment-1",
+        status="pending",
+        qr_code="  ",
+    )
+
+    assert result == ToolResult(
+        tool_name="display_payment_qr",
+        content="qr_code_required",
+        success=False,
+    )
+    assert recorder.events == []
 
 
 def test_display_clear_publishes_an_empty_view():

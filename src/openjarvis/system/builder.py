@@ -541,6 +541,16 @@ class SystemBuilder:
             if merchant is not None:
                 self._inject_ordering_merchant(tool, merchant)
             self._inject_data_plane_runtime(tool, data_plane, config)
+        display_bill = next(
+            (
+                tool
+                for tool in internal_server.get_tools()
+                if tool.spec.name == "display_bill"
+            ),
+            None,
+        )
+        for tool in internal_server.get_tools():
+            self._inject_bill_display(tool, display_bill)
 
         tool_names = self._tool_names
         if tool_names is None:
@@ -629,6 +639,11 @@ class SystemBuilder:
         """Hand the session-scoped presentation manager to every display tool."""
         if tool.spec.category == "display" and hasattr(tool, "_presentation"):
             tool._presentation = presentation
+
+    @staticmethod
+    def _inject_bill_display(tool, display_bill) -> None:
+        if tool.spec.name == "order_verify" and hasattr(tool, "_display_bill"):
+            tool._display_bill = display_bill
 
     @staticmethod
     def _inject_data_plane_runtime(tool, runtime, config) -> None:

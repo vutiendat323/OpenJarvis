@@ -419,6 +419,10 @@ class OrderVerifyTool(_MerchantTool):
 
     tool_id = "order_verify"
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._display_bill: Optional[BaseTool] = None
+
     @property
     def spec(self) -> ToolSpec:
         return ToolSpec(
@@ -454,15 +458,20 @@ class OrderVerifyTool(_MerchantTool):
         order = self._merchant.read_order(str(params.get("order_id", "")))
         if order is None:
             return self._fail("order_verify", "unknown_order")
+        bill = {
+            "order_id": order.order_id,
+            "status": order.status,
+            "order_type": order.order_type,
+            "branch": order.branch_slug,
+            "lines": [asdict(line) for line in order.lines],
+            "total": order.total,
+        }
+        if self._display_bill is not None:
+            self._display_bill.execute(**bill)
         return self._ok(
             "order_verify",
             {
-                "order_id": order.order_id,
-                "status": order.status,
-                "order_type": order.order_type,
-                "branch": order.branch_slug,
-                "lines": [asdict(line) for line in order.lines],
-                "total": order.total,
+                **bill,
                 # Stated in the payload, not only in the description: the
                 # Agent reads results far more reliably than it re-reads a
                 # tool spec, and overclaiming here means telling a customer

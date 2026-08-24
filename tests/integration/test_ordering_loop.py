@@ -136,7 +136,7 @@ def test_ordering_and_display_tools_never_overlap():
             assert len(kinds) == 1, f"{spec.name} declares {kinds}"
             checked += 1
 
-    assert checked == 11, f"expected 8 ordering + 3 display tools, saw {checked}"
+    assert checked == 13, f"expected 8 ordering + 5 display tools, saw {checked}"
 
 
 def test_the_real_build_wires_one_shared_merchant_into_every_ordering_tool(tmp_path):
