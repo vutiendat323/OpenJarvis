@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from openjarvis.kiosk.presentation import PresentationUnavailableError
 
@@ -44,7 +45,7 @@ async def ensure_presentation(body: EnsurePresentationRequest, request: Request)
     if manager is None:
         raise HTTPException(status_code=503, detail="presentation_unavailable")
     try:
-        session = manager.ensure(body.display_origin)
+        session = await run_in_threadpool(manager.ensure, body.display_origin)
     except PresentationUnavailableError as exc:
         raise HTTPException(
             status_code=503, detail="presentation_unavailable"

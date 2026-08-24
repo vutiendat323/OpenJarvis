@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import openjarvis.kiosk.routes as kiosk_routes
 from openjarvis.core.events import EventBus
 from openjarvis.kiosk.presentation import PresentationSessionManager
-from openjarvis.kiosk.routes import router
 from openjarvis.server.app import create_app
 
 
@@ -40,7 +41,7 @@ def manager() -> _FakePresentationManager:
 def client(manager: _FakePresentationManager) -> TestClient:
     app = FastAPI()
     app.state.presentation_session_manager = manager
-    app.include_router(router)
+    app.include_router(kiosk_routes.router)
     return TestClient(app)
 
 
@@ -55,6 +56,37 @@ def test_ensure_returns_one_session_and_passes_the_frontend_origin(
     assert response.status_code == 200
     assert response.json() == {"presentation_session_id": "session-1"}
     assert manager.ensure_origins == ["http://127.0.0.1:5173"]
+
+
+def test_ensure_awaits_the_threadpool_for_blocking_mcp_work(
+    client: TestClient,
+    manager: _FakePresentationManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    origin = "http://127.0.0.1:5173"
+    blocking_ensure = Mock(
+        side_effect=AssertionError("blocking ensure ran on the ASGI event loop")
+    )
+    manager.ensure = blocking_ensure
+    run_in_threadpool = AsyncMock(
+        return_value=SimpleNamespace(session_id="threadpool-session")
+    )
+    monkeypatch.setattr(
+        kiosk_routes,
+        "run_in_threadpool",
+        run_in_threadpool,
+        raising=False,
+    )
+
+    response = client.post(
+        "/api/kiosk/presentation/ensure",
+        json={"display_origin": origin},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"presentation_session_id": "threadpool-session"}
+    run_in_threadpool.assert_awaited_once_with(blocking_ensure, origin)
+    blocking_ensure.assert_not_called()
 
 
 def test_ensure_returns_503_when_presentation_is_unavailable(
