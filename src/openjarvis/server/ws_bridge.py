@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from openjarvis.core.events import Event, EventBus, EventType
+from openjarvis.kiosk.presentation import PresentationSessionManager
 
 try:
     from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -33,7 +35,11 @@ _AGENT_EVENTS = {
 }
 
 
-def create_ws_router(event_bus: EventBus) -> Any:
+def create_ws_router(
+    event_bus: EventBus,
+    *,
+    presentation_manager: PresentationSessionManager | None = None,
+) -> Any:
     """Create a FastAPI router with a WebSocket endpoint for agent events."""
     router = APIRouter()
     # Each connected client gets a queue + loop ref for thread-safe event delivery
@@ -55,6 +61,12 @@ def create_ws_router(event_bus: EventBus) -> Any:
             data = event.data or {}
             event_agent = data.get("agent_id") or data.get("agent")
             if agent_filter and event_agent != agent_filter:
+                continue
+            presentation_filter = getattr(ws, "_presentation_session_filter", None)
+            if presentation_filter and (
+                event.event_type is not EventType.DISPLAY_UPDATE
+                or data.get("presentation_session_id") != presentation_filter
+            ):
                 continue
             try:
                 loop.call_soon_threadsafe(queue.put_nowait, payload)
@@ -82,6 +94,8 @@ def create_ws_router(event_bus: EventBus) -> Any:
         # Parse agent_id filter from query string
         agent_id = websocket.query_params.get("agent_id")
         websocket._agent_filter = agent_id  # type: ignore[attr-defined]
+        presentation_session_id = websocket.query_params.get("presentation_session_id")
+        websocket._presentation_session_filter = presentation_session_id  # type: ignore[attr-defined]
         queue: asyncio.Queue = asyncio.Queue(maxsize=100)
         loop = asyncio.get_running_loop()
         clients[websocket] = (queue, loop)
@@ -89,6 +103,17 @@ def create_ws_router(event_bus: EventBus) -> Any:
         payload: asyncio.Task | None = None
         disconnected = False
         try:
+            if presentation_session_id and presentation_manager is not None:
+                presentation_manager.mark_display_connected(presentation_session_id)
+                replay = presentation_manager.replay(presentation_session_id)
+                if replay is not None:
+                    queue.put_nowait(
+                        {
+                            "type": EventType.DISPLAY_UPDATE.value,
+                            "timestamp": time.time(),
+                            "data": replay,
+                        }
+                    )
             recv = asyncio.create_task(websocket.receive())
             payload = asyncio.create_task(queue.get())
             while True:
@@ -110,6 +135,8 @@ def create_ws_router(event_bus: EventBus) -> Any:
         except WebSocketDisconnect:
             disconnected = True
         finally:
+            if presentation_session_id and presentation_manager is not None:
+                presentation_manager.mark_display_disconnected(presentation_session_id)
             clients.pop(websocket, None)
             pending = [task for task in (recv, payload) if task is not None]
             for task in pending:

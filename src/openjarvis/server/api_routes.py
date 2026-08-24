@@ -1093,7 +1093,12 @@ def include_all_routes(app) -> None:
         from openjarvis.server.ws_bridge import create_ws_router
 
         event_bus = getattr(app.state, "bus", None) or get_event_bus()
-        ws_router = create_ws_router(event_bus)
+        ws_router = create_ws_router(
+            event_bus,
+            presentation_manager=getattr(
+                app.state, "presentation_session_manager", None
+            ),
+        )
         app.include_router(ws_router)
     except Exception:
         logger.debug("WebSocket bridge not available", exc_info=True)

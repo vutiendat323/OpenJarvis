@@ -36,6 +36,22 @@ def app(event_bus):
     return app
 
 
+class _FakePresentationManager:
+    def __init__(self, replay_payload=None):
+        self.replay_payload = replay_payload
+        self.connected: list[str] = []
+        self.disconnected: list[str] = []
+
+    def replay(self, session_id):
+        return self.replay_payload
+
+    def mark_display_connected(self, session_id):
+        self.connected.append(session_id)
+
+    def mark_display_disconnected(self, session_id):
+        self.disconnected.append(session_id)
+
+
 class TestWSBridge:
     def test_websocket_receives_events(self, app, event_bus):
         client = TestClient(app)
@@ -62,6 +78,73 @@ class TestWSBridge:
             time.sleep(0.05)  # Let call_soon_threadsafe deliver to queue
             data = ws.receive_json()
             assert data["data"]["agent_id"] == "agent-A"
+
+    def test_websocket_filters_display_updates_by_presentation_session(self, event_bus):
+        from openjarvis.server.ws_bridge import create_ws_router
+
+        app = FastAPI()
+        app.include_router(create_ws_router(event_bus))
+        client = TestClient(app)
+        with (
+            client.websocket_connect(
+                "/v1/agents/events?presentation_session_id=customer-A"
+            ) as customer_a,
+            client.websocket_connect(
+                "/v1/agents/events?presentation_session_id=customer-B"
+            ) as customer_b,
+        ):
+            event_bus.publish(
+                EventType.DISPLAY_UPDATE,
+                {"presentation_session_id": "customer-B", "view": "payment"},
+            )
+            event_bus.publish(
+                EventType.DISPLAY_UPDATE,
+                {"presentation_session_id": "customer-A", "view": "menu"},
+            )
+            time.sleep(0.05)
+
+            assert customer_a.receive_json()["data"] == {
+                "presentation_session_id": "customer-A",
+                "view": "menu",
+            }
+            assert customer_b.receive_json()["data"] == {
+                "presentation_session_id": "customer-B",
+                "view": "payment",
+            }
+
+    def test_websocket_replays_presentation_state_after_connecting(self, event_bus):
+        from openjarvis.server.ws_bridge import create_ws_router
+
+        replay = {
+            "view": "menu",
+            "presentation_session_id": "customer-A",
+            "items": [],
+        }
+        manager = _FakePresentationManager(replay)
+        app = FastAPI()
+        app.include_router(create_ws_router(event_bus, presentation_manager=manager))
+        client = TestClient(app)
+
+        with client.websocket_connect(
+            "/v1/agents/events?presentation_session_id=customer-A"
+        ) as websocket:
+            message = websocket.receive_json()
+            assert message["type"] == "display_update"
+            assert message["data"] == replay
+            assert manager.connected == ["customer-A"]
+
+        assert manager.disconnected == ["customer-A"]
+
+    def test_agent_filter_does_not_receive_unscoped_display_updates(
+        self, app, event_bus
+    ):
+        client = TestClient(app)
+        with client.websocket_connect("/v1/agents/events?agent_id=agent-A") as ws:
+            event_bus.publish(EventType.DISPLAY_UPDATE, {"view": "menu"})
+            event_bus.publish(EventType.AGENT_TICK_START, {"agent_id": "agent-A"})
+            time.sleep(0.05)
+
+            assert ws.receive_json()["data"] == {"agent_id": "agent-A"}
 
     def test_client_disconnect_stops_handler(self, event_bus):
         async def exercise():
@@ -212,6 +295,72 @@ class TestWSBridge:
             await asyncio.wait_for(endpoint(websocket), timeout=1)
 
             assert websocket.sent[0]["type"] == "kiosk_state_changed"
+
+        asyncio.run(exercise())
+
+    def test_app_routes_bridge_replays_injected_presentation_manager(self):
+        async def exercise():
+            from openjarvis.server.api_routes import include_all_routes
+
+            event_bus = EventBus()
+            manager = _FakePresentationManager(
+                {
+                    "view": "menu",
+                    "presentation_session_id": "customer-A",
+                    "items": [],
+                }
+            )
+            app = FastAPI()
+            app.state.api_key = ""
+            app.state.bus = event_bus
+            app.state.presentation_session_manager = manager
+            include_all_routes(app)
+            endpoint = next(
+                route.endpoint
+                for route in app.routes
+                if getattr(route, "path", None) == "/v1/agents/events"
+            )
+
+            class FakeWebSocket:
+                def __init__(self):
+                    self.app = app
+                    self.query_params = {"presentation_session_id": "customer-A"}
+                    self.headers = {}
+                    self.sent = []
+                    self.receive_count = 0
+                    self.disconnect = asyncio.Event()
+
+                async def accept(self):
+                    pass
+
+                async def receive(self):
+                    self.receive_count += 1
+                    if self.receive_count == 1:
+                        event_bus.publish(
+                            EventType.DISPLAY_UPDATE,
+                            {
+                                "view": "live",
+                                "presentation_session_id": "customer-A",
+                            },
+                        )
+                        return {"type": "websocket.receive", "text": "ready"}
+                    await self.disconnect.wait()
+                    return {"type": "websocket.disconnect"}
+
+                async def send_json(self, payload):
+                    self.sent.append(payload)
+                    self.disconnect.set()
+
+            websocket = FakeWebSocket()
+            await asyncio.wait_for(endpoint(websocket), timeout=1)
+
+            assert websocket.sent[0]["data"] == {
+                "view": "menu",
+                "presentation_session_id": "customer-A",
+                "items": [],
+            }
+            assert manager.connected == ["customer-A"]
+            assert manager.disconnected == ["customer-A"]
 
         asyncio.run(exercise())
 
