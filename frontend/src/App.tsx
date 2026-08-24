@@ -9,6 +9,7 @@ import { AgentsPage } from './pages/AgentsPage';
 import { DataSourcesPage } from './pages/DataSourcesPage';
 import { LogsPage } from './pages/LogsPage';
 import { KioskPage } from './pages/KioskPage';
+import { CustomerDisplayPage } from './pages/CustomerDisplayPage';
 import { CommandPalette } from './components/CommandPalette';
 import { SetupScreen } from './components/SetupScreen';
 import { Toaster } from './components/ui/sonner';
@@ -197,6 +198,7 @@ export default function App() {
         </Route>
         {/* Unified kiosk page — full-screen, no layout chrome */}
         <Route path="kiosk" element={<KioskPage />} />
+        <Route path="customer-display" element={<CustomerDisplayPage />} />
       </Routes>
       <Toaster position="bottom-right" />
       {commandPaletteOpen && <CommandPalette />}

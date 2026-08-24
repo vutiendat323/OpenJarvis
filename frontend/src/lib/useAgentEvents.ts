@@ -7,7 +7,7 @@ export interface AgentEvent {
   data: Record<string, unknown>;
 }
 
-function buildWsUrl(agentId?: string): string {
+function buildWsUrl(agentId?: string, presentationSessionId?: string): string {
   const base = getBase();
   let origin: string;
   if (base) {
@@ -16,10 +16,13 @@ function buildWsUrl(agentId?: string): string {
     const loc = window.location;
     origin = `${loc.protocol === 'https:' ? 'wss:' : 'ws:'}//${loc.host}`;
   }
-  const path = '/v1/agents/events';
-  return agentId
-    ? `${origin}${path}?agent_id=${encodeURIComponent(agentId)}`
-    : `${origin}${path}`;
+  const params = new URLSearchParams();
+  if (agentId) params.set('agent_id', agentId);
+  if (presentationSessionId) {
+    params.set('presentation_session_id', presentationSessionId);
+  }
+  const query = params.toString();
+  return `${origin}/v1/agents/events${query ? `?${query}` : ''}`;
 }
 
 /**
@@ -30,6 +33,7 @@ export function useAgentEvents(
   agentId: string | undefined,
   onEvent: (event: AgentEvent) => void,
   eventTypes?: readonly string[],
+  presentationSessionId?: string,
 ): void {
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
@@ -37,7 +41,7 @@ export function useAgentEvents(
   typesRef.current = eventTypes;
 
   useEffect(() => {
-    if (!agentId) return;
+    if (!agentId && !presentationSessionId) return;
     let ws: WebSocket | null = null;
     let closed = false;
     let retry = 0;
@@ -46,7 +50,7 @@ export function useAgentEvents(
     const connect = () => {
       if (closed) return;
       try {
-        ws = new WebSocket(buildWsUrl(agentId));
+        ws = new WebSocket(buildWsUrl(agentId, presentationSessionId));
       } catch {
         schedule();
         return;
@@ -86,5 +90,5 @@ export function useAgentEvents(
       if (reconnectTimer) clearTimeout(reconnectTimer);
       ws?.close();
     };
-  }, [agentId]);
+  }, [agentId, presentationSessionId]);
 }

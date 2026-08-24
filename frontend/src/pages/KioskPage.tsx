@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { X, ScreenShare, ScreenShareOff } from 'lucide-react';
 
@@ -13,6 +13,7 @@ import { useScreenShare } from '@/hooks/useScreenShare';
 import { useUiLanguage } from '@/hooks/useUiLanguage';
 import { shouldShimmerVoiceStatus, voiceStatusLabel } from '@/hooks/voiceUiText';
 import { useAppStore } from '@/lib/store';
+import { ensurePresentationSession, resetPresentationSession } from '@/lib/kioskPresentation';
 import { VISUALIZER_DEFAULTS } from '@/components/Visualizer/types';
 import type { VisualizerSettings, VoiceStatus } from '@/components/Visualizer/types';
 import type { LocalVoiceStatus } from '@/hooks/voiceStatus';
@@ -60,10 +61,30 @@ export function KioskPage() {
   const createConversation = useAppStore((state) => state.createConversation);
   const selectedModel = useAppStore((state) => state.selectedModel);
   const startedRef = useRef(false);
+  const presentationSessionIdRef = useRef<string | undefined>(undefined);
   const policyEpochRef = useRef(0);
   const micEnabledRef = useRef(micEnabled);
 
   micEnabledRef.current = micEnabled;
+
+  const resetPresentation = useCallback(() => {
+    const sessionId = presentationSessionIdRef.current;
+    if (sessionId) void resetPresentationSession(sessionId).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    void ensurePresentationSession(window.location.origin).then((sessionId) => {
+      if (mounted) {
+        presentationSessionIdRef.current = sessionId;
+      } else {
+        void resetPresentationSession(sessionId).catch(() => {});
+      }
+    }).catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     const epoch = ++policyEpochRef.current;
@@ -75,6 +96,7 @@ export function KioskPage() {
     if (command === 'end') {
       startedRef.current = false;
       void voice.end();
+      resetPresentation();
       return;
     }
     if (command !== 'start') return;
@@ -83,27 +105,26 @@ export function KioskPage() {
     threadIdRef.current = threadId;
     startedRef.current = true;
     void voice.start(threadId, selectedModel).then(() => {
-      if (epoch !== policyEpochRef.current || !micEnabledRef.current) void voice.end();
+      if (epoch !== policyEpochRef.current || !micEnabledRef.current) {
+        void voice.end();
+        resetPresentation();
+      }
     }).catch(() => {});
-  }, [createConversation, micEnabled, selectedModel, voice.enabled, voice.end, voice.start]);
+  }, [createConversation, micEnabled, resetPresentation, selectedModel, voice.enabled, voice.end, voice.start]);
 
   useEffect(() => () => {
     if (startedRef.current) {
       startedRef.current = false;
       void voice.end();
     }
-  }, [voice.end]);
+    resetPresentation();
+  }, [resetPresentation, voice.end]);
 
   const rows = currentVoiceTurnRows({ ...voice, assistantText: voice.assistantCaptionText });
   const voiceStatusShimmers = shouldShimmerVoiceStatus(voice.status);
 
   return (
     <div className="relative flex-1 h-full overflow-hidden select-none" style={{ background: '#06060f' }}>
-      <iframe
-        src="/display.html"
-        title="Display"
-        className="absolute inset-0 h-full w-full border-0"
-      />
       {share.status === 'live' && (
         <ScreenShareView stream={share.stream} floating />
       )}
