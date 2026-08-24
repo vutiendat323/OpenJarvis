@@ -175,6 +175,17 @@ class FakeMcpClient:
         }
 
 
+class RecordingPresentation:
+    """The customer-display publication boundary, without Browser I/O."""
+
+    def __init__(self) -> None:
+        self.payloads: list[dict[str, object]] = []
+
+    def publish(self, payload: dict[str, object]) -> ToolResult:
+        self.payloads.append(payload)
+        return ToolResult(tool_name="presentation", content="presentation_published")
+
+
 def _register_preset_tools() -> None:
     """Put the preset's tools back into the registry.
 
@@ -184,11 +195,11 @@ def _register_preset_tools() -> None:
     ``SystemBuilder`` would resolve none of the preset's tools.
     """
     from openjarvis.tools import data_plane as data_plane_tools
-    from openjarvis.tools import http_request, ordering, shell_exec  # noqa: F401
+    from openjarvis.tools import display, http_request, ordering, shell_exec
     from openjarvis.tools._stubs import ToolSpec
     from openjarvis.tools.mcp_adapter import MCPToolAdapter
 
-    modules = (data_plane_tools, ordering, http_request, shell_exec)
+    modules = (data_plane_tools, ordering, display, http_request, shell_exec)
     for module in modules:
         for name in dir(module):
             candidate = getattr(module, name)
@@ -232,7 +243,9 @@ def build_system(
     # `shell_exec` is deliberately absent from the shipped kiosk preset (public
     # terminal, untrusted provider data); the trust-boundary test below needs a
     # raw shell result, so it is widened here, test-locally, and never shipped.
-    config.tools.enabled = f"{config.tools.enabled},shell_exec,{FIXTURE_MCP_TOOL}"
+    config.tools.enabled = (
+        f"{config.tools.enabled},display_payment_qr,shell_exec,{FIXTURE_MCP_TOOL}"
+    )
 
     engine = MagicMock()
     engine.health.return_value = True
@@ -372,6 +385,13 @@ def test_cold_then_warm_path_persists_and_uses_no_browser(tmp_path, provider):
 
 
 def test_payment_qr_reaches_a_snapshot_only_after_verification(runtime):
+    display_qr = next(
+        tool
+        for tool in runtime.system.tools
+        if tool.spec.name == "display_payment_qr"
+    )
+    presentation = RecordingPresentation()
+    display_qr._presentation = presentation
     arguments = {"order": ORDER_ID, "paymentMethod": "bank-transfer"}
     pending = call_tool(
         runtime.system,
@@ -381,6 +401,7 @@ def test_payment_qr_reaches_a_snapshot_only_after_verification(runtime):
         arguments=arguments,
     )
     assert pending.metadata["pending_approval"] is True
+    assert presentation.payloads == []
 
     approved = runtime.client.post(
         f"/v1/approvals/{pending.metadata['approval_id']}/approve"
@@ -398,6 +419,7 @@ def test_payment_qr_reaches_a_snapshot_only_after_verification(runtime):
     assert payment.success is True
     # the unverified receipt must not carry QR data
     assert "qrCode" not in json.dumps([payment.content, payment.metadata])
+    assert presentation.payloads == []
 
     before = call_tool(
         runtime.system,
@@ -423,6 +445,28 @@ def test_payment_qr_reaches_a_snapshot_only_after_verification(runtime):
         consistency="cached",
     )
     assert snapshot_qr(snapshot) == runtime.provider.payment_response["qrCode"]
+    assert presentation.payloads == []
+
+    payment_snapshot = payload(snapshot)["result"]["items"][0]["payload"]
+    displayed = call_tool(
+        runtime.system,
+        "display_payment_qr",
+        order_id=payment_snapshot["order"],
+        payment_slug=payment_snapshot["slug"],
+        status=payment_snapshot["status"],
+        qr_code=payment_snapshot["qrCode"],
+    )
+    assert displayed.success is True
+    assert presentation.payloads == [
+        {
+            "view": "payment_qr",
+            "order_id": ORDER_ID,
+            "payment_slug": "payment-1",
+            "status": "pending",
+            "qr_code": "trend-merchant-qr-1",
+        }
+    ]
+    assert runtime.provider.browser_calls == []
     # one mutation, dispatched exactly once and never retried
     assert [call for call in runtime.provider.execute_calls if call[0] == "POST"] == [
         ("POST", "https://trendcoffee.net/api/latest/payment/initiate/public")

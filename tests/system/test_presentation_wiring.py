@@ -61,3 +61,36 @@ def test_builder_injects_its_presentation_manager_into_display_tools() -> None:
         system.close()
 
     assert client.closed is True
+
+
+def test_builder_injects_presentation_manager_into_hidden_display_bill() -> None:
+    """Order verification must publish through the session manager even when
+    display_bill itself is not Agent-visible."""
+    import openjarvis.tools.display as display
+    import openjarvis.tools.ordering as ordering
+
+    importlib.reload(display)
+    importlib.reload(ordering)
+    config = JarvisConfig()
+    config.merchants.backend = "fake"
+    config.telemetry.enabled = False
+    config.traces.enabled = False
+    config.skills.enabled = False
+    config.agent_manager.enabled = False
+    config.tools.enabled = ["order_verify"]
+    engine = MagicMock(spec=["health", "list_models", "close"])
+    engine.health.return_value = True
+
+    system = (
+        SystemBuilder(config).engine_instance(engine).speech(False).build()
+    )
+    try:
+        assert [tool.spec.name for tool in system.tools] == ["order_verify"]
+        order_verify = system.tools[0]
+        display_bill = order_verify._display_bill
+
+        assert display_bill.spec.name == "display_bill"
+        assert display_bill not in system.tools
+        assert display_bill._presentation is system.presentation_session_manager
+    finally:
+        system.close()

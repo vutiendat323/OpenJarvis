@@ -1,0 +1,91 @@
+# ordering-kiosk-mcp.toml -- ordering kiosk PLUS live browser interaction.
+#
+# This is `ordering-kiosk.toml` with Playwright MCP added, so the Agent can
+# navigate, click and type on a real site when the Data Plane has no validated
+# contract for what the customer asked. The Data Plane stays the preferred
+# path; the browser is the fallback, and nothing it observes becomes a trusted
+# capability or a snapshot.
+#
+# SECURITY: this preset deliberately breaks the hardening `ordering-kiosk.toml`
+# ships with. It grants 21 browser click/type/navigate tools to an agent whose
+# threat model treats page text and provider JSON as prompt-injection-bearing,
+# and it declares no capability policy. Use it for attended development and
+# demos. `ordering-kiosk.toml` remains the preset for an unattended public
+# terminal.
+
+# Ordering Kiosk — Trend Coffee-backed voice ordering, Phase 1.
+#
+# Text and Voice both reach the same orchestrator Agent. The Agent explores
+# validated Trend Coffee snapshots, recommends, confirms with the customer,
+# and uses the same eight ordering tools -- each step a separate tool call, so
+# no single call both changes an order and reports what it became.
+#
+# Order mutation remains locally quarantined until its explicit approval path
+# is enabled. See configs/openjarvis/prompts/ordering-kiosk.md for how the
+# Agent is expected to use these tools.
+#
+# max_turns is 30, not the default 10 -- a full order is several
+# observation/decision pairs and the default would strand it mid-flow.
+# LoopGuard remains the real brake against a runaway loop.
+#
+# Usage:
+#   OPENJARVIS_CONFIG=configs/openjarvis/examples/ordering-kiosk.toml jarvis serve
+
+[engine]
+default = "ollama"
+
+[intelligence]
+default_model = "qwen3.5:9b"        # needs reliable function calling
+# Not yet exercised end to end. `scripts/launcher.sh` passes
+# `--engine cloud --model "$MODEL"` on the CLI (default deepseek-v4-pro),
+# which overrides both keys above -- that combination is what the manual
+# ordering run has actually verified calls these tools. The local ollama
+# target above is the intended one; it just hasn't been proven yet.
+
+[agent]
+default_agent = "orchestrator"
+system_prompt_path = "configs/openjarvis/prompts/ordering-kiosk.md"
+max_turns = 30
+# The doctrine (one tool call = one mutation or one observation, never both)
+# only forces a reasoning turn between action and consequence if tool calls
+# run one at a time. Parallel dispatch would let a turn emitting cart_add +
+# cart_view get both results before the Agent reasons about either --
+# reaching the same collapse the doctrine exists to prevent, just around it
+# instead of through it. Not a performance knob here.
+parallel_tools = false
+
+[merchants]
+backend = "trendcoffee"
+source_id = "trend-coffee"
+
+[data_plane]
+enabled = true
+source_url = "https://trendcoffee.net/"
+discovery_budget_seconds = 60
+# The config field survives, but Task 10 was cancelled and no observer
+# implements it -- leaving this true would advertise a stage that cannot run.
+browser_fallback = false
+# Stays empty. An authorized live run supplies exact
+# provider:operation:fingerprint entries in a temporary config and removes them
+# afterwards; nothing here grants a standing write.
+trusted_write_operations = ""
+
+[tools]
+# The three display_* tools drive the customer-facing screen
+# (server/static/display.html via the WS bridge) and are unrelated to the
+# Data Plane; they stay enabled.
+# `http_request` is the spec's investigative read tool -- it is how an operator
+# inspects a provider response by hand. `shell_exec` is deliberately absent: the
+# kiosk is a public terminal whose threat model treats provider JSON and page
+# text as prompt-injection-bearing, and this preset declares no capability
+# policy, so an enabled `shell_exec` would be unrestricted shell on injection.
+enabled = "source_discover,source_sync,structured_query,source_execute,source_verify,branch_list,menu_search,menu_item,cart_add,cart_remove,cart_view,order_place,order_verify,http_request,display_menu,display_cart,display_bill,display_payment_qr,display_clear,browser_snapshot,browser_find,browser_navigate,browser_navigate_back,browser_tabs,browser_click,browser_type,browser_fill_form,browser_select_option,browser_hover,browser_press_key,browser_wait_for,browser_handle_dialog,browser_drag,browser_drop,browser_resize,browser_close,browser_verify_element_visible,browser_verify_text_visible,browser_verify_value,browser_verify_list_visible"
+
+[server]
+host = "127.0.0.1"
+port = 8000
+agent = "orchestrator"
+
+[tools.mcp]
+enabled = true
+servers = '''[{"name": "playwright", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.79", "--browser", "chromium", "--user-data-dir", ".openjarvis/ordering-kiosk/browser-profile", "--sandbox", "--caps=testing", "--snapshot-mode", "none"], "include_tools": ["browser_snapshot", "browser_find", "browser_navigate", "browser_navigate_back", "browser_tabs", "browser_click", "browser_type", "browser_fill_form", "browser_select_option", "browser_hover", "browser_press_key", "browser_wait_for", "browser_handle_dialog", "browser_drag", "browser_drop", "browser_resize", "browser_close", "browser_verify_element_visible", "browser_verify_text_visible", "browser_verify_value", "browser_verify_list_visible"]}]'''

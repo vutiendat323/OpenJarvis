@@ -639,6 +639,9 @@ class SystemBuilder:
         """Hand the session-scoped presentation manager to every display tool."""
         if tool.spec.category == "display" and hasattr(tool, "_presentation"):
             tool._presentation = presentation
+        display_bill = getattr(tool, "_display_bill", None)
+        if display_bill is not None:
+            SystemBuilder._inject_display_presentation(display_bill, presentation)
 
     @staticmethod
     def _inject_bill_display(tool, display_bill) -> None:
