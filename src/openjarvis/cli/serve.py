@@ -496,6 +496,7 @@ def serve(
         agent_scheduler=system.agent_scheduler,
         mcp_tools=system.mcp_tools,
         mcp_clients=system._mcp_clients,
+        presentation_session_manager=system.presentation_session_manager,
         api_key=api_key,
         webhook_config=webhook_config,
         cors_origins=cors_origins,

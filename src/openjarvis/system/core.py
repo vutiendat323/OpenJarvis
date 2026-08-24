@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from openjarvis.agents.manager import AgentManager
     from openjarvis.agents.scheduler import AgentScheduler
     from openjarvis.channels._stubs import BaseChannel
+    from openjarvis.kiosk.presentation import PresentationSessionManager
     from openjarvis.learning._stubs import RouterPolicy
     from openjarvis.learning.learning_orchestrator import LearningOrchestrator
     from openjarvis.mcp.client import MCPClient
@@ -91,6 +92,7 @@ class JarvisSystem:
     # older positional JarvisSystem(...) calls retain their original meaning.
     mcp_tools: List[BaseTool] = field(default_factory=list)
     data_plane: Optional[DataPlaneRuntime] = None
+    presentation_session_manager: Optional[PresentationSessionManager] = None
 
     @property
     def security(self) -> SecurityContext:

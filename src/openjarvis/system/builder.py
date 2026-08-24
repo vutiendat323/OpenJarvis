@@ -245,6 +245,17 @@ class SystemBuilder:
             bus,
             data_plane,
         )
+        from openjarvis.kiosk.presentation import (
+            PresentationSessionManager,
+            find_playwright_client,
+        )
+
+        presentation = PresentationSessionManager(
+            bus,
+            find_playwright_client(self._mcp_clients),
+        )
+        for tool in tool_list:
+            self._inject_display_presentation(tool, presentation)
         if data_plane is not None:
             data_plane.direct.set_mcp_tools(self._mcp_tools)
         # The policy has to travel with the executor: ToolExecutor.execute()
@@ -386,6 +397,7 @@ class SystemBuilder:
             speech_backend=speech_backend,
             skill_manager=skill_manager,
             data_plane=data_plane,
+            presentation_session_manager=presentation,
         )
         system._learning_orchestrator = learning_orchestrator
         system._skill_few_shot_examples = skill_few_shot_examples
@@ -528,7 +540,6 @@ class SystemBuilder:
         for tool in internal_server.get_tools():
             if merchant is not None:
                 self._inject_ordering_merchant(tool, merchant)
-            self._inject_display_bus(tool, bus)
             self._inject_data_plane_runtime(tool, data_plane, config)
 
         tool_names = self._tool_names
@@ -614,10 +625,10 @@ class SystemBuilder:
             tool._merchant = merchant
 
     @staticmethod
-    def _inject_display_bus(tool, bus) -> None:
-        """Hand the event bus to every display tool."""
-        if tool.spec.category == "display" and hasattr(tool, "_bus"):
-            tool._bus = bus
+    def _inject_display_presentation(tool, presentation) -> None:
+        """Hand the session-scoped presentation manager to every display tool."""
+        if tool.spec.category == "display" and hasattr(tool, "_presentation"):
+            tool._presentation = presentation
 
     @staticmethod
     def _inject_data_plane_runtime(tool, runtime, config) -> None:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from openjarvis.core.events import EventBus, EventType
+from openjarvis.core.types import ToolResult
+from openjarvis.kiosk.presentation import PresentationSessionManager
 from openjarvis.tools.display import DisplayCartTool, DisplayClearTool, DisplayMenuTool
 
 
@@ -10,6 +12,15 @@ class _Recorder:
     def __init__(self, bus):
         self.events = []
         bus.subscribe(EventType.DISPLAY_UPDATE, self.events.append)
+
+
+class _FakePresentationManager:
+    def __init__(self) -> None:
+        self.payloads = []
+
+    def publish(self, payload):
+        self.payloads.append(payload)
+        return ToolResult(tool_name="presentation", content="presentation_published")
 
 
 def _wired(cls):
@@ -112,6 +123,30 @@ def test_a_display_tool_without_a_bus_fails_rather_than_silently_doing_nothing()
     result = DisplayMenuTool().execute(items=[])
     assert result.success is False
     assert "display_unavailable" in result.content
+
+
+def test_display_menu_publishes_through_the_presentation_manager():
+    presentation = _FakePresentationManager()
+    tool = DisplayMenuTool()
+    tool._presentation = presentation
+
+    result = tool.execute(items=[{"id": "latte", "name": "Latte"}])
+
+    assert result.success is True
+    assert presentation.payloads == [
+        {"view": "menu", "items": [{"id": "latte", "name": "Latte"}]}
+    ]
+
+
+def test_display_menu_with_a_manager_fails_before_a_session_is_active():
+    client = type("PlaywrightClient", (), {"_server_name": "playwright"})()
+    tool = DisplayMenuTool()
+    tool._presentation = PresentationSessionManager(EventBus(), client)
+
+    result = tool.execute(items=[])
+
+    assert result.success is False
+    assert "presentation_unavailable" in result.content
 
 
 def test_display_update_is_forwarded_to_websocket_clients():

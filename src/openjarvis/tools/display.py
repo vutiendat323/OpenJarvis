@@ -12,12 +12,15 @@ test does not classify them as either.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
 from openjarvis.tools._stubs import BaseTool, ToolSpec
+
+if TYPE_CHECKING:
+    from openjarvis.kiosk.presentation import PresentationSessionManager
 
 DISPLAYS = {"displays": True}
 
@@ -29,10 +32,14 @@ _LINE_FIELDS = ("name", "size", "note", "quantity", "line_total")
 
 class _DisplayTool(BaseTool):
     def __init__(self) -> None:
-        # Set by SystemBuilder._inject_display_bus.
+        # ``_bus`` remains the direct-construction fallback used by narrow tests.
         self._bus: Optional[EventBus] = None
+        # Set by SystemBuilder after external MCP discovery completes.
+        self._presentation: Optional[PresentationSessionManager] = None
 
     def _publish(self, payload: dict[str, Any]) -> ToolResult:
+        if self._presentation is not None:
+            return self._presentation.publish(payload)
         if self._bus is None:
             return ToolResult(
                 tool_name=self.spec.name,

@@ -243,6 +243,7 @@ def create_app(
     agent_scheduler=None,
     mcp_tools=None,
     mcp_clients=None,
+    presentation_session_manager=None,
     api_key: str = "",
     bind_host: str | None = None,
     webhook_config: dict | None = None,
@@ -342,6 +343,7 @@ def create_app(
     app.state._mcp_discovery_lock = threading.Lock()
     app.state._mcp_clients_lock = threading.Lock()
     app.state._mcp_clients = list(mcp_clients or [])
+    app.state.presentation_session_manager = presentation_session_manager
     app.state._managed_worker_lock = threading.Lock()
     app.state._managed_workers: set[threading.Thread] = set()
     app.state._managed_runtime_stopping = False
