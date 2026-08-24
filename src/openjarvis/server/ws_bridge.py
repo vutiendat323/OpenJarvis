@@ -63,13 +63,12 @@ def create_ws_router(
             if agent_filter and event_agent != agent_filter:
                 continue
             presentation_filter = getattr(ws, "_presentation_session_filter", None)
-            if (
-                event.event_type is EventType.DISPLAY_UPDATE
-                and (
-                    not presentation_filter
-                    or data.get("presentation_session_id") != presentation_filter
-                )
+            if presentation_filter and (
+                event.event_type is not EventType.DISPLAY_UPDATE
+                or data.get("presentation_session_id") != presentation_filter
             ):
+                continue
+            if event.event_type is EventType.DISPLAY_UPDATE and not presentation_filter:
                 continue
             try:
                 loop.call_soon_threadsafe(queue.put_nowait, payload)

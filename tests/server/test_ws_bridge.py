@@ -129,6 +129,30 @@ class TestWSBridge:
             assert message["type"] == "agent_tick_start"
             assert message["data"] == {"agent_id": "agent-A"}
 
+    def test_presentation_session_socket_ignores_non_display_events(
+        self, app, event_bus
+    ):
+        client = TestClient(app)
+        with client.websocket_connect(
+            "/v1/agents/events?presentation_session_id=customer-A"
+        ) as websocket:
+            event_bus.publish(EventType.AGENT_TICK_START, {"agent_id": "agent-A"})
+            event_bus.publish(EventType.KIOSK_STATE_CHANGED, {"state": "active"})
+            event_bus.publish(EventType.TOOL_CALL_START, {"agent": "agent-A"})
+            event_bus.publish(EventType.INFERENCE_START, {"model": "test"})
+            event_bus.publish(
+                EventType.DISPLAY_UPDATE,
+                {"presentation_session_id": "customer-A", "view": "menu"},
+            )
+            time.sleep(0.05)
+
+            message = websocket.receive_json()
+            assert message["type"] == "display_update"
+            assert message["data"] == {
+                "presentation_session_id": "customer-A",
+                "view": "menu",
+            }
+
     def test_websocket_replays_presentation_state_after_connecting(self, event_bus):
         from openjarvis.server.ws_bridge import create_ws_router
 
