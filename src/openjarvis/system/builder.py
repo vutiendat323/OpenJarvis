@@ -297,6 +297,14 @@ class SystemBuilder:
             except Exception as exc:
                 logger.warning("Failed to initialize skills: %s", exc)
 
+        trusted_hosts = tuple(
+            host.strip()
+            for host in config.tools.payment_trusted_origins.split(",")
+            if host.strip()
+        )
+        for tool in tool_list:
+            self._inject_payment_trusted_hosts(tool, trusted_hosts)
+
         agent_name = self._agent_name or config.agent.default_agent
         container_runner = self._setup_sandbox(config)
         scheduler_store, task_scheduler = self._setup_scheduler(config, bus)
@@ -535,17 +543,22 @@ class SystemBuilder:
                 from openjarvis.merchants.trendcoffee import TrendCoffeeMerchant
 
                 merchant = TrendCoffeeMerchant(
-                    data_plane, source_id=config.merchants.source_id
+                    data_plane,
+                    source_id=config.merchants.source_id,
+                    snapshot_max_age_seconds=config.merchants.snapshot_max_age_seconds,
                 )
         for tool in internal_server.get_tools():
             if merchant is not None:
                 self._inject_ordering_merchant(tool, merchant)
             self._inject_data_plane_runtime(tool, data_plane, config)
-            self._inject_payment_snapshot_verifier(
-                tool,
-                data_plane,
-                getattr(getattr(config, "merchants", None), "source_id", ""),
-            )
+        display_menu = next(
+            (
+                tool
+                for tool in internal_server.get_tools()
+                if tool.spec.name == "display_menu"
+            ),
+            None,
+        )
         display_bill = next(
             (
                 tool
@@ -555,6 +568,7 @@ class SystemBuilder:
             None,
         )
         for tool in internal_server.get_tools():
+            self._inject_menu_display(tool, display_menu)
             self._inject_bill_display(tool, display_bill)
 
         tool_names = self._tool_names
@@ -649,6 +663,11 @@ class SystemBuilder:
             SystemBuilder._inject_display_presentation(display_bill, presentation)
 
     @staticmethod
+    def _inject_menu_display(tool, display_menu) -> None:
+        if tool.spec.name == "menu_search" and hasattr(tool, "_display_menu"):
+            tool._display_menu = display_menu
+
+    @staticmethod
     def _inject_bill_display(tool, display_bill) -> None:
         if tool.spec.name == "order_verify" and hasattr(tool, "_display_bill"):
             tool._display_bill = display_bill
@@ -662,36 +681,18 @@ class SystemBuilder:
         tool._browser_fallback = config.data_plane.browser_fallback
 
     @staticmethod
-    def _inject_payment_snapshot_verifier(tool, runtime, source_id: str) -> None:
-        if (
-            runtime is None
-            or not source_id
-            or tool.spec.name != "display_payment_qr"
-            or not hasattr(tool, "_payment_snapshot_verified")
+    def _inject_payment_trusted_hosts(tool, trusted_hosts: tuple) -> None:
+        """Configuration is the only thing display_payment_qr needs handed to it.
+
+        The evidence store is imported directly by the tool, because it belongs
+        to the conversation rather than to any executor -- so there is no
+        executor to choose between here, and no way to choose wrongly.
+        """
+        if tool.spec.name != "display_payment_qr" or not hasattr(
+            tool, "_payment_trusted_hosts"
         ):
             return
-
-        from openjarvis.data_plane.types import StructuredQuery
-
-        def payment_snapshot_verified(payment: dict[str, object]) -> bool:
-            filters = {
-                "order": payment["order_id"],
-                "slug": payment["payment_slug"],
-                "status": payment["status"],
-                "qrCode": payment["qr_code"],
-            }
-            return bool(
-                runtime.snapshots.query(
-                    StructuredQuery(
-                        source_id=source_id,
-                        resource_type="payment",
-                        filters=filters,
-                        limit=1,
-                    )
-                ).items
-            )
-
-        tool._payment_snapshot_verified = payment_snapshot_verified
+        tool._payment_trusted_hosts = trusted_hosts
 
     def _build_data_plane(self, config, bus):
         if not config.data_plane.enabled:
@@ -737,7 +738,11 @@ class SystemBuilder:
             # One store per process: the approval UI, the proactive agent and
             # the Data Plane gate must address the same database, and a second
             # `ApprovalStore()` only coincidentally resolves the same file.
-            approval_gate = ExecutionApprovalGate(get_store(), owns_store=False)
+            approval_gate = ExecutionApprovalGate(
+                get_store(),
+                owns_store=False,
+                conversational=config.data_plane.conversational_approval,
+            )
             runtime = DataPlaneRuntime(
                 capabilities,
                 snapshots,

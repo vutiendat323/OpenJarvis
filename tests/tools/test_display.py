@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from openjarvis.core.conversation import conversation_scope
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolResult
 from openjarvis.kiosk.presentation import PresentationSessionManager
+from openjarvis.tools import evidence
 from openjarvis.tools.display import (
     DisplayBillTool,
     DisplayCartTool,
@@ -169,21 +171,28 @@ def test_display_bill_keeps_only_merchant_bill_fields_and_normalizes_total():
 
 def test_display_payment_qr_drops_every_field_outside_the_verified_view():
     tool, recorder = _wired(DisplayPaymentQrTool)
-    tool._payment_snapshot_verified = lambda payment: payment == {
-        "order_id": "order-1",
-        "payment_slug": "payment-1",
-        "status": "pending",
-        "qr_code": "merchant-opaque-qr",
-    }
+    tool._payment_trusted_hosts = ("merchant.example",)
 
-    result = tool.execute(
-        order_id="order-1",
-        payment_slug="payment-1",
-        status="pending",
-        qr_code="merchant-opaque-qr",
-        html="<img src=x onerror=alert(1)>",
-        receipt_id="receipt-that-must-not-be-shown",
-    )
+    evidence.reset()
+    try:
+        with conversation_scope("test-display-payment-qr-drops-fields"):
+            evidence.record(
+                "http_request",
+                {},
+                "merchant-opaque-qr",
+                200,
+                "https://merchant.example/pay",
+            )
+            result = tool.execute(
+                order_id="order-1",
+                payment_slug="payment-1",
+                status="pending",
+                qr_code="merchant-opaque-qr",
+                html="<img src=x onerror=alert(1)>",
+                receipt_id="receipt-that-must-not-be-shown",
+            )
+    finally:
+        evidence.reset()
 
     assert result.success is True
     assert recorder.events[0].data == {
@@ -197,17 +206,23 @@ def test_display_payment_qr_drops_every_field_outside_the_verified_view():
 
 def test_display_payment_qr_rejects_an_arbitrary_nonempty_value_without_publishing():
     tool, recorder = _wired(DisplayPaymentQrTool)
+    tool._payment_trusted_hosts = ("merchant.example",)
 
-    result = tool.execute(
-        order_id="order-1",
-        payment_slug="payment-invented",
-        status="pending",
-        qr_code="agent-invented-qr",
-    )
+    evidence.reset()
+    try:
+        with conversation_scope("test-display-payment-qr-rejects-invented"):
+            result = tool.execute(
+                order_id="order-1",
+                payment_slug="payment-invented",
+                status="pending",
+                qr_code="agent-invented-qr",
+            )
+    finally:
+        evidence.reset()
 
     assert result == ToolResult(
         tool_name="display_payment_qr",
-        content="payment_snapshot_unverified",
+        content="payment_evidence_missing",
         success=False,
     )
     assert recorder.events == []
@@ -215,7 +230,7 @@ def test_display_payment_qr_rejects_an_arbitrary_nonempty_value_without_publishi
 
 def test_display_payment_qr_rejects_a_missing_payment_identifier():
     tool, recorder = _wired(DisplayPaymentQrTool)
-    tool._payment_snapshot_verified = lambda payment: True
+    tool._payment_trusted_hosts = ("merchant.example",)
 
     result = tool.execute(
         order_id="order-1",
@@ -225,7 +240,7 @@ def test_display_payment_qr_rejects_a_missing_payment_identifier():
 
     assert result == ToolResult(
         tool_name="display_payment_qr",
-        content="payment_snapshot_unverified",
+        content="payment_evidence_missing",
         success=False,
     )
     assert recorder.events == []

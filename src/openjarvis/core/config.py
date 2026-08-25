@@ -984,6 +984,9 @@ class ToolsConfig:
     mcp: MCPConfig = field(default_factory=MCPConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     enabled: str = ""  # comma-separated default tools
+    # Hosts whose HTTP responses may supply a payment QR. Empty means no QR
+    # can be displayed: provenance is required, never assumed.
+    payment_trusted_origins: str = ""
 
 
 @dataclass
@@ -1598,6 +1601,7 @@ class MerchantsConfig:
 
     backend: str = "none"
     source_id: str = "trend-coffee"
+    snapshot_max_age_seconds: int = 60
 
 
 @dataclass(slots=True)
@@ -1610,6 +1614,11 @@ class DataPlaneConfig:
     browser_fallback: bool = False
     source_url: str = ""
     trusted_write_operations: str = ""
+    # Off by default: a mutation waits for an operator to approve it in the
+    # approval queue. A voice kiosk has no operator -- the customer who just
+    # said yes is the only human present -- so waiting strands every order.
+    # Turning this on skips the wait, never the exact request-hash binding.
+    conversational_approval: bool = False
 
 
 @dataclass

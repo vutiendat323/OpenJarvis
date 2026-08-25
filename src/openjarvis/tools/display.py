@@ -12,11 +12,12 @@ test does not classify them as either.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
+from openjarvis.tools import evidence as _evidence
 from openjarvis.tools._stubs import BaseTool, ToolSpec
 
 if TYPE_CHECKING:
@@ -195,19 +196,18 @@ class DisplayPaymentQrTool(_DisplayTool):
 
     def __init__(self) -> None:
         super().__init__()
-        self._payment_snapshot_verified: Optional[
-            Callable[[dict[str, Any]], bool]
-        ] = None
+        # Set by SystemBuilder from config. Empty means no QR can be displayed:
+        # provenance is required, never assumed.
+        self._payment_trusted_hosts: tuple = ()
 
     @property
     def spec(self) -> ToolSpec:
         return ToolSpec(
             name="display_payment_qr",
             description=(
-                "Show the QR value from a verified payment snapshot. Call "
-                "this explicitly only after source_verify and a subsequent "
-                "structured_query(resource_type='payment'); never use an "
-                "unverified source_execute receipt."
+                "Show the QR value from a payment response. The exact string "
+                "must have come back from an http_request call to the "
+                "merchant in this conversation; anything else is refused."
             ),
             parameters={
                 "type": "object",
@@ -236,15 +236,24 @@ class DisplayPaymentQrTool(_DisplayTool):
             isinstance(payment.get(field), str) and payment[field].strip()
             for field in _PAYMENT_QR_FIELDS
         )
-        verifier = self._payment_snapshot_verified
-        try:
-            verified = complete and verifier is not None and verifier(payment)
-        except Exception:
-            verified = False
+        # Four conditions: this exact string, from http_request, with a 2xx,
+        # from a trusted host, in this conversation. observed_in_tool_output
+        # treats an empty trusted_hosts as "no host restriction", so an empty
+        # configured list is checked here instead -- it must refuse everything.
+        verified = (
+            complete
+            and bool(self._payment_trusted_hosts)
+            and _evidence.observed_in_tool_output(
+                qr_code,
+                from_tool="http_request",
+                require_ok=True,
+                trusted_hosts=self._payment_trusted_hosts,
+            )
+        )
         if not verified:
             return ToolResult(
                 tool_name="display_payment_qr",
-                content="payment_snapshot_unverified",
+                content="payment_evidence_missing",
                 success=False,
             )
         return self._publish({"view": "payment_qr", **payment})
