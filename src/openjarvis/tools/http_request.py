@@ -176,6 +176,7 @@ class HttpRequestTool(BaseTool):
                     "content_type": content_type,
                     "elapsed_ms": round(elapsed_ms, 2),
                     "truncated": truncated,
+                    "final_url": str(response.url),
                 },
             )
         except httpx.TimeoutException as exc:

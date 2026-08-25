@@ -39,7 +39,10 @@ class _Echo(BaseTool):
             tool_name="http_request",
             content=params.get("body", ""),
             success=params.get("ok", True),
-            metadata={"status_code": params.get("status", 200)},
+            metadata={
+                "status_code": params.get("status", 200),
+                "final_url": params.get("final_url"),
+            },
         )
 
 
@@ -62,7 +65,10 @@ def test_every_executor_writes_the_same_conversation_store():
 
     A saved skill dispatches its steps through the builder's executor while the
     agent calls display tools through its own. Two instance-owned buffers would
-    mean a skill could fetch a real payment QR that the guard cannot see.
+    mean a skill could fetch a real payment QR that the guard cannot see. A
+    module-level store keyed per-executor (e.g. by ``id(executor)``) would also
+    defeat the guard, so the test must write through one executor and read
+    through a genuinely different one.
     """
     agent_executor = ToolExecutor([_Echo()])
     skill_executor = ToolExecutor([_Echo()])
@@ -71,9 +77,10 @@ def test_every_executor_writes_the_same_conversation_store():
         skill_executor.execute(
             _call(body="QR_FROM_SKILL", url="https://trendcoffee.net/x")
         )
+        agent_executor.execute(_call(body="unrelated"))
 
         assert evidence.observed_in_tool_output("QR_FROM_SKILL") is True
-        assert agent_executor.__class__ is skill_executor.__class__
+        assert evidence.last_result("http_request") == "unrelated"
 
 
 def test_evidence_does_not_cross_conversations():
@@ -156,3 +163,60 @@ def test_last_result_returns_the_most_recent_matching_body():
 
         assert evidence.last_result("http_request") == "newer"
         assert evidence.last_result("nothing_called_this") == ""
+
+
+def test_evidence_is_bounded_by_total_bytes(monkeypatch):
+    monkeypatch.setattr(evidence, "_MAX_BYTES", 10)
+    executor = ToolExecutor([_Echo()])
+
+    with conversation_scope("a"):
+        executor.execute(_call(body="0123456789"))  # exactly fills the bound
+        executor.execute(_call(body="recent"))  # pushes the old entry out
+
+        assert evidence.observed_in_tool_output("0123456789") is False
+        assert evidence.observed_in_tool_output("recent") is True
+
+
+def test_from_tool_filter_excludes_other_tools():
+    """The mechanism that stops a hostile page's browser_* output from
+    satisfying a guard scoped to http_request."""
+    with conversation_scope("a"):
+        evidence.record(
+            "browser_read", {}, "hostile page content", 200, "https://evil.example"
+        )
+
+        assert evidence.observed_in_tool_output("hostile page content") is True
+        assert (
+            evidence.observed_in_tool_output(
+                "hostile page content", from_tool="http_request"
+            )
+            is False
+        )
+
+
+def test_a_redirect_to_an_untrusted_host_is_not_trusted():
+    """The requested URL must not stand in for the URL actually fetched.
+
+    ``http_request`` follows redirects manually and only re-checks SSRF on
+    each hop, not host trust -- a 30x from a trusted host can land on an
+    attacker-controlled host. The evidence store must record the URL the
+    response actually came from (``final_url``), not the one the model asked
+    for, or a forged body from the redirect target would pass a
+    trusted-host check meant for the original host.
+    """
+    executor = ToolExecutor([_Echo()])
+
+    with conversation_scope("a"):
+        executor.execute(
+            _call(
+                body="QR_FORGED",
+                status=200,
+                url="https://trendcoffee.net/open-redirect",
+                final_url="https://evil.example/x",
+            )
+        )
+
+        hosts = ("trendcoffee.net",)
+        assert not evidence.observed_in_tool_output(
+            "QR_FORGED", require_ok=True, trusted_hosts=hosts
+        )

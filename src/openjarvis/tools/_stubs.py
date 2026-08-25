@@ -289,7 +289,8 @@ class ToolExecutor:
         if result.success and isinstance(result.content, str):
             arguments = dict(params) if isinstance(params, dict) else {}
             status = result.metadata.get("status_code")
-            url = arguments.get("url")
+            final_url = result.metadata.get("final_url")
+            url = final_url if isinstance(final_url, str) else arguments.get("url")
             _evidence.record(
                 tool_call.name,
                 arguments,
