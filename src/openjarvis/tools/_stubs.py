@@ -262,13 +262,16 @@ class ToolExecutor:
                     {"tool": tool_call.name, "timeout": timeout},
                 )
             content = f"Tool '{tool_call.name}' timed out after {timeout:.0f}s."
-            if tool.spec.metadata.get("mutates"):
+            method = ""
+            if isinstance(params, dict):
+                method = str(params.get("method", "")).upper()
+            state_changing = method in {"POST", "PUT", "PATCH", "DELETE"}
+            if tool.spec.metadata.get("mutates") or state_changing:
                 # A mutation that outran its timeout may still have been
-                # dispatched. That is `unknown`, not a retryable failure --
-                # verify before ever calling this tool again.
+                # dispatched. That is `unknown`, not a retryable failure.
                 content += (
                     " The mutation may already have been dispatched;"
-                    " its outcome is unknown. Verify it with source_verify"
+                    " its outcome is unknown. Observe whether it happened"
                     " before retrying -- do not re-execute."
                 )
             result = ToolResult(

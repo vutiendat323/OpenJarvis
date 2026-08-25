@@ -25,6 +25,23 @@ _ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"})
 # Cap redirect chains so a malicious server cannot loop us indefinitely.
 _MAX_REDIRECTS = 5
 
+# Methods whose failure can leave the server changed.
+_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# A timeout after sending is not a failure -- it is an unknown. Retrying it
+# sends a second email, books a second appointment, charges a second time.
+_AMBIGUOUS_OUTCOME = (
+    " This request may already have been applied and its outcome is unknown."
+    " Observe whether it happened before retrying -- do not repeat it blindly."
+)
+
+
+def _never_reached_server(exc: Exception) -> bool:
+    """True when the request provably never left, so a retry is safe."""
+    return isinstance(
+        exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+    )
+
 
 class _SSRFRedirectError(Exception):
     """Raised when a redirect target fails the SSRF check."""
@@ -117,12 +134,16 @@ class HttpRequestTool(BaseTool):
         timeout = params.get("timeout", 30)
 
         _rust = None
-        try:
-            from openjarvis._rust_bridge import get_rust_module
+        # Reads only. A POST that fails inside the Rust path may already have
+        # reached the server, and falling through to httpx would send it twice
+        # -- a second order, a second email, a second charge.
+        if method in {"GET", "HEAD"}:
+            try:
+                from openjarvis._rust_bridge import get_rust_module
 
-            _rust = get_rust_module()
-        except ImportError:
-            pass
+                _rust = get_rust_module()
+            except ImportError:
+                pass
         if _rust is not None and not headers:
             try:
                 content = _rust.HttpRequestTool().execute(url, method, body)
@@ -135,7 +156,10 @@ class HttpRequestTool(BaseTool):
                     ),
                     success=True,
                     metadata={
-                        "status_code": 200,
+                        # The Rust API returns no status. Reporting 200 would be
+                        # a guess, and evidence checks that require a 2xx would
+                        # then trust a number nobody observed.
+                        "status_code": None,
                         "truncated": len(content) > _MAX_RESPONSE_BYTES,
                     },
                 )
@@ -180,9 +204,12 @@ class HttpRequestTool(BaseTool):
                 },
             )
         except httpx.TimeoutException as exc:
+            content = f"Request timed out after {timeout}s: {exc}"
+            if method in _STATE_CHANGING_METHODS and not _never_reached_server(exc):
+                content += _AMBIGUOUS_OUTCOME
             return ToolResult(
                 tool_name="http_request",
-                content=f"Request timed out after {timeout}s: {exc}",
+                content=content,
                 success=False,
             )
         except _SSRFRedirectError as exc:
@@ -192,9 +219,12 @@ class HttpRequestTool(BaseTool):
                 success=False,
             )
         except httpx.RequestError as exc:
+            content = f"Request error: {exc}"
+            if method in _STATE_CHANGING_METHODS and not _never_reached_server(exc):
+                content += _AMBIGUOUS_OUTCOME
             return ToolResult(
                 tool_name="http_request",
-                content=f"Request error: {exc}",
+                content=content,
                 success=False,
             )
         except Exception as exc:
