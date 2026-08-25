@@ -7,6 +7,7 @@ within the same session.
 
 from __future__ import annotations
 
+import contextvars
 import io
 import threading
 import time
@@ -18,6 +19,7 @@ from typing import Any, Dict, Optional
 from openjarvis.core.conversation import current_conversation_id
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
+from openjarvis.tools import evidence as _evidence
 from openjarvis.tools._stubs import BaseTool, ToolSpec
 
 # ---------------------------------------------------------------------------
@@ -218,6 +220,10 @@ class ReplTool(BaseTool):
         # Resolve session
         session = self._resolve_session(session_id, reset)
 
+        # Read-only. repl cannot record evidence, so a model cannot manufacture
+        # provenance by printing a string inside the interpreter.
+        session.namespace["last_result"] = _evidence.last_result
+
         # Execute with timeout
         output, success = self._exec_with_timeout(code, session)
 
@@ -332,7 +338,12 @@ class ReplTool(BaseTool):
                 output += ("\n" if output else "") + err
             result_holder["output"] = output
 
-        thread = threading.Thread(target=_run, daemon=True)
+        # Copy the caller's context so the repl inherits conversation_id and
+        # other context variables (e.g., for evidence.last_result() lookups).
+        context = contextvars.copy_context()
+        thread = threading.Thread(
+            target=context.run, args=(_run,), daemon=True
+        )
         thread.start()
         thread.join(timeout=self._timeout)
 
