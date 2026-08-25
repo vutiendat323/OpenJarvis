@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from openjarvis.core.conversation import conversation_scope
 from openjarvis.kiosk.presentation import presentation_generation
 from openjarvis.server.voice.llm import message_text
 from openjarvis.server.voice.persistence import session_store_for
@@ -345,7 +346,12 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
             )
             if presentation is not None:
                 presentation.activate(generation)
-            with presentation_generation(generation):
+            # The task inherits the context it is created in, so both scopes
+            # cover the whole pipeline: every tool call in every turn of this
+            # voice session belongs to this chat thread. The middleware's
+            # per-request id is not enough here -- the pipeline outlives the
+            # offer request that created it.
+            with presentation_generation(generation), conversation_scope(generation):
                 task = asyncio.create_task(
                     run_until_disconnected(worker, context, connection)
                 )

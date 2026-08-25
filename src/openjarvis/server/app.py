@@ -569,11 +569,15 @@ def create_app(
 
     # Add security headers middleware
     try:
-        from openjarvis.server.middleware import create_security_middleware
+        from openjarvis.server.middleware import (
+            create_conversation_scope_middleware,
+            create_security_middleware,
+        )
 
         middleware_cls = create_security_middleware()
         if middleware_cls is not None:
             app.add_middleware(middleware_cls)
+        app.add_middleware(create_conversation_scope_middleware())
     except Exception as exc:
         logger.debug("Security middleware init skipped: %s", exc)
 

@@ -4,7 +4,43 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["SECURITY_HEADERS", "create_security_middleware"]
+__all__ = [
+    "SECURITY_HEADERS",
+    "create_conversation_scope_middleware",
+    "create_security_middleware",
+]
+
+
+def create_conversation_scope_middleware() -> Any:
+    """Give every HTTP request its own conversation for tool working sets.
+
+    Pure ASGI rather than ``BaseHTTPMiddleware``: the streaming chat path
+    returns a ``StreamingResponse`` and produces its body -- running the agent
+    and every tool call -- after the endpoint coroutine returned. Only a
+    middleware that awaits the whole ASGI cycle keeps the scope open that long.
+    ``BaseHTTPMiddleware`` runs the app in a separate task and pipes the body
+    through a queue, which makes ``ContextVar`` visibility depend on
+    task-inheritance details rather than on anything written here.
+
+    A route that needs a longer-lived id -- the voice pipeline, which outlives
+    its offer request -- opens its own scope nested inside this one.
+    """
+    import uuid
+
+    from openjarvis.core.conversation import conversation_scope
+
+    class ConversationScopeMiddleware:
+        def __init__(self, app: Any) -> None:
+            self.app = app
+
+        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+            if scope.get("type") != "http":
+                await self.app(scope, receive, send)
+                return
+            with conversation_scope(uuid.uuid4().hex):
+                await self.app(scope, receive, send)
+
+    return ConversationScopeMiddleware
 
 
 def create_security_middleware() -> Any:
