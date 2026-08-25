@@ -569,15 +569,11 @@ def create_app(
 
     # Add security headers middleware
     try:
-        from openjarvis.server.middleware import (
-            create_conversation_scope_middleware,
-            create_security_middleware,
-        )
+        from openjarvis.server.middleware import create_security_middleware
 
         middleware_cls = create_security_middleware()
         if middleware_cls is not None:
             app.add_middleware(middleware_cls)
-        app.add_middleware(create_conversation_scope_middleware())
     except Exception as exc:
         logger.debug("Security middleware init skipped: %s", exc)
 
@@ -589,6 +585,11 @@ def create_app(
             app.add_middleware(AuthMiddleware, api_key=api_key)
         except Exception as exc:
             logger.debug("Auth middleware init skipped: %s", exc)
+
+    # Conversation scoping is mandatory and must wrap every HTTP middleware.
+    from openjarvis.server.middleware import create_conversation_scope_middleware
+
+    app.add_middleware(create_conversation_scope_middleware())
 
     # Mount webhook routes (always — SendBlue may be configured dynamically)
     if webhook_config:

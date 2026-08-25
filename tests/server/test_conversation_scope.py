@@ -83,6 +83,16 @@ def test_two_requests_do_not_share_a_conversation():
     assert seen[0] != seen[1]
 
 
+def test_create_app_puts_conversation_scope_outside_auth():
+    """Authentication rejections must still enter the HTTP conversation scope."""
+    from openjarvis.server.app import create_app
+
+    app = create_app(engine=None, model="test-model", api_key="test-key")
+
+    assert app.user_middleware[0].cls.__name__ == "ConversationScopeMiddleware"
+    assert app.user_middleware[1].cls.__name__ == "AuthMiddleware"
+
+
 def test_voice_route_scopes_by_chat_thread():
     """Voice needs a stable id: its pipeline outlives the offer request."""
     import inspect
