@@ -384,6 +384,20 @@ def test_cold_then_warm_path_persists_and_uses_no_browser(tmp_path, provider):
     second.close()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "display_payment_qr now requires http_request evidence "
+        "(task-5-http-request-only-agent) instead of a data-plane snapshot "
+        "verification, so this test's positive assertion after source_verify "
+        "can no longer be satisfied by construction -- only ToolExecutor "
+        "writes evidence, and this test drives the tool through the data "
+        "plane, not http_request. Its coverage is replaced by "
+        "tests/tools/test_display_payment_evidence.py. This file's subsystem "
+        "is removed in the later data-plane deletion task, at which point "
+        "this test goes with it."
+    ),
+)
 def test_payment_qr_reaches_a_snapshot_only_after_verification(runtime):
     display_qr = next(
         tool

@@ -297,11 +297,7 @@ class SystemBuilder:
             except Exception as exc:
                 logger.warning("Failed to initialize skills: %s", exc)
 
-        trusted_hosts = tuple(
-            host.strip()
-            for host in config.tools.payment_trusted_origins.split(",")
-            if host.strip()
-        )
+        trusted_hosts = self._parse_trusted_hosts(config.tools.payment_trusted_origins)
         for tool in tool_list:
             self._inject_payment_trusted_hosts(tool, trusted_hosts)
 
@@ -679,6 +675,18 @@ class SystemBuilder:
         tool._runtime = runtime
         tool._discovery_budget_seconds = config.data_plane.discovery_budget_seconds
         tool._browser_fallback = config.data_plane.browser_fallback
+
+    @staticmethod
+    def _parse_trusted_hosts(raw: str) -> tuple:
+        """Comma-separated hosts, normalised to match ``urlsplit().hostname``.
+
+        ``urlsplit().hostname`` lowercases, so an un-lowercased configured
+        entry would fail closed against a real host -- silently, since
+        refusal and "no evidence at all" look identical to the caller.
+        """
+        return tuple(
+            host.strip().lower() for host in raw.split(",") if host.strip()
+        )
 
     @staticmethod
     def _inject_payment_trusted_hosts(tool, trusted_hosts: tuple) -> None:

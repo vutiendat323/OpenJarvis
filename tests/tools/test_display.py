@@ -229,14 +229,32 @@ def test_display_payment_qr_rejects_an_arbitrary_nonempty_value_without_publishi
 
 
 def test_display_payment_qr_rejects_a_missing_payment_identifier():
+    """Evidence alone must not be enough -- the payload must be complete too.
+
+    Records matching evidence so the ``observed_in_tool_output`` term is
+    satisfied, then omits ``payment_slug`` so completeness is the only thing
+    that can still cause the refusal.
+    """
     tool, recorder = _wired(DisplayPaymentQrTool)
     tool._payment_trusted_hosts = ("merchant.example",)
 
-    result = tool.execute(
-        order_id="order-1",
-        status="pending",
-        qr_code="merchant-opaque-qr",
-    )
+    evidence.reset()
+    try:
+        with conversation_scope("test-display-payment-qr-rejects-incomplete"):
+            evidence.record(
+                "http_request",
+                {},
+                "merchant-opaque-qr",
+                200,
+                "https://merchant.example/pay",
+            )
+            result = tool.execute(
+                order_id="order-1",
+                status="pending",
+                qr_code="merchant-opaque-qr",
+            )
+    finally:
+        evidence.reset()
 
     assert result == ToolResult(
         tool_name="display_payment_qr",
