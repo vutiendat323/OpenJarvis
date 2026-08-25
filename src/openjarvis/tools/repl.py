@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 from openjarvis.core.conversation import current_conversation_id
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
+from openjarvis.tools import _repl_reader
 from openjarvis.tools import evidence as _evidence
 from openjarvis.tools._stubs import BaseTool, ToolSpec
 
@@ -220,9 +221,18 @@ class ReplTool(BaseTool):
         # Resolve session
         session = self._resolve_session(session_id, reset)
 
-        # Read-only. repl cannot record evidence, so a model cannot manufacture
-        # provenance by printing a string inside the interpreter.
-        session.namespace["last_result"] = _evidence.last_result
+        # Built fresh from plain data every call, not bound to evidence.record.
+        # Binding the function object directly (`_evidence.last_result`) would
+        # still be read-only in what it *does*, but every Python function
+        # exposes its defining module's globals -- interpreted code could do
+        # `last_result.__globals__['record']` and forge provenance for a fake
+        # payment QR. `_repl_reader.make_last_result` closes over plain
+        # str/dict values, so there is no attribute path from this namespace
+        # back to the evidence store. See `_repl_reader.py` for detail.
+        snapshot, most_recent = _evidence.evidence_snapshot()
+        session.namespace["last_result"] = _repl_reader.make_last_result(
+            snapshot, most_recent
+        )
 
         # Execute with timeout
         output, success = self._exec_with_timeout(code, session)

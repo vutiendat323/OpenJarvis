@@ -120,6 +120,28 @@ def last_result(tool_name: Optional[str] = None) -> str:
     return ""
 
 
+def evidence_snapshot() -> Tuple[Dict[str, str], str]:
+    """Plain-data view of this conversation's evidence: ``(by_tool, most_recent)``.
+
+    ``by_tool[name]`` is that tool's most recent content; ``most_recent`` is
+    the most recent content from any tool -- the same two views
+    ``last_result(name)`` and ``last_result(None)`` give, just handed back as
+    ``str``/``dict[str, str]`` instead of a live function bound to this
+    module. Callers that must expose "read the evidence" to code they do not
+    trust (``repl``) build their reader from this snapshot rather than from
+    :func:`last_result` directly, so that reader has no attribute path back
+    to :func:`record`. Copies under the lock via ``_conversation_evidence``,
+    same as every other reader here.
+    """
+    by_tool: Dict[str, str] = {}
+    most_recent = ""
+    for entry in reversed(_conversation_evidence()):
+        if not most_recent:
+            most_recent = entry.content
+        by_tool.setdefault(entry.tool_name, entry.content)
+    return by_tool, most_recent
+
+
 def reset() -> None:
     """Drop everything. For tests; the store is process-wide by design."""
     with _LOCK:
@@ -134,6 +156,7 @@ def _conversation_evidence() -> list:
 
 __all__ = [
     "ToolEvidence",
+    "evidence_snapshot",
     "last_result",
     "observed_in_tool_output",
     "record",
