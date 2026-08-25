@@ -8,9 +8,11 @@ setup, so we validate the whole set on every commit.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
+import tomllib
 
 from openjarvis.core.config import JarvisConfig, load_config
 
@@ -95,26 +97,73 @@ def test_preset_write_grants_are_exact_identities() -> None:
 
 def test_kiosk_mcp_preset_runs_on_generic_tools_only() -> None:
     """The kiosk transacts through http_request, not through ordering tools."""
-    cfg = load_config(path=PRESETS_DIR / "ordering-kiosk-mcp.toml")
+    preset_path = PRESETS_DIR / "ordering-kiosk-mcp.toml"
+    cfg = load_config(path=preset_path)
+    raw_toml = tomllib.loads(preset_path.read_text())
     enabled = {name.strip() for name in cfg.tools.enabled.split(",")}
+    expected_enabled = {
+        "http_request",
+        "repl",
+        "skill_manage",
+        "display_menu",
+        "display_cart",
+        "display_bill",
+        "display_payment_qr",
+        "display_clear",
+        "browser_snapshot",
+        "browser_find",
+        "browser_navigate",
+        "browser_navigate_back",
+        "browser_tabs",
+        "browser_click",
+        "browser_type",
+        "browser_fill_form",
+        "browser_select_option",
+        "browser_hover",
+        "browser_press_key",
+        "browser_wait_for",
+        "browser_handle_dialog",
+        "browser_drag",
+        "browser_drop",
+        "browser_resize",
+        "browser_close",
+        "browser_network_requests",
+        "browser_verify_element_visible",
+        "browser_verify_text_visible",
+        "browser_verify_value",
+        "browser_verify_list_visible",
+    }
+    expected_playwright_tools = {
+        "browser_snapshot",
+        "browser_find",
+        "browser_navigate",
+        "browser_navigate_back",
+        "browser_tabs",
+        "browser_click",
+        "browser_type",
+        "browser_fill_form",
+        "browser_select_option",
+        "browser_hover",
+        "browser_press_key",
+        "browser_wait_for",
+        "browser_handle_dialog",
+        "browser_drag",
+        "browser_drop",
+        "browser_resize",
+        "browser_close",
+        "browser_network_requests",
+        "browser_verify_element_visible",
+        "browser_verify_text_visible",
+        "browser_verify_value",
+        "browser_verify_list_visible",
+    }
+    servers = json.loads(cfg.tools.mcp.servers)
+    playwright = next(server for server in servers if server["name"] == "playwright")
+    include_tools = playwright["include_tools"]
 
-    assert {"http_request", "repl", "skill_manage"} <= enabled
-    assert (
-        not {
-            "branch_list",
-            "menu_search",
-            "menu_item",
-            "cart_set",
-            "cart_view",
-            "order_place",
-            "order_verify",
-            "source_discover",
-            "source_sync",
-            "structured_query",
-            "source_execute",
-            "source_verify",
-        }
-        & enabled
-    )
-    assert "browser_network_requests" in cfg.tools.mcp.servers
+    assert enabled == expected_enabled
+    assert set(include_tools) == expected_playwright_tools
+    assert len(include_tools) == len(expected_playwright_tools)
     assert cfg.tools.payment_trusted_origins == "trendcoffee.net"
+    assert "merchants" not in raw_toml
+    assert "data_plane" not in raw_toml
