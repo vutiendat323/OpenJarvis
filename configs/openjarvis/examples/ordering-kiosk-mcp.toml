@@ -61,10 +61,10 @@ parallel_tools = false
 # kiosk is a public terminal whose threat model treats provider JSON and page
 # text as prompt-injection-bearing, and this preset declares no capability
 # policy, so an enabled `shell_exec` would be unrestricted shell on injection.
-enabled = "http_request,repl,skill_manage,display_menu,display_cart,display_bill,display_payment_qr,display_clear,browser_snapshot,browser_find,browser_navigate,browser_navigate_back,browser_tabs,browser_click,browser_type,browser_fill_form,browser_select_option,browser_hover,browser_press_key,browser_wait_for,browser_handle_dialog,browser_drag,browser_drop,browser_resize,browser_close,browser_network_requests,browser_verify_element_visible,browser_verify_text_visible,browser_verify_value,browser_verify_list_visible"
-# Only this host may supply a payment QR. Empty would mean no QR can ever be
+enabled = "http_request,skill_manage,display_menu,display_cart,display_bill,display_payment_qr,display_clear,browser_snapshot,browser_find,browser_navigate,browser_navigate_back,browser_tabs,browser_click,browser_type,browser_fill_form,browser_select_option,browser_hover,browser_press_key,browser_wait_for,browser_handle_dialog,browser_drag,browser_drop,browser_resize,browser_close,browser_network_requests,browser_verify_element_visible,browser_verify_text_visible,browser_verify_value,browser_verify_list_visible"
+# Only this origin may supply a payment QR. Empty would mean no QR can ever be
 # displayed; a wide list would mean the guard proves nothing.
-payment_trusted_origins = "trendcoffee.net"
+payment_trusted_origins = "https://trendcoffee.net"
 
 [server]
 host = "127.0.0.1"

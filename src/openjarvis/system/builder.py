@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, List, Optional
+from urllib.parse import urlsplit
 
 from openjarvis.core.config import JarvisConfig, load_config
 from openjarvis.core.events import EventBus, get_event_bus
@@ -297,9 +298,11 @@ class SystemBuilder:
             except Exception as exc:
                 logger.warning("Failed to initialize skills: %s", exc)
 
-        trusted_hosts = self._parse_trusted_hosts(config.tools.payment_trusted_origins)
+        trusted_origins = self._parse_trusted_origins(
+            config.tools.payment_trusted_origins
+        )
         for tool in tool_list:
-            self._inject_payment_trusted_hosts(tool, trusted_hosts)
+            self._inject_payment_trusted_origins(tool, trusted_origins)
 
         agent_name = self._agent_name or config.agent.default_agent
         container_runner = self._setup_sandbox(config)
@@ -541,7 +544,6 @@ class SystemBuilder:
                 merchant = TrendCoffeeMerchant(
                     data_plane,
                     source_id=config.merchants.source_id,
-                    snapshot_max_age_seconds=config.merchants.snapshot_max_age_seconds,
                 )
         for tool in internal_server.get_tools():
             if merchant is not None:
@@ -677,19 +679,33 @@ class SystemBuilder:
         tool._browser_fallback = config.data_plane.browser_fallback
 
     @staticmethod
-    def _parse_trusted_hosts(raw: str) -> tuple:
-        """Comma-separated hosts, normalised to match ``urlsplit().hostname``.
-
-        ``urlsplit().hostname`` lowercases, so an un-lowercased configured
-        entry would fail closed against a real host -- silently, since
-        refusal and "no evidence at all" look identical to the caller.
-        """
-        return tuple(
-            host.strip().lower() for host in raw.split(",") if host.strip()
-        )
+    def _parse_trusted_origins(raw: str) -> tuple:
+        """Parse explicit HTTP origins into ``(scheme, host, effective_port)``."""
+        origins = []
+        for value in (part.strip() for part in raw.split(",")):
+            if not value:
+                continue
+            parsed = urlsplit(value)
+            scheme = parsed.scheme.lower()
+            host = parsed.hostname
+            if scheme not in {"http", "https"} or host is None:
+                raise ValueError(
+                    "payment trusted origin requires an http/https scheme and host"
+                )
+            if (
+                parsed.username is not None
+                or parsed.password is not None
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError("payment trusted origin must contain only an origin")
+            port = parsed.port or (443 if scheme == "https" else 80)
+            origins.append((scheme, host, port))
+        return tuple(origins)
 
     @staticmethod
-    def _inject_payment_trusted_hosts(tool, trusted_hosts: tuple) -> None:
+    def _inject_payment_trusted_origins(tool, trusted_origins: tuple) -> None:
         """Configuration is the only thing display_payment_qr needs handed to it.
 
         The evidence store is imported directly by the tool, because it belongs
@@ -697,10 +713,10 @@ class SystemBuilder:
         executor to choose between here, and no way to choose wrongly.
         """
         if tool.spec.name != "display_payment_qr" or not hasattr(
-            tool, "_payment_trusted_hosts"
+            tool, "_payment_trusted_origins"
         ):
             return
-        tool._payment_trusted_hosts = trusted_hosts
+        tool._payment_trusted_origins = trusted_origins
 
     def _build_data_plane(self, config, bus):
         if not config.data_plane.enabled:
@@ -749,7 +765,6 @@ class SystemBuilder:
             approval_gate = ExecutionApprovalGate(
                 get_store(),
                 owns_store=False,
-                conversational=config.data_plane.conversational_approval,
             )
             runtime = DataPlaneRuntime(
                 capabilities,

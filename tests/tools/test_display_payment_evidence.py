@@ -52,7 +52,7 @@ class _Http(BaseTool):
 def _display_tool() -> DisplayPaymentQrTool:
     tool = DisplayPaymentQrTool()
     tool._bus = EventBus()
-    tool._payment_trusted_hosts = ("trendcoffee.net",)
+    tool._payment_trusted_origins = (("https", "trendcoffee.net", 443),)
     return tool
 
 
@@ -124,12 +124,53 @@ def test_a_qr_from_an_untrusted_host_is_refused():
     assert result.success is False
 
 
+def test_a_qr_from_http_on_the_trusted_host_is_refused():
+    executor = ToolExecutor([_Http()])
+    tool = _display_tool()
+
+    with conversation_scope("a"):
+        _observe(executor, '{"qrCode": "QR_REAL_789"}', 200, "http://trendcoffee.net/x")
+        result = tool.execute(**_PAYMENT)
+
+    assert result.success is False
+
+
+def test_a_qr_from_the_wrong_https_port_is_refused():
+    executor = ToolExecutor([_Http()])
+    tool = _display_tool()
+
+    with conversation_scope("a"):
+        _observe(
+            executor,
+            '{"qrCode": "QR_REAL_789"}',
+            200,
+            "https://trendcoffee.net:444/x",
+        )
+        result = tool.execute(**_PAYMENT)
+
+    assert result.success is False
+
+
+def test_http_origin_is_accepted_only_when_explicitly_configured():
+    executor = ToolExecutor([_Http()])
+    tool = _display_tool()
+    tool._payment_trusted_origins = (("http", "trendcoffee.net", 80),)
+
+    with conversation_scope("a"):
+        _observe(executor, '{"qrCode": "QR_REAL_789"}', 200, "http://trendcoffee.net/x")
+        result = tool.execute(**_PAYMENT)
+
+    assert result.success is True
+
+
 def test_a_qr_from_a_non_2xx_response_is_refused():
     executor = ToolExecutor([_Http()])
     tool = _display_tool()
 
     with conversation_scope("a"):
-        _observe(executor, '{"qrCode": "QR_REAL_789"}', 500, "https://trendcoffee.net/x")
+        _observe(
+            executor, '{"qrCode": "QR_REAL_789"}', 500, "https://trendcoffee.net/x"
+        )
         result = tool.execute(**_PAYMENT)
 
     assert result.success is False
@@ -156,8 +197,11 @@ def test_a_qr_that_only_a_browser_tool_saw_is_refused():
                 id="1",
                 name="browser_snapshot",
                 arguments=json.dumps(
-                    {"body": "page says QR_REAL_789", "status": 200,
-                     "url": "https://trendcoffee.net/x"}
+                    {
+                        "body": "page says QR_REAL_789",
+                        "status": 200,
+                        "url": "https://trendcoffee.net/x",
+                    }
                 ),
             )
         )
@@ -171,20 +215,24 @@ def test_another_conversations_qr_is_refused():
     tool = _display_tool()
 
     with conversation_scope("customer-a"):
-        _observe(executor, '{"qrCode": "QR_REAL_789"}', 201, "https://trendcoffee.net/x")
+        _observe(
+            executor, '{"qrCode": "QR_REAL_789"}', 201, "https://trendcoffee.net/x"
+        )
     with conversation_scope("customer-b"):
         result = tool.execute(**_PAYMENT)
 
     assert result.success is False
 
 
-def test_no_trusted_hosts_configured_refuses_everything():
+def test_no_trusted_origins_configured_refuses_everything():
     executor = ToolExecutor([_Http()])
     tool = _display_tool()
-    tool._payment_trusted_hosts = ()
+    tool._payment_trusted_origins = ()
 
     with conversation_scope("a"):
-        _observe(executor, '{"qrCode": "QR_REAL_789"}', 201, "https://trendcoffee.net/x")
+        _observe(
+            executor, '{"qrCode": "QR_REAL_789"}', 201, "https://trendcoffee.net/x"
+        )
         result = tool.execute(**_PAYMENT)
 
     assert result.success is False

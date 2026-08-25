@@ -161,7 +161,7 @@ class ReplTool(BaseTool):
         self._timeout = timeout
         self._max_output = max_output
         self._max_sessions = max_sessions
-        self._sessions: Dict[str, _ReplSession] = {}
+        self._sessions: Dict[tuple[str, str], _ReplSession] = {}
         self._lock = threading.Lock()
 
     @property
@@ -260,14 +260,14 @@ class ReplTool(BaseTool):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _session_key(session_id: str) -> str:
+    def _session_key(session_id: str) -> tuple[str, str]:
         """Scope a model-supplied session id to the calling conversation.
 
         The id arrives from the model, so it is guessable. Without the
         conversation prefix, one customer reads another's variables by asking
         for their session.
         """
-        return f"{current_conversation_id()}\x00{session_id}"
+        return current_conversation_id(), session_id
 
     def _resolve_session(
         self,
@@ -351,9 +351,7 @@ class ReplTool(BaseTool):
         # Copy the caller's context so the repl inherits conversation_id and
         # other context variables (e.g., for evidence.last_result() lookups).
         context = contextvars.copy_context()
-        thread = threading.Thread(
-            target=context.run, args=(_run,), daemon=True
-        )
+        thread = threading.Thread(target=context.run, args=(_run,), daemon=True)
         thread.start()
         thread.join(timeout=self._timeout)
 

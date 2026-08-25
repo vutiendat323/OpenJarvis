@@ -47,6 +47,13 @@ class _SSRFRedirectError(Exception):
     """Raised when a redirect target fails the SSRF check."""
 
 
+class _RequestProgress:
+    """What reached a server before a redirect-stage failure."""
+
+    def __init__(self) -> None:
+        self.mutation_response_seen = False
+
+
 @ToolRegistry.register("http_request")
 class HttpRequestTool(BaseTool):
     """Make HTTP requests to external APIs with SSRF protection."""
@@ -166,13 +173,19 @@ class HttpRequestTool(BaseTool):
             except Exception as exc:
                 logger.debug("Rust HTTP request fallback to httpx: %s", exc)
 
+        progress = _RequestProgress()
         try:
             t0 = time.time()
             # Follow redirects manually so each hop is re-checked for SSRF — an
             # allowed public URL must not be able to 30x-redirect us to an
             # internal/metadata address.
             response = self._request_following_redirects(
-                method, url, headers=headers, content=body, timeout=float(timeout)
+                method,
+                url,
+                headers=headers,
+                content=body,
+                timeout=float(timeout),
+                progress=progress,
             )
             elapsed_ms = (time.time() - t0) * 1000
 
@@ -205,7 +218,9 @@ class HttpRequestTool(BaseTool):
             )
         except httpx.TimeoutException as exc:
             content = f"Request timed out after {timeout}s: {exc}"
-            if method in _STATE_CHANGING_METHODS and not _never_reached_server(exc):
+            if method in _STATE_CHANGING_METHODS and (
+                progress.mutation_response_seen or not _never_reached_server(exc)
+            ):
                 content += _AMBIGUOUS_OUTCOME
             return ToolResult(
                 tool_name="http_request",
@@ -213,14 +228,19 @@ class HttpRequestTool(BaseTool):
                 success=False,
             )
         except _SSRFRedirectError as exc:
+            content = f"SSRF protection blocked redirect: {exc}"
+            if method in _STATE_CHANGING_METHODS and progress.mutation_response_seen:
+                content += _AMBIGUOUS_OUTCOME
             return ToolResult(
                 tool_name="http_request",
-                content=f"SSRF protection blocked redirect: {exc}",
+                content=content,
                 success=False,
             )
         except httpx.RequestError as exc:
             content = f"Request error: {exc}"
-            if method in _STATE_CHANGING_METHODS and not _never_reached_server(exc):
+            if method in _STATE_CHANGING_METHODS and (
+                progress.mutation_response_seen or not _never_reached_server(exc)
+            ):
                 content += _AMBIGUOUS_OUTCOME
             return ToolResult(
                 tool_name="http_request",
@@ -228,9 +248,12 @@ class HttpRequestTool(BaseTool):
                 success=False,
             )
         except Exception as exc:
+            content = f"Unexpected error: {exc}"
+            if method in _STATE_CHANGING_METHODS and progress.mutation_response_seen:
+                content += _AMBIGUOUS_OUTCOME
             return ToolResult(
                 tool_name="http_request",
-                content=f"Unexpected error: {exc}",
+                content=content,
                 success=False,
             )
 
@@ -242,6 +265,7 @@ class HttpRequestTool(BaseTool):
         headers: dict,
         content: Any,
         timeout: float,
+        progress: _RequestProgress,
     ) -> httpx.Response:
         """Issue the request, re-checking SSRF on every redirect hop.
 
@@ -264,6 +288,8 @@ class HttpRequestTool(BaseTool):
                 timeout=timeout,
                 follow_redirects=False,
             )
+            if current_method in _STATE_CHANGING_METHODS:
+                progress.mutation_response_seen = True
             if response.status_code not in (301, 302, 303, 307, 308):
                 return response
             location = response.headers.get("location", "")

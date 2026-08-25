@@ -198,7 +198,7 @@ class DisplayPaymentQrTool(_DisplayTool):
         super().__init__()
         # Set by SystemBuilder from config. Empty means no QR can be displayed:
         # provenance is required, never assumed.
-        self._payment_trusted_hosts: tuple = ()
+        self._payment_trusted_origins: tuple = ()
 
     @property
     def spec(self) -> ToolSpec:
@@ -237,17 +237,17 @@ class DisplayPaymentQrTool(_DisplayTool):
             for field in _PAYMENT_QR_FIELDS
         )
         # Four conditions: this exact string, from http_request, with a 2xx,
-        # from a trusted host, in this conversation. observed_in_tool_output
-        # treats an empty trusted_hosts as "no host restriction", so an empty
+        # from a trusted origin, in this conversation. observed_in_tool_output
+        # treats empty trusted_origins as "no origin restriction", so an empty
         # configured list is checked here instead -- it must refuse everything.
         verified = (
             complete
-            and bool(self._payment_trusted_hosts)
+            and bool(self._payment_trusted_origins)
             and _evidence.observed_in_tool_output(
                 qr_code,
                 from_tool="http_request",
                 require_ok=True,
-                trusted_hosts=self._payment_trusted_hosts,
+                trusted_origins=self._payment_trusted_origins,
             )
         )
         if not verified:

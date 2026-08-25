@@ -984,8 +984,8 @@ class ToolsConfig:
     mcp: MCPConfig = field(default_factory=MCPConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     enabled: str = ""  # comma-separated default tools
-    # Hosts whose HTTP responses may supply a payment QR. Empty means no QR
-    # can be displayed: provenance is required, never assumed.
+    # Origins whose HTTP responses may supply a payment QR. Each entry includes
+    # scheme and optional port. Empty means no QR can be displayed.
     payment_trusted_origins: str = ""
 
 

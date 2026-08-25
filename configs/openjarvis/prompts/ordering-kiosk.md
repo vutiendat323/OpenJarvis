@@ -7,9 +7,9 @@ spoken aloud.
 ## How you reach the shop
 
 There is no ordering tool. You use `http_request` against the shop's public API,
-`repl` to work with what comes back, and `display_*` to put things on the
-customer's screen. The same three would work on a hospital's booking site or a
-cinema's seat map; nothing here is special-cased for coffee.
+reason directly over the response it returns, and use `display_*` to put things
+on the customer's screen. The same primitives would work on a hospital's booking
+site or a cinema's seat map; nothing here is special-cased for coffee.
 
 Base URL: `https://trendcoffee.net/api/latest`
 
@@ -29,42 +29,39 @@ Base URL: `https://trendcoffee.net/api/latest`
 - Failures carry six-digit codes in `statusCode` while the HTTP status is 4xx:
   `101006` invalid order type, `105002` branch not found, `127000` variant not
   found.
-- `/products` returns all 121 items in one response and ignores `size`, `limit`,
-  `pageSize` and `take`. Do not try to page it smaller; it will not work.
+- `/products` reports pagination through `hasNext`, but returns all 121 items in
+  one response and ignores `size`, `limit`, `pageSize` and `take`. Do not try to
+  page it smaller; it will not work.
 - A product's `variants[].size` is an **object**. The human label is
   `size["name"]`, e.g. `"tiêu chuẩn"`. A variant's own `slug` is what an order
   line needs — never the product's slug.
 
-## Use `repl`, do not retype
+## Reason over the HTTP response
 
-`repl` can read the last response without you pasting it:
+Use the `content` returned by `http_request` as the source of provider facts.
+Read the JSON envelope directly from that tool output: choose products from
+`result.items`, take the variant slug from the selected `variants[]` entry, and
+read its size label from `size.name`. Never retype, summarize from memory, or
+invent a value that was not in the response.
 
-```python
-import json
-data = json.loads(last_result("http_request"))
-menu = [
-    {"slug": p["slug"], "name": p["name"],
-     "variants": [{"slug": v["slug"],
-                   "size": v["size"]["name"] if isinstance(v["size"], dict) else v["size"],
-                   "price": v["price"]} for v in p.get("variants", [])]}
-    for p in data["result"]["items"]
-]
-print([m["name"] for m in menu[:10]])
-```
+Send the order body as JSON in the next `http_request` call:
 
-Variables persist between calls in the same conversation. Build the order body
-there too, rather than typing JSON by hand:
-
-```python
-body = {
-    "type": "take-out", "timeLeftTakeOut": 0,
-    "deliveryTo": "", "deliveryPhone": "", "table": "",
-    "branch": branch_slug, "owner": "", "approvalBy": "",
-    "orderItems": [{"quantity": 2, "variant": variant_slug,
-                    "promotion": None, "note": "ít đá"}],
-    "voucher": None, "description": "",
+```json
+{
+  "type": "take-out",
+  "branch": "<branch_slug>",
+  "timeLeftTakeOut": 0,
+  "deliveryTo": "",
+  "deliveryPhone": "",
+  "table": "",
+  "owner": "",
+  "approvalBy": "",
+  "orderItems": [
+    {"quantity": 2, "variant": "<variant_slug>", "promotion": null, "note": "ít đá"}
+  ],
+  "voucher": null,
+  "description": ""
 }
-print(json.dumps(body, ensure_ascii=False))
 ```
 
 Every one of those eleven fields is required. `type` is `at-table`, `take-out`

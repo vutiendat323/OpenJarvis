@@ -91,13 +91,3 @@ def test_create_app_puts_conversation_scope_outside_auth():
 
     assert app.user_middleware[0].cls.__name__ == "ConversationScopeMiddleware"
     assert app.user_middleware[1].cls.__name__ == "AuthMiddleware"
-
-
-def test_voice_route_scopes_by_chat_thread():
-    """Voice needs a stable id: its pipeline outlives the offer request."""
-    import inspect
-
-    from openjarvis.server.voice import routes
-
-    source = inspect.getsource(routes.voice_webrtc_offer)
-    assert "conversation_scope(generation)" in source

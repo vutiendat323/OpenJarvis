@@ -127,3 +127,74 @@ def test_the_rust_path_does_not_claim_a_status_it_cannot_know(monkeypatch):
 
     assert result.success is True
     assert result.metadata["status_code"] is None
+
+
+def test_post_to_blocked_redirect_warns_that_outcome_is_ambiguous(monkeypatch):
+    response = httpx.Response(
+        302,
+        headers={"location": "http://169.254.169.254/latest/"},
+        request=httpx.Request("POST", _URL),
+    )
+    monkeypatch.setattr(httpx, "request", lambda *args, **kwargs: response)
+    monkeypatch.setattr(
+        "openjarvis.tools.http_request.check_ssrf",
+        MagicMock(side_effect=[None, "blocked metadata host"]),
+    )
+
+    result = HttpRequestTool().execute(url=_URL, method="POST", body="{}")
+
+    assert result.success is False
+    assert "blocked redirect" in result.content
+    assert _AMBIGUOUS in result.content
+
+
+def test_post_redirect_then_connect_error_warns_that_outcome_is_ambiguous(
+    monkeypatch,
+):
+    responses: list[httpx.Response | Exception] = [
+        httpx.Response(
+            302,
+            headers={"location": "https://trendcoffee.net/order-status"},
+            request=httpx.Request("POST", _URL),
+        ),
+        httpx.ConnectError("redirect target refused connection"),
+    ]
+
+    def request(*args, **kwargs):
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(httpx, "request", request)
+    monkeypatch.setattr(
+        "openjarvis.tools.http_request.check_ssrf", MagicMock(return_value=None)
+    )
+
+    result = HttpRequestTool().execute(url=_URL, method="POST", body="{}")
+
+    assert result.success is False
+    assert "Request error" in result.content
+    assert _AMBIGUOUS in result.content
+
+
+def test_post_redirect_loop_at_max_depth_warns_that_outcome_is_ambiguous(
+    monkeypatch,
+):
+    def redirect(method, url, **kwargs):
+        return httpx.Response(
+            307,
+            headers={"location": "/again"},
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr(httpx, "request", redirect)
+    monkeypatch.setattr(
+        "openjarvis.tools.http_request.check_ssrf", MagicMock(return_value=None)
+    )
+
+    result = HttpRequestTool().execute(url=_URL, method="POST", body="{}")
+
+    assert result.success is False
+    assert "maximum" in result.content
+    assert _AMBIGUOUS in result.content

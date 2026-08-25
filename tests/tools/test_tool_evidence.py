@@ -101,7 +101,7 @@ def test_a_failed_call_leaves_no_evidence():
         assert evidence.observed_in_tool_output("QR_REAL") is False
 
 
-def test_evidence_can_require_a_2xx_status_and_a_trusted_host():
+def test_evidence_can_require_a_2xx_status_and_a_trusted_origin():
     executor = ToolExecutor([_Echo()])
 
     with conversation_scope("a"):
@@ -115,15 +115,15 @@ def test_evidence_can_require_a_2xx_status_and_a_trusted_host():
             _call(body="QR_GOOD", status=201, url="https://trendcoffee.net/x")
         )
 
-        hosts = ("trendcoffee.net",)
+        origins = (("https", "trendcoffee.net", 443),)
         assert not evidence.observed_in_tool_output(
-            "QR_500", require_ok=True, trusted_hosts=hosts
+            "QR_500", require_ok=True, trusted_origins=origins
         )
         assert not evidence.observed_in_tool_output(
-            "QR_ELSEWHERE", require_ok=True, trusted_hosts=hosts
+            "QR_ELSEWHERE", require_ok=True, trusted_origins=origins
         )
         assert evidence.observed_in_tool_output(
-            "QR_GOOD", require_ok=True, trusted_hosts=hosts
+            "QR_GOOD", require_ok=True, trusted_origins=origins
         )
 
 
@@ -177,12 +177,35 @@ def test_evidence_is_bounded_by_total_bytes(monkeypatch):
         assert evidence.observed_in_tool_output("recent") is True
 
 
+def test_evidence_byte_cap_counts_utf8_encoded_content(monkeypatch):
+    monkeypatch.setattr(evidence, "_MAX_BYTES", 4)
+    executor = ToolExecutor([_Echo()])
+
+    with conversation_scope("a"):
+        executor.execute(_call(body="éé"))  # four UTF-8 bytes
+        executor.execute(_call(body="x"))
+
+        assert evidence.observed_in_tool_output("éé") is False
+        assert evidence.observed_in_tool_output("x") is True
+
+
+def test_evidence_does_not_retain_tool_arguments():
+    executor = ToolExecutor([_Echo()])
+
+    with conversation_scope("a"):
+        executor.execute(_call(body="retained body", authorization="sensitive-token"))
+        entry = evidence._conversation_evidence()[0]
+
+    assert not hasattr(entry, "arguments")
+    assert "sensitive-token" not in repr(entry)
+
+
 def test_from_tool_filter_excludes_other_tools():
     """The mechanism that stops a hostile page's browser_* output from
     satisfying a guard scoped to http_request."""
     with conversation_scope("a"):
         evidence.record(
-            "browser_read", {}, "hostile page content", 200, "https://evil.example"
+            "browser_read", "hostile page content", 200, "https://evil.example"
         )
 
         assert evidence.observed_in_tool_output("hostile page content") is True
@@ -216,7 +239,7 @@ def test_a_redirect_to_an_untrusted_host_is_not_trusted():
             )
         )
 
-        hosts = ("trendcoffee.net",)
+        origins = (("https", "trendcoffee.net", 443),)
         assert not evidence.observed_in_tool_output(
-            "QR_FORGED", require_ok=True, trusted_hosts=hosts
+            "QR_FORGED", require_ok=True, trusted_origins=origins
         )

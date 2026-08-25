@@ -171,14 +171,13 @@ def test_display_bill_keeps_only_merchant_bill_fields_and_normalizes_total():
 
 def test_display_payment_qr_drops_every_field_outside_the_verified_view():
     tool, recorder = _wired(DisplayPaymentQrTool)
-    tool._payment_trusted_hosts = ("merchant.example",)
+    tool._payment_trusted_origins = (("https", "merchant.example", 443),)
 
     evidence.reset()
     try:
         with conversation_scope("test-display-payment-qr-drops-fields"):
             evidence.record(
                 "http_request",
-                {},
                 "merchant-opaque-qr",
                 200,
                 "https://merchant.example/pay",
@@ -206,7 +205,7 @@ def test_display_payment_qr_drops_every_field_outside_the_verified_view():
 
 def test_display_payment_qr_rejects_an_arbitrary_nonempty_value_without_publishing():
     tool, recorder = _wired(DisplayPaymentQrTool)
-    tool._payment_trusted_hosts = ("merchant.example",)
+    tool._payment_trusted_origins = (("https", "merchant.example", 443),)
 
     evidence.reset()
     try:
@@ -236,14 +235,13 @@ def test_display_payment_qr_rejects_a_missing_payment_identifier():
     that can still cause the refusal.
     """
     tool, recorder = _wired(DisplayPaymentQrTool)
-    tool._payment_trusted_hosts = ("merchant.example",)
+    tool._payment_trusted_origins = (("https", "merchant.example", 443),)
 
     evidence.reset()
     try:
         with conversation_scope("test-display-payment-qr-rejects-incomplete"):
             evidence.record(
                 "http_request",
-                {},
                 "merchant-opaque-qr",
                 200,
                 "https://merchant.example/pay",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 from typing import Any, List
 
@@ -9,6 +11,13 @@ from openjarvis.core.paths import get_config_dir
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
 from openjarvis.tools._stubs import BaseTool, ToolSpec
+
+_SAFE_SKILL_NAME = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
+
+
+def _toml_string(value: Any) -> str:
+    """Serialize one untrusted value as a TOML basic string."""
+    return json.dumps(str(value), ensure_ascii=False)
 
 
 @ToolRegistry.register("skill_manage")
@@ -74,29 +83,27 @@ class SkillManageTool(BaseTool):
         )
 
     def _create(self, name: str, description: str, steps: List[dict]) -> ToolResult:
-        if not name:
-            return ToolResult(
-                tool_name=self.spec.name,
-                success=False,
-                content="Skill name is required.",
-            )
+        path = self._skill_path(name)
+        if path is None:
+            return self._invalid_name()
         self._skills_dir.mkdir(parents=True, exist_ok=True)
-        path = self._skills_dir / f"{name}.toml"
         lines = [
             "[skill]",
-            f'name = "{name}"',
-            f'description = "{description}"',
+            f"name = {_toml_string(name)}",
+            f"description = {_toml_string(description)}",
             "",
         ]
         for step in steps:
             lines.append("[[skill.steps]]")
-            lines.append(f'tool_name = "{step.get("tool_name", "")}"')
+            lines.append(f"tool_name = {_toml_string(step.get('tool_name', ''))}")
             if "arguments_template" in step:
-                lines.append(f"arguments_template = '{step['arguments_template']}'")
+                lines.append(
+                    f"arguments_template = {_toml_string(step['arguments_template'])}"
+                )
             if "output_key" in step:
-                lines.append(f'output_key = "{step["output_key"]}"')
+                lines.append(f"output_key = {_toml_string(step['output_key'])}")
             lines.append("")
-        path.write_text("\n".join(lines))
+        path.write_text("\n".join(lines), encoding="utf-8")
         return ToolResult(
             tool_name=self.spec.name,
             success=True,
@@ -126,7 +133,9 @@ class SkillManageTool(BaseTool):
         )
 
     def _load(self, name: str) -> ToolResult:
-        path = self._skills_dir / f"{name}.toml"
+        path = self._skill_path(name)
+        if path is None:
+            return self._invalid_name()
         if not path.exists():
             return ToolResult(
                 tool_name=self.spec.name,
@@ -136,11 +145,13 @@ class SkillManageTool(BaseTool):
         return ToolResult(
             tool_name=self.spec.name,
             success=True,
-            content=path.read_text(),
+            content=path.read_text(encoding="utf-8"),
         )
 
     def _delete(self, name: str) -> ToolResult:
-        path = self._skills_dir / f"{name}.toml"
+        path = self._skill_path(name)
+        if path is None:
+            return self._invalid_name()
         if not path.exists():
             return ToolResult(
                 tool_name=self.spec.name,
@@ -152,4 +163,21 @@ class SkillManageTool(BaseTool):
             tool_name=self.spec.name,
             success=True,
             content=f"Deleted skill: {name}",
+        )
+
+    def _skill_path(self, name: Any) -> Path | None:
+        """Return a resolved direct child, or reject before touching a file."""
+        if not isinstance(name, str) or _SAFE_SKILL_NAME.fullmatch(name) is None:
+            return None
+        root = self._skills_dir.resolve()
+        path = (root / f"{name}.toml").resolve()
+        if path.parent != root:
+            return None
+        return path
+
+    def _invalid_name(self) -> ToolResult:
+        return ToolResult(
+            tool_name=self.spec.name,
+            success=False,
+            content="Invalid skill name.",
         )

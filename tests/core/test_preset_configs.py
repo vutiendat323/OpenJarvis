@@ -9,6 +9,7 @@ setup, so we validate the whole set on every commit.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -103,7 +104,6 @@ def test_kiosk_mcp_preset_runs_on_generic_tools_only() -> None:
     enabled = {name.strip() for name in cfg.tools.enabled.split(",")}
     expected_enabled = {
         "http_request",
-        "repl",
         "skill_manage",
         "display_menu",
         "display_cart",
@@ -162,8 +162,43 @@ def test_kiosk_mcp_preset_runs_on_generic_tools_only() -> None:
     include_tools = playwright["include_tools"]
 
     assert enabled == expected_enabled
+    assert len(enabled) == 29
     assert set(include_tools) == expected_playwright_tools
     assert len(include_tools) == len(expected_playwright_tools)
-    assert cfg.tools.payment_trusted_origins == "trendcoffee.net"
+    assert cfg.tools.payment_trusted_origins == "https://trendcoffee.net"
     assert "merchants" not in raw_toml
     assert "data_plane" not in raw_toml
+
+
+def test_kiosk_mcp_prompt_uses_http_output_and_keeps_provider_contract() -> None:
+    """The resolved public prompt must match the preset's HTTP-only surface."""
+    from openjarvis.system.agent_construction import resolve_agent_system_prompt
+
+    cfg = load_config(path=PRESETS_DIR / "ordering-kiosk-mcp.toml")
+    prompt = resolve_agent_system_prompt(cfg.agent)
+
+    assert prompt is not None
+    assert re.search(r"\brepl\b", prompt, flags=re.IGNORECASE) is None
+    assert "last_result" not in prompt
+    for provider_fact in (
+        "https://trendcoffee.net/api/latest",
+        "GET /branch",
+        "GET /products",
+        "POST /orders/public",
+        "GET /orders/{order_slug}",
+        "POST /payment/initiate/public",
+        "Any 2xx is success",
+        "101006",
+        "105002",
+        "127000",
+        "hasNext",
+        "all 121 items",
+        'size["name"]',
+        "Every one of those eleven fields is required",
+        "`at-table`",
+        "`take-out`",
+        "`delivery`",
+        '"paymentMethod": "bank-transfer"',
+        "`qrCode`, `slug`, `status` and `order`",
+    ):
+        assert provider_fact in prompt

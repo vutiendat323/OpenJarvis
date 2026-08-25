@@ -18,7 +18,7 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict, deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, Optional, Tuple
+from typing import Deque, Dict, Optional, Tuple
 from urllib.parse import urlsplit
 
 from openjarvis.core.conversation import current_conversation_id
@@ -34,7 +34,6 @@ class ToolEvidence:
     """
 
     tool_name: str
-    arguments: Dict[str, Any]
     content: str
     status_code: Optional[int]
     url: Optional[str]
@@ -55,7 +54,6 @@ _LOCK = threading.Lock()
 
 def record(
     tool_name: str,
-    arguments: Dict[str, Any],
     content: str,
     status_code: Optional[int],
     url: Optional[str],
@@ -65,7 +63,6 @@ def record(
         return
     entry = ToolEvidence(
         tool_name=tool_name,
-        arguments=arguments,
         content=content,
         status_code=status_code,
         url=url,
@@ -78,12 +75,10 @@ def record(
             stale, _ = _EVIDENCE.popitem(last=False)
             _BYTES.pop(stale, None)
         bucket.append(entry)
-        _BYTES[key] = _BYTES.get(key, 0) + len(content)
-        while bucket and (
-            len(bucket) > _MAX_ENTRIES or _BYTES[key] > _MAX_BYTES
-        ):
+        _BYTES[key] = _BYTES.get(key, 0) + len(content.encode("utf-8"))
+        while bucket and (len(bucket) > _MAX_ENTRIES or _BYTES[key] > _MAX_BYTES):
             dropped = bucket.popleft()
-            _BYTES[key] -= len(dropped.content)
+            _BYTES[key] -= len(dropped.content.encode("utf-8"))
 
 
 def observed_in_tool_output(
@@ -91,7 +86,7 @@ def observed_in_tool_output(
     *,
     from_tool: Optional[str] = None,
     require_ok: bool = False,
-    trusted_hosts: Tuple[str, ...] = (),
+    trusted_origins: Tuple[Tuple[str, str, int], ...] = (),
 ) -> bool:
     """Whether this exact string came back from a qualifying tool call."""
     if not needle:
@@ -103,9 +98,9 @@ def observed_in_tool_output(
             entry.status_code is not None and 200 <= entry.status_code < 300
         ):
             continue
-        if trusted_hosts:
-            host = urlsplit(entry.url).hostname if entry.url else None
-            if host not in trusted_hosts:
+        if trusted_origins:
+            origin = _url_origin(entry.url)
+            if origin not in trusted_origins:
                 continue
         if needle in entry.content:
             return True
@@ -152,6 +147,21 @@ def reset() -> None:
 def _conversation_evidence() -> list:
     with _LOCK:
         return list(_EVIDENCE.get(current_conversation_id(), ()))
+
+
+def _url_origin(url: Optional[str]) -> Optional[Tuple[str, str, int]]:
+    if not url:
+        return None
+    try:
+        parsed = urlsplit(url)
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname
+        if scheme not in {"http", "https"} or host is None:
+            return None
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError:
+        return None
+    return scheme, host, port
 
 
 __all__ = [

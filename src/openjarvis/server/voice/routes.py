@@ -347,11 +347,14 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
             if presentation is not None:
                 presentation.activate(generation)
             # The task inherits the context it is created in, so both scopes
-            # cover the whole pipeline: every tool call in every turn of this
-            # voice session belongs to this chat thread. The middleware's
-            # per-request id is not enough here -- the pipeline outlives the
-            # offer request that created it.
-            with presentation_generation(generation), conversation_scope(generation):
+            # cover the whole pipeline. Presentation and transcript persistence
+            # retain the client chat thread, while ephemeral tool state belongs
+            # to the server-owned Voice session id. The middleware's per-request
+            # id is not enough here -- the pipeline outlives the offer request.
+            with (
+                presentation_generation(generation),
+                conversation_scope(session.voice_session_id),
+            ):
                 task = asyncio.create_task(
                     run_until_disconnected(worker, context, connection)
                 )

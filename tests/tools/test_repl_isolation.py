@@ -65,3 +65,15 @@ def test_unset_conversation_is_its_own_scope():
         result = tool.execute(code="print(loose)", session_id="shared")
 
     assert result.success is False
+
+
+def test_nul_in_attacker_controlled_ids_cannot_collide_sessions():
+    tool = ReplTool()
+
+    with conversation_scope("victim"):
+        tool.execute(code="secret = 'A'", session_id="shared\x00suffix")
+    with conversation_scope("victim\x00shared"):
+        result = tool.execute(code="print(secret)", session_id="suffix")
+
+    assert result.success is False
+    assert "secret" in result.content
