@@ -394,7 +394,7 @@ def test_cold_then_warm_path_persists_and_uses_no_browser(tmp_path, provider):
         "writes evidence, and this test drives the tool through the data "
         "plane, not http_request. Its coverage is replaced by "
         "tests/tools/test_display_payment_evidence.py. This file's subsystem "
-        "is removed in the later data-plane deletion task, at which point "
+        "is removed by Task 8, at which point "
         "this test goes with it."
     ),
 )
