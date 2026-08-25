@@ -15,6 +15,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from openjarvis.core.conversation import current_conversation_id
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
 from openjarvis.tools._stubs import BaseTool, ToolSpec
@@ -242,6 +243,16 @@ class ReplTool(BaseTool):
     # Session management
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _session_key(session_id: str) -> str:
+        """Scope a model-supplied session id to the calling conversation.
+
+        The id arrives from the model, so it is guessable. Without the
+        conversation prefix, one customer reads another's variables by asking
+        for their session.
+        """
+        return f"{current_conversation_id()}\x00{session_id}"
+
     def _resolve_session(
         self,
         session_id: Optional[str],
@@ -249,33 +260,35 @@ class ReplTool(BaseTool):
     ) -> _ReplSession:
         """Get or create a session, with LRU eviction at max_sessions."""
         with self._lock:
-            if session_id and session_id in self._sessions and not reset:
-                session = self._sessions[session_id]
-                return session
+            # A conversation gets one implicit session. Falling back to a fresh
+            # uuid per call meant "just write code" -- which is what the prompt
+            # tells the model to do -- silently lost every variable. Outside a
+            # conversation there is nothing to key on, so keep the old
+            # behaviour rather than inventing a shared one.
+            sid = session_id or current_conversation_id() or str(uuid.uuid4())
+            key = self._session_key(sid)
 
-            if session_id and session_id in self._sessions and reset:
-                # Reset existing session
-                session = self._sessions[session_id]
+            if key in self._sessions and not reset:
+                return self._sessions[key]
+
+            if key in self._sessions and reset:
+                session = self._sessions[key]
                 session.namespace = {"__builtins__": _make_restricted_builtins()}
                 session.execution_count = 0
                 return session
 
-            # Create new session
-            sid = session_id or str(uuid.uuid4())
-
-            # LRU eviction if at capacity
             if len(self._sessions) >= self._max_sessions:
-                oldest_id = min(
+                oldest_key = min(
                     self._sessions,
                     key=lambda k: self._sessions[k].last_used,
                 )
-                del self._sessions[oldest_id]
+                del self._sessions[oldest_key]
 
             session = _ReplSession(
                 session_id=sid,
                 namespace={"__builtins__": _make_restricted_builtins()},
             )
-            self._sessions[sid] = session
+            self._sessions[key] = session
             return session
 
     # ------------------------------------------------------------------
