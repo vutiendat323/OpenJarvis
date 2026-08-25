@@ -47,27 +47,11 @@ system_prompt_path = "configs/openjarvis/prompts/ordering-kiosk.md"
 max_turns = 30
 # The doctrine (one tool call = one mutation or one observation, never both)
 # only forces a reasoning turn between action and consequence if tool calls
-# run one at a time. Parallel dispatch would let a turn emitting cart_add +
+# run one at a time. Parallel dispatch would let a turn emitting cart_set +
 # cart_view get both results before the Agent reasons about either --
 # reaching the same collapse the doctrine exists to prevent, just around it
 # instead of through it. Not a performance knob here.
 parallel_tools = false
-
-[merchants]
-backend = "trendcoffee"
-source_id = "trend-coffee"
-
-[data_plane]
-enabled = true
-source_url = "https://trendcoffee.net/"
-discovery_budget_seconds = 60
-# The config field survives, but Task 10 was cancelled and no observer
-# implements it -- leaving this true would advertise a stage that cannot run.
-browser_fallback = false
-# Stays empty. An authorized live run supplies exact
-# provider:operation:fingerprint entries in a temporary config and removes them
-# afterwards; nothing here grants a standing write.
-trusted_write_operations = ""
 
 [tools]
 # The five display_* tools drive the React `/customer-display` route through
@@ -77,7 +61,10 @@ trusted_write_operations = ""
 # kiosk is a public terminal whose threat model treats provider JSON and page
 # text as prompt-injection-bearing, and this preset declares no capability
 # policy, so an enabled `shell_exec` would be unrestricted shell on injection.
-enabled = "source_discover,source_sync,structured_query,source_execute,source_verify,branch_list,menu_search,menu_item,cart_add,cart_remove,cart_view,order_place,order_verify,http_request,display_menu,display_cart,display_bill,display_payment_qr,display_clear,browser_snapshot,browser_find,browser_navigate,browser_navigate_back,browser_tabs,browser_click,browser_type,browser_fill_form,browser_select_option,browser_hover,browser_press_key,browser_wait_for,browser_handle_dialog,browser_drag,browser_drop,browser_resize,browser_close,browser_verify_element_visible,browser_verify_text_visible,browser_verify_value,browser_verify_list_visible"
+enabled = "http_request,repl,skill_manage,display_menu,display_cart,display_bill,display_payment_qr,display_clear,browser_snapshot,browser_find,browser_navigate,browser_navigate_back,browser_tabs,browser_click,browser_type,browser_fill_form,browser_select_option,browser_hover,browser_press_key,browser_wait_for,browser_handle_dialog,browser_drag,browser_drop,browser_resize,browser_close,browser_network_requests,browser_verify_element_visible,browser_verify_text_visible,browser_verify_value,browser_verify_list_visible"
+# Only this host may supply a payment QR. Empty would mean no QR can ever be
+# displayed; a wide list would mean the guard proves nothing.
+payment_trusted_origins = "trendcoffee.net"
 
 [server]
 host = "127.0.0.1"
@@ -86,4 +73,4 @@ agent = "orchestrator"
 
 [tools.mcp]
 enabled = true
-servers = '''[{"name": "playwright", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.79", "--browser", "chromium", "--user-data-dir", ".openjarvis/ordering-kiosk/browser-profile", "--sandbox", "--caps=testing", "--snapshot-mode", "none"], "include_tools": ["browser_snapshot", "browser_find", "browser_navigate", "browser_navigate_back", "browser_tabs", "browser_click", "browser_type", "browser_fill_form", "browser_select_option", "browser_hover", "browser_press_key", "browser_wait_for", "browser_handle_dialog", "browser_drag", "browser_drop", "browser_resize", "browser_close", "browser_verify_element_visible", "browser_verify_text_visible", "browser_verify_value", "browser_verify_list_visible"]}]'''
+servers = '''[{"name": "playwright", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.79", "--browser", "chromium", "--user-data-dir", ".openjarvis/ordering-kiosk/browser-profile", "--sandbox", "--caps=testing", "--snapshot-mode", "none"], "include_tools": ["browser_snapshot", "browser_find", "browser_navigate", "browser_navigate_back", "browser_tabs", "browser_click", "browser_type", "browser_fill_form", "browser_select_option", "browser_hover", "browser_press_key", "browser_wait_for", "browser_handle_dialog", "browser_drag", "browser_drop", "browser_resize", "browser_close", "browser_network_requests", "browser_verify_element_visible", "browser_verify_text_visible", "browser_verify_value", "browser_verify_list_visible"]}]'''
