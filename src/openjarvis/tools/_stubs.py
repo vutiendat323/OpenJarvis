@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolCall, ToolResult
+from openjarvis.tools import evidence as _evidence
 
 # ---------------------------------------------------------------------------
 # ToolSpec — metadata describing a tool's interface
@@ -284,6 +285,18 @@ class ToolExecutor:
         latency = time.time() - t0
         result.latency_seconds = latency
         result.metadata["arguments"] = params
+
+        if result.success and isinstance(result.content, str):
+            arguments = dict(params) if isinstance(params, dict) else {}
+            status = result.metadata.get("status_code")
+            url = arguments.get("url")
+            _evidence.record(
+                tool_call.name,
+                arguments,
+                result.content,
+                status if isinstance(status, int) else None,
+                url if isinstance(url, str) else None,
+            )
 
         # Auto-detect taints in results
         if result.success:
