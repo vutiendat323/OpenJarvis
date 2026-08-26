@@ -136,6 +136,8 @@ export function CodexPet({
   const [internalFrameIndex, setInternalFrameIndex] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const loadedSrcRef = useRef<string | null>(null);
+  const hasCompletedRef = useRef(false);
 
   // Active animation definition
   const animConfig: PetAnimationConfig =
@@ -147,10 +149,11 @@ export function CodexPet({
   const effectiveFps = fps ?? animConfig.frameRate ?? manifest.defaultFps ?? 8;
   const activeFrameIndex = controlledFrameIndex !== undefined ? controlledFrameIndex : internalFrameIndex;
 
-  // Reset frame on state change
+  // Reset frame and completion tracking on state or animConfig change
   useEffect(() => {
     setInternalFrameIndex(0);
-  }, [state]);
+    hasCompletedRef.current = false;
+  }, [state, animConfig]);
 
   // Frame cycling timer
   useEffect(() => {
@@ -161,11 +164,17 @@ export function CodexPet({
     const timer = setInterval(() => {
       setInternalFrameIndex((prev) => {
         const { nextFrame, isFinished } = calculatePetFrameStep(prev, animConfig);
-        if (nextFrame !== prev) {
-          onFrameChange?.(nextFrame);
+        if (isFinished && !hasCompletedRef.current) {
+          hasCompletedRef.current = true;
+          // Schedule callback outside of state updater
+          queueMicrotask(() => {
+            onAnimationComplete?.();
+          });
         }
-        if (isFinished) {
-          onAnimationComplete?.();
+        if (nextFrame !== prev) {
+          queueMicrotask(() => {
+            onFrameChange?.(nextFrame);
+          });
         }
         return nextFrame;
       });
@@ -185,10 +194,11 @@ export function CodexPet({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    if (!imageRef.current || imageRef.current.src !== spriteUrl) {
+    if (!imageRef.current || loadedSrcRef.current !== spriteUrl) {
       const img = new Image();
       img.src = spriteUrl;
       imageRef.current = img;
+      loadedSrcRef.current = spriteUrl;
       img.onload = () => {
         renderCanvasFrame(ctx, img, coords, width, height);
       };

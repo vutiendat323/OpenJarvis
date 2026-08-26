@@ -56,12 +56,12 @@ export function CodexPetSpeechBubble({
 }: CodexPetSpeechBubbleProps) {
   const formattedText = formatSpeechText(text, maxChars);
   const isSpeaking = voiceStatus === 'speaking';
-  const showTyping = typing || (isSpeaking && !formattedText);
+  const showTyping = typing || (Boolean(voiceStatus && voiceStatus !== 'idle') && !formattedText);
 
   const isVisible =
     visible !== undefined
       ? visible
-      : Boolean(formattedText || showTyping || (voiceStatus && voiceStatus !== 'idle'));
+      : Boolean(formattedText || showTyping);
 
   if (!isVisible) {
     return null;
