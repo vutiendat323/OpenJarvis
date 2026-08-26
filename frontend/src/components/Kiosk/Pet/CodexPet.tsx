@@ -233,7 +233,6 @@ export function CodexPet({
       style={{
         width: `${width}px`,
         height: `${height}px`,
-        cursor: isDragging ? 'grabbing' : 'grab',
         ...positionStyle,
         ...style,
       }}

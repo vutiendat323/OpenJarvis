@@ -143,7 +143,6 @@ export function FloatingCodexPet({
         top: 0,
         transform: `translate3d(${position.x}px, ${position.y}px, 0)`,
         zIndex: 40,
-        cursor: isDragging ? 'grabbing' : isResizing ? 'crosshair' : 'grab',
         ...style,
       }}
       {...petHandlers}

@@ -9,7 +9,7 @@ export function ScreenShareView({
   floating?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const { position, size, isDragging, cardHandlers, resizeHandlers } =
+  const { position, size, isDragging, cardHandlers, getResizeHandleProps } =
     useDraggableResizable({ initialWidth: 380, aspectRatio: 16 / 9 });
 
   // srcObject is a property, never an attribute — it cannot be set in JSX.
@@ -35,8 +35,8 @@ export function ScreenShareView({
       {...cardHandlers}
       className={`fixed z-25 select-none rounded-2xl overflow-hidden touch-none transition-shadow ${
         isDragging
-          ? 'cursor-grabbing shadow-[0_20px_50px_rgba(0,0,0,0.8)]'
-          : 'cursor-grab shadow-[0_12px_36px_rgba(0,0,0,0.6)]'
+          ? 'shadow-[0_20px_50px_rgba(0,0,0,0.8)]'
+          : 'shadow-[0_12px_36px_rgba(0,0,0,0.6)]'
       }`}
       style={{
         left: `${position.x}px`,
@@ -55,9 +55,21 @@ export function ScreenShareView({
         className="w-full h-full object-contain pointer-events-none"
       />
 
-      {/* Invisible bottom-right corner resize handle */}
+      {/* 4 Corner Resize Handles */}
       <div
-        {...resizeHandlers}
+        {...getResizeHandleProps('nw')}
+        className="absolute top-0 left-0 w-7 h-7 cursor-nwse-resize touch-none z-10"
+      />
+      <div
+        {...getResizeHandleProps('ne')}
+        className="absolute top-0 right-0 w-7 h-7 cursor-nesw-resize touch-none z-10"
+      />
+      <div
+        {...getResizeHandleProps('sw')}
+        className="absolute bottom-0 left-0 w-7 h-7 cursor-nesw-resize touch-none z-10"
+      />
+      <div
+        {...getResizeHandleProps('se')}
         className="absolute bottom-0 right-0 w-7 h-7 cursor-nwse-resize touch-none z-10"
       />
     </div>

@@ -79,7 +79,6 @@ describe('FloatingCodexPet', () => {
     expect(html).toContain('data-testid="codex-pet"');
     expect(html).toContain('position:fixed');
     expect(html).toContain('z-index:40');
-    expect(html).toContain('cursor:grab');
   });
 
   it('accepts initial position override', () => {

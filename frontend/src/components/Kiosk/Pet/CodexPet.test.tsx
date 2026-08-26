@@ -116,14 +116,13 @@ describe('CodexPet', () => {
     expect(html).toContain('height:72px');
   });
 
-  it('applies dragging state and cursor styles', () => {
+  it('applies dragging state', () => {
     const html = renderToStaticMarkup(
       React.createElement(CodexPet, {
         isDragging: true,
       })
     );
     expect(html).toContain('data-dragging="true"');
-    expect(html).toContain('cursor:grabbing');
   });
 
   it('applies absolute position transform when position is passed', () => {
