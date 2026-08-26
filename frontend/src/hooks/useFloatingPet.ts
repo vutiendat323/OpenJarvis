@@ -310,6 +310,7 @@ export function useFloatingPet(options: UseFloatingPetOptions = {}): UseFloating
 
       const vp = getViewport();
       const clamped = clampPetPosition(nextPos, petSize, vp, safeMargin);
+      positionRef.current = clamped;
       setPosition(clamped);
     },
     [getViewport, petSize, safeMargin],
