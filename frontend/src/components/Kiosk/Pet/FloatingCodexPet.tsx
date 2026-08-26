@@ -100,20 +100,23 @@ export function FloatingCodexPet({
     };
   }, [manifestProp, manifestUrl]);
 
-  const activeScale = scaleProp ?? activeManifest.scale ?? 2;
-  const petSize: PetSize = {
-    width: activeManifest.size.width * activeScale,
-    height: activeManifest.size.height * activeScale,
+  const baseSize: PetSize = {
+    width: activeManifest.size.width,
+    height: activeManifest.size.height,
   };
 
   const {
     position,
+    scale,
     isDragging,
+    isResizing,
     dragDeltaX,
     petHandlers,
+    getResizeHandleProps,
   } = useFloatingPet({
     initialPosition,
-    petSize,
+    initialScale: scaleProp ?? activeManifest.scale ?? 2,
+    baseSize,
     enableWandering,
   });
 
@@ -132,14 +135,15 @@ export function FloatingCodexPet({
       data-testid="floating-codex-pet"
       data-state={petState}
       data-dragging={isDragging ? 'true' : 'false'}
-      className={`fixed z-40 touch-none select-none ${className}`}
+      data-resizing={isResizing ? 'true' : 'false'}
+      className={`fixed z-40 touch-none select-none group ${className}`}
       style={{
         position: 'fixed',
         left: 0,
         top: 0,
         transform: `translate3d(${position.x}px, ${position.y}px, 0)`,
         zIndex: 40,
-        cursor: isDragging ? 'grabbing' : 'grab',
+        cursor: isDragging ? 'grabbing' : isResizing ? 'crosshair' : 'grab',
         ...style,
       }}
       {...petHandlers}
@@ -147,12 +151,34 @@ export function FloatingCodexPet({
       <CodexPet
         manifest={activeManifest}
         state={petState}
-        scale={activeScale}
+        scale={scale}
         renderMode={renderMode}
         isDragging={isDragging}
         speechText={effectiveSpeechText}
         voiceStatus={effectiveVoiceStatus}
         showShadow={showShadow}
+      />
+
+      {/* 4 Corner Resize Handles (Similar to ScreenShareView) */}
+      <div
+        {...getResizeHandleProps('nw')}
+        title="Resize Top-Left"
+        className="absolute -top-1.5 -left-1.5 w-5 h-5 cursor-nwse-resize touch-none z-20 opacity-0 group-hover:opacity-100 transition-opacity"
+      />
+      <div
+        {...getResizeHandleProps('ne')}
+        title="Resize Top-Right"
+        className="absolute -top-1.5 -right-1.5 w-5 h-5 cursor-nesw-resize touch-none z-20 opacity-0 group-hover:opacity-100 transition-opacity"
+      />
+      <div
+        {...getResizeHandleProps('sw')}
+        title="Resize Bottom-Left"
+        className="absolute -bottom-1.5 -left-1.5 w-5 h-5 cursor-nesw-resize touch-none z-20 opacity-0 group-hover:opacity-100 transition-opacity"
+      />
+      <div
+        {...getResizeHandleProps('se')}
+        title="Resize Bottom-Right"
+        className="absolute -bottom-1.5 -right-1.5 w-5 h-5 cursor-nwse-resize touch-none z-20 opacity-0 group-hover:opacity-100 transition-opacity"
       />
     </div>
   );

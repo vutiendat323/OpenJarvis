@@ -4,6 +4,7 @@ import {
   calculateWanderStep,
   clampPetPosition,
   clearStoredPetPosition,
+  clearStoredPetScale,
   DEFAULT_OFFSET_BOTTOM_VH,
   DEFAULT_OFFSET_RIGHT_VW,
   DEFAULT_PET_SIZE,
@@ -12,8 +13,11 @@ import {
   DEFAULT_WANDER_MAX_STEP,
   DEFAULT_WANDER_MIN_STEP,
   PET_POSITION_STORAGE_KEY,
+  PET_SCALE_STORAGE_KEY,
   persistPetPosition,
+  persistPetScale,
   readStoredPetPosition,
+  readStoredPetScale,
   useFloatingPet,
 } from './useFloatingPet';
 import type { PetPosition, PetSize } from '../components/Kiosk/Pet/types';
@@ -160,12 +164,53 @@ describe('useFloatingPet - Persistence', () => {
     expect(JSON.parse(savedVal)).toEqual({ x: 251, y: 399 });
   });
 
-  it('clears stored position under the storage key', () => {
+  it('clears stored position from storage', () => {
     const storage = {
       removeItem: vi.fn(),
     };
     clearStoredPetPosition(storage);
     expect(storage.removeItem).toHaveBeenCalledWith(PET_POSITION_STORAGE_KEY);
+  });
+
+  describe('Scale Persistence', () => {
+    it('reads stored scale when valid float string is present', () => {
+      const storage = {
+        getItem: vi.fn(() => '3.5'),
+      };
+      const result = readStoredPetScale(storage);
+      expect(result).toBe(3.5);
+      expect(storage.getItem).toHaveBeenCalledWith(PET_SCALE_STORAGE_KEY);
+    });
+
+    it('falls back to default scale when storage item is missing or out of bounds', () => {
+      expect(readStoredPetScale({ getItem: () => null })).toBe(2);
+      expect(readStoredPetScale({ getItem: () => 'invalid' })).toBe(2);
+      expect(readStoredPetScale({ getItem: () => '0.5' })).toBe(2); // below minScale (1)
+      expect(readStoredPetScale({ getItem: () => '10' })).toBe(2); // above maxScale (8)
+    });
+
+    it('persists rounded scale under the scale storage key', () => {
+      let savedKey = '';
+      let savedVal = '';
+      const storage = {
+        setItem: vi.fn((key: string, val: string) => {
+          savedKey = key;
+          savedVal = val;
+        }),
+      };
+
+      persistPetScale(3.254, storage);
+      expect(savedKey).toBe(PET_SCALE_STORAGE_KEY);
+      expect(savedVal).toBe('3.25');
+    });
+
+    it('clears stored scale from storage', () => {
+      const storage = {
+        removeItem: vi.fn(),
+      };
+      clearStoredPetScale(storage);
+      expect(storage.removeItem).toHaveBeenCalledWith(PET_SCALE_STORAGE_KEY);
+    });
   });
 
   it('tolerates storage errors gracefully without throwing', () => {
