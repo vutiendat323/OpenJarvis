@@ -5,6 +5,7 @@ import { X, ScreenShare, ScreenShareOff } from 'lucide-react';
 import { AudioVisualizer } from '@/components/Visualizer/AudioVisualizer';
 import { VisualizerControls } from '@/components/Visualizer/VisualizerControls';
 import { KioskOverlay } from '@/components/Kiosk/KioskOverlay';
+import { FloatingCodexPet } from '@/components/Kiosk/Pet/FloatingCodexPet';
 import { ScreenShareView } from '@/components/Kiosk/ScreenShareView';
 import { currentVoiceTurnRows } from '@/components/Chat/voiceTurnRows';
 import { useKioskState, type KioskState } from '@/hooks/useKioskState';
@@ -124,6 +125,12 @@ export function KioskPage() {
       <div aria-hidden className="absolute inset-0 pointer-events-none transition-all duration-1000" style={{ background: GLOW[voice.status], zIndex: 0 }} />
       <AudioVisualizer getFrequencyData={voice.getFrequencyData} settings={settings} />
       <VisualizerControls settings={settings} onSettingsChange={setSettings} status={PANEL_STATUS[voice.status]} uiLanguage={uiLanguage} onUiLanguageChange={setUiLanguage} />
+
+      <FloatingCodexPet
+        voiceStatus={voice.status}
+        activityDetail={voice.activityDetail}
+        assistantCaptionText={voice.assistantCaptionText}
+      />
 
       <button onClick={() => navigate('/')} title="Exit kiosk" className="absolute top-4 right-4 z-30 w-9 h-9 rounded-full flex items-center justify-center cursor-pointer transition-colors" style={{ background: 'rgba(255,255,255,.06)', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>
         <X size={16} />
