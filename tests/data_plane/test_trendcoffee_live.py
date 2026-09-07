@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from unittest.mock import Mock
 from urllib.parse import urlsplit
@@ -13,11 +14,18 @@ import pytest
 from openjarvis.data_plane.adapters.trendcoffee import TrendCoffeeAdapter
 from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
 from openjarvis.data_plane.discovery import BrowserObservationPort, DiscoveryEngine
+from openjarvis.data_plane.execution import DirectExecutionEngine
+from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
 from openjarvis.data_plane.types import (
     DiscoveryConstraints,
     DiscoveryEvidence,
     SourceRef,
+    StructuredQuery,
 )
+from openjarvis.merchants.trendcoffee import TrendCoffeeMerchant
+from openjarvis.system.bundles import DataPlaneRuntime
+from openjarvis.tools.data_plane import SourceSyncTool
+from openjarvis.tools.ordering import MenuSearchTool
 
 pytestmark = pytest.mark.live
 
@@ -143,3 +151,52 @@ def test_live_trendcoffee_public_reads_are_normalizable(tmp_path):
     assert discovery_http.deadline is not None
     assert discovery_http.require_https is True
     assert discovery_http.closed is True
+
+
+def test_live_source_sync_persists_the_trendcoffee_menu(tmp_path):
+    if os.environ.get("OPENJARVIS_LIVE_TREND_READ") != "1":
+        pytest.skip("set OPENJARVIS_LIVE_TREND_READ=1")
+
+    db_path = tmp_path / "structured.db"
+    capabilities = SQLiteCapabilityStore(db_path)
+    snapshots = StructuredSnapshotStore(db_path)
+    discovery = DiscoveryEngine(capabilities)
+    direct = DirectExecutionEngine(
+        capabilities,
+        snapshots,
+        adapters={"trendcoffee": TrendCoffeeAdapter()},
+    )
+    runtime = DataPlaneRuntime(capabilities, snapshots, discovery, direct)
+    source_sync = SourceSyncTool()
+    source_sync._runtime = runtime
+    try:
+        discovered = discovery.discover(
+            SourceRef("https://trendcoffee.net/"),
+            DiscoveryConstraints(budget_seconds=20.0, browser_fallback=False),
+        )
+        result = source_sync.execute(
+            source_id=discovered.source_id,
+            resources=["branch", "menu_item"],
+        )
+
+        assert result.success is True
+        menu = snapshots.query(
+            StructuredQuery(
+                source_id="trend-coffee", resource_type="menu_item", limit=200
+            )
+        )
+        branches = snapshots.query(
+            StructuredQuery(source_id="trend-coffee", resource_type="branch")
+        )
+        assert len(menu.items) >= 120
+        assert json.loads(result.content)["sync"]["resource_count"] == (
+            len(branches.items) + len(menu.items)
+        )
+
+        menu_search = MenuSearchTool()
+        menu_search._merchant = TrendCoffeeMerchant(runtime)
+        search = menu_search.execute(query="", branch="ba9355f797")
+        assert search.success is True
+        assert json.loads(search.content)["products"]
+    finally:
+        runtime.close()

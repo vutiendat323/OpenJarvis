@@ -307,6 +307,10 @@ class JarvisSystem:
         """Release resources."""
         if self.scheduler and hasattr(self.scheduler, "stop"):
             self.scheduler.stop()
+        if self._learning_orchestrator is not None:
+            # Drain queued turn learning first: it writes through the trace
+            # store and memory backend the loop below is about to close.
+            self._learning_orchestrator.close()
         for resource in (
             self.scheduler_store,
             self.engine,

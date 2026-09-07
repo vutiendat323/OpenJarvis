@@ -270,6 +270,22 @@ def test_sync_paginates_rest_resource_until_provider_has_no_next_page(runtime):
     ]
 
 
+def test_sync_commits_first_page_when_provider_repeats_it(runtime):
+    repeated = httpx.Response(
+        200, json={"items": [{"id": "same"}], "hasNext": True}
+    )
+    runtime.transport.responses = [repeated, repeated]
+
+    receipt = runtime.direct.sync("fixture", ["menu_item"])
+
+    assert receipt.status is ReceiptStatus.SUCCEEDED
+    assert receipt.resource_count == 1
+    assert [item.resource_id for item in runtime.snapshots.query(
+        StructuredQuery(source_id="fixture", resource_type="menu_item")
+    ).items] == ["same"]
+    assert len(runtime.transport.calls) == 2
+
+
 def test_post_timeout_is_ambiguous_and_not_retried(runtime):
     runtime.transport.responses = [httpx.ReadTimeout("after send")]
 

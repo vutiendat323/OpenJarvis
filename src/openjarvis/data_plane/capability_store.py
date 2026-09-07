@@ -111,6 +111,14 @@ class SQLiteCapabilityStore:
             return None
         return SourceCapability.from_dict(json.loads(row["capability_json"]))
 
+    def list_source_ids(self) -> list[str]:
+        """Return canonical source ids currently known to the store."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT source_id FROM source_capabilities ORDER BY source_id"
+            ).fetchall()
+        return [str(row["source_id"]) for row in rows]
+
     def demote(self, source_id: str, operation_names: list[str], reason: str) -> None:
         """Quarantine selected operations and persist a new capability revision."""
         if not operation_names:

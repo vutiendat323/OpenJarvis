@@ -136,7 +136,7 @@ def test_ordering_and_display_tools_never_overlap():
             assert len(kinds) == 1, f"{spec.name} declares {kinds}"
             checked += 1
 
-    assert checked == 13, f"expected 8 ordering + 5 display tools, saw {checked}"
+    assert checked == 14, f"expected 9 ordering + 5 display tools, saw {checked}"
 
 
 def test_the_real_build_wires_one_shared_merchant_into_every_ordering_tool(tmp_path):
@@ -192,7 +192,9 @@ def test_the_real_build_wires_one_shared_merchant_into_every_ordering_tool(tmp_p
         ordering_tools = [t for t in system.tools if t.spec.category == "ordering"]
         display_tools = [t for t in system.tools if t.spec.category == "display"]
 
-        assert len(ordering_tools) == 8, sorted(
+        # Seven, not the module's nine: the preset enables `cart_set` and
+        # leaves `cart_add`/`cart_remove` off the Agent's surface.
+        assert len(ordering_tools) == 7, sorted(
             t.spec.name for t in ordering_tools
         )
         assert len({id(t._merchant) for t in ordering_tools}) == 1

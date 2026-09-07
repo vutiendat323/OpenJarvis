@@ -123,7 +123,11 @@ class SourceSyncTool(_DataPlaneTool):
     def spec(self) -> ToolSpec:
         return ToolSpec(
             name="source_sync",
-            description="Synchronize validated structured resources.",
+            description=(
+                "Synchronize validated structured resources. Use the canonical "
+                "source_id returned by source_discover; a capability_missing "
+                "response includes valid source ids."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -159,6 +163,17 @@ class SourceSyncTool(_DataPlaneTool):
                 success=receipt.status is ReceiptStatus.SUCCEEDED,
             )
         except DataPlaneError as error:
+            if error.code is DataPlaneErrorCode.CAPABILITY_MISSING:
+                capabilities = getattr(self._runtime, "capabilities", None)
+                list_ids = getattr(capabilities, "list_source_ids", None)
+                valid_source_ids = list_ids() if callable(list_ids) else []
+                return self._result(
+                    {
+                        "error_code": error.code.value,
+                        "valid_source_ids": valid_source_ids,
+                    },
+                    success=False,
+                )
             return self._error(error)
 
 
@@ -309,7 +324,14 @@ class SourceExecuteTool(_DataPlaneTool):
             request_hash = execution_request_hash(
                 source_id, operation_name, arguments, capability.revision
             )
-            if not approval_id:
+            if not approval_id and getattr(gate, "conversational", False):
+                # Nobody is watching an approval queue in a kiosk. Only the
+                # wait is skipped -- the grant stays bound to this exact
+                # request hash and capability revision.
+                grant = gate.prepare_and_authorize(
+                    source_id, operation_name, arguments, capability.revision
+                )
+            elif not approval_id:
                 pending = gate.prepare(
                     source_id, operation_name, arguments, capability.revision
                 )
@@ -323,7 +345,8 @@ class SourceExecuteTool(_DataPlaneTool):
                     success=False,
                     metadata=metadata,
                 )
-            grant = gate.authorize(approval_id, request_hash)
+            else:
+                grant = gate.authorize(approval_id, request_hash)
             receipt = self._runtime.direct.execute(
                 source_id, operation_name, arguments, grant=grant
             )

@@ -78,6 +78,14 @@ def test_get_returns_none_for_unknown_source(tmp_path):
     store.close()
 
 
+def test_list_source_ids_returns_canonical_ids(tmp_path, trend_capability):
+    store = SQLiteCapabilityStore(tmp_path / "structured.db")
+    store.save(trend_capability)
+
+    assert store.list_source_ids() == ["trend-coffee"]
+    store.close()
+
+
 @pytest.mark.parametrize(
     "unsafe_key", ["authorization", "Cookie", "ACCESS_TOKEN", "secret_value"]
 )

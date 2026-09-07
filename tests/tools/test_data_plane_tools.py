@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+from openjarvis.data_plane.errors import DataPlaneError, DataPlaneErrorCode
 from openjarvis.data_plane.types import (
     ConsistencyMode,
     DiscoveryResult,
@@ -65,6 +66,14 @@ class _FailedDirect(_DirectWithoutExecution):
         )
 
 
+class _MissingSourceDirect(_DirectWithoutExecution):
+    def sync(self, source_id: str, resources: list[str]) -> SimpleNamespace:
+        raise DataPlaneError(
+            DataPlaneErrorCode.CAPABILITY_MISSING,
+            "unknown source",
+        )
+
+
 def _runtime_for(capability: SourceCapability) -> SimpleNamespace:
     direct = _DirectWithoutExecution()
     return SimpleNamespace(
@@ -116,6 +125,40 @@ def test_source_execute_rejects_unsafe_contract_without_direct_dispatch() -> Non
     assert result.success is False
     assert json.loads(result.content) == {"error_code": "capability_quarantined"}
     assert runtime.direct.sync_requests == []
+
+
+def test_source_sync_explains_canonical_ids_when_source_is_unknown() -> None:
+    capability = SourceCapability(
+        source_id="trend-coffee",
+        provider="trendcoffee",
+        origin="https://trendcoffee.net",
+        base_url="https://trendcoffee.net/api/latest",
+        auth_mode="none",
+        credential_ref="",
+        transport=TransportKind.REST,
+        operations={},
+        fingerprint="sha256:fixture",
+        schema_hash="sha256:schema",
+        evidence=(),
+        validated_at="",
+        expires_at="",
+        revision=1,
+    )
+    runtime = _runtime_for(capability)
+    runtime.direct = _MissingSourceDirect()
+    runtime.capabilities = SimpleNamespace(list_source_ids=lambda: ["trend-coffee"])
+    tool = SourceSyncTool()
+    tool._runtime = runtime
+
+    result = tool.execute(
+        source_id="trendcoffee.net", resources=["menu_item"]
+    )
+
+    assert result.success is False
+    assert json.loads(result.content) == {
+        "error_code": "capability_missing",
+        "valid_source_ids": ["trend-coffee"],
+    }
 
 
 def test_structured_query_only_synchronizes_live_or_stale_requests() -> None:

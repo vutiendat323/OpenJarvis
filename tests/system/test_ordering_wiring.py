@@ -64,5 +64,6 @@ def test_builder_injects_one_shared_trendcoffee_merchant_with_data_plane(tmp_pat
         assert len({id(merchant) for merchant in merchants}) == 1
         assert isinstance(merchants[0], TrendCoffeeMerchant)
         assert merchants[0]._runtime is system.data_plane
+        assert merchants[0]._snapshot_max_age_seconds == 60
     finally:
         system.close()

@@ -48,6 +48,7 @@ class _MerchantTool(BaseTool):
     def __init__(self) -> None:
         # Set by SystemBuilder._inject_tool_deps. None outside a built system.
         self._merchant: Optional[MerchantPort] = None
+        self._display_menu: Optional[BaseTool] = None
 
     def _require_merchant(self) -> Optional[ToolResult]:
         if self._merchant is None:
@@ -65,6 +66,14 @@ class _MerchantTool(BaseTool):
     @staticmethod
     def _fail(name: str, reason: str) -> ToolResult:
         return ToolResult(tool_name=name, success=False, content=reason)
+
+    def _snapshot_failure(self, resource_type: str) -> Optional[ToolResult]:
+        """Keep an empty/stale read from masquerading as a successful read."""
+        status = getattr(self._merchant, "snapshot_status", None)
+        if not callable(status):
+            return None
+        reason = status(resource_type)
+        return self._fail(self.spec.name, reason) if reason else None
 
 
 @ToolRegistry.register("branch_list")
@@ -92,6 +101,9 @@ class BranchListTool(_MerchantTool):
         unavailable = self._require_merchant()
         if unavailable is not None:
             return unavailable
+        snapshot_failure = self._snapshot_failure("branch")
+        if snapshot_failure is not None:
+            return snapshot_failure
         branches = self._merchant.list_branches()
         return self._ok("branch_list", {"branches": [asdict(b) for b in branches]})
 
@@ -111,7 +123,8 @@ class MenuSearchTool(_MerchantTool):
                 "their availability and their variants -- each variant is a "
                 "size with its own slug and its own price, and the variant "
                 "slug is what cart_add takes. An empty query returns the "
-                "whole menu. Read-only."
+                "whole menu. If the result says menu_not_synced or menu_stale, "
+                "sync the menu once before retrying. Read-only."
             ),
             parameters={
                 "type": "object",
@@ -138,9 +151,28 @@ class MenuSearchTool(_MerchantTool):
         branch = str(params.get("branch", "")).strip()
         if not branch:
             return self._fail("menu_search", "branch_required")
+        snapshot_failure = self._snapshot_failure("branch")
+        if snapshot_failure is not None:
+            return snapshot_failure
         if branch not in {b.slug for b in self._merchant.list_branches()}:
             return self._fail("menu_search", "unknown_branch")
+        snapshot_failure = self._snapshot_failure("menu_item")
+        if snapshot_failure is not None:
+            return snapshot_failure
         products = self._merchant.search_menu(str(params.get("query", "")), branch)
+        if self._display_menu is not None:
+            self._display_menu.execute(
+                items=[
+                    {
+                        "id": product.slug,
+                        "name": product.name,
+                        "price": product.variants[0].price if product.variants else 0,
+                        "available": product.available,
+                        "note": product.category,
+                    }
+                    for product in products
+                ]
+            )
         return self._ok("menu_search", {"products": [asdict(p) for p in products]})
 
 
@@ -187,10 +219,100 @@ class MenuItemTool(_MerchantTool):
         branch = str(params.get("branch", "")).strip()
         if not branch:
             return self._fail("menu_item", "branch_required")
+        snapshot_failure = self._snapshot_failure("branch")
+        if snapshot_failure is not None:
+            return snapshot_failure
+        snapshot_failure = self._snapshot_failure("menu_item")
+        if snapshot_failure is not None:
+            return snapshot_failure
         product = self._merchant.get_product(str(params.get("product", "")), branch)
         if product is None:
             return self._fail("menu_item", "unknown_product")
         return self._ok("menu_item", asdict(product))
+
+
+@ToolRegistry.register("cart_set")
+class CartSetTool(_MerchantTool):
+    """Declare the whole cart. Repeating the call changes nothing."""
+
+    tool_id = "cart_set"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="cart_set",
+            description=(
+                "Declare everything the customer is ordering, as one list. "
+                "This REPLACES the cart -- it does not add to it, so send "
+                "every item every time, and calling it twice with the same "
+                "list leaves the same cart. To remove something, send the "
+                "list without it; to empty the cart, send an empty list. "
+                "`variant` is a variant slug from menu_search or menu_item "
+                "-- a size with its own price -- not a product slug. "
+                "Anything the merchant does not price as a variant (sugar "
+                "level, ice, 'no straw') goes in `note`, which is free text "
+                "a person at the shop reads. "
+                "Returns only whether it was set; it does NOT tell you what "
+                "the cart now contains. Call cart_view afterwards and check "
+                "it against what the customer asked for."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "description": "The complete order, replacing the cart.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "variant": {
+                                    "type": "string",
+                                    "description": "Variant slug (a specific size).",
+                                },
+                                "quantity": {
+                                    "type": "integer",
+                                    "description": "How many.",
+                                },
+                                "note": {
+                                    "type": "string",
+                                    "description": (
+                                        "Free text for the shop, e.g. 'ít đường'."
+                                    ),
+                                },
+                            },
+                            "required": ["variant"],
+                        },
+                    }
+                },
+                "required": ["items"],
+            },
+            category="ordering",
+            metadata=dict(MUTATES),
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        unavailable = self._require_merchant()
+        if unavailable is not None:
+            return unavailable
+        rows = params.get("items")
+        if not isinstance(rows, list):
+            return self._fail("cart_set", "items_required")
+        items = []
+        for row in rows:
+            if not isinstance(row, dict):
+                return self._fail("cart_set", "variant_unavailable")
+            try:
+                quantity = int(row.get("quantity", 1) or 1)
+            except (TypeError, ValueError):
+                return self._fail("cart_set", "variant_unavailable")
+            items.append(
+                (str(row.get("variant", "")), quantity, str(row.get("note", "") or ""))
+            )
+        try:
+            self._merchant.set_cart(items)
+        except (ValueError, TypeError):
+            return self._fail("cart_set", "variant_unavailable")
+        return self._ok("cart_set", {"set": True})
 
 
 @ToolRegistry.register("cart_add")

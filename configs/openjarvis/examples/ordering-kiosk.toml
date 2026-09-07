@@ -33,7 +33,7 @@ system_prompt_path = "configs/openjarvis/prompts/ordering-kiosk.md"
 max_turns = 30
 # The doctrine (one tool call = one mutation or one observation, never both)
 # only forces a reasoning turn between action and consequence if tool calls
-# run one at a time. Parallel dispatch would let a turn emitting cart_add +
+# run one at a time. Parallel dispatch would let a turn emitting cart_set +
 # cart_view get both results before the Agent reasons about either --
 # reaching the same collapse the doctrine exists to prevent, just around it
 # instead of through it. Not a performance knob here.
@@ -42,6 +42,12 @@ parallel_tools = false
 [merchants]
 backend = "trendcoffee"
 source_id = "trend-coffee"
+# The default 60s is shorter than a single conversation turn (measured: 13-36s
+# each), so every second turn found the snapshot stale, every ordering read
+# failed closed, and the Agent told the customer the menu was unavailable. A
+# menu does not change by the minute; the age gate stays on, just wide enough
+# to outlive a conversation.
+snapshot_max_age_seconds = 3600
 
 [data_plane]
 enabled = true
@@ -64,7 +70,7 @@ trusted_write_operations = ""
 # kiosk is a public terminal whose threat model treats provider JSON and page
 # text as prompt-injection-bearing, and this preset declares no capability
 # policy, so an enabled `shell_exec` would be unrestricted shell on injection.
-enabled = "source_discover,source_sync,structured_query,source_execute,source_verify,branch_list,menu_search,menu_item,cart_add,cart_remove,cart_view,order_place,order_verify,http_request,display_menu,display_cart,display_clear"
+enabled = "source_discover,source_sync,structured_query,source_execute,source_verify,branch_list,menu_search,menu_item,cart_set,cart_view,order_place,order_verify,http_request,display_menu,display_cart,display_clear"
 
 [server]
 host = "127.0.0.1"

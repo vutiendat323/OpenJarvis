@@ -269,8 +269,13 @@ class SystemBuilder:
         )
 
         skill_manager = None
+        skill_manage_tool = None
         skill_few_shot_examples: List[str] = []
-        if config.skills.enabled:
+        skill_manage_enabled = any(
+            tool.spec.name == "skill_manage" for tool in tool_list
+        )
+        learning_needs_skills = config.learning.enabled and config.learning.auto_update
+        if config.skills.enabled or skill_manage_enabled or learning_needs_skills:
             try:
                 from pathlib import Path
 
@@ -280,21 +285,33 @@ class SystemBuilder:
                     bus, capability_policy=sec.capability_policy
                 )
                 skill_paths = [Path(config.skills.skills_dir).expanduser()]
-                workspace_skills = Path("./skills")
-                if workspace_skills.exists():
-                    skill_paths.insert(0, workspace_skills)
+                if config.skills.enabled:
+                    workspace_skills = Path("./skills")
+                    if workspace_skills.exists():
+                        skill_paths.insert(0, workspace_skills)
                 skill_manager.discover(paths=skill_paths)
                 if tool_executor:
                     skill_manager.set_tool_executor(tool_executor)
-                skill_tools = skill_manager.get_skill_tools(
-                    tool_executor=tool_executor,
-                )
-                tool_list.extend(skill_tools)
-                if tool_list:
-                    tool_executor = ToolExecutor(
-                        tool_list, bus, capability_policy=sec.capability_policy
+                for tool in tool_list:
+                    if tool.spec.name == "skill_manage" and hasattr(
+                        tool, "bind_runtime"
+                    ):
+                        tool.bind_runtime(
+                            skill_manager=skill_manager,
+                            memory_backend=memory_backend,
+                            skills_dir=config.skills.skills_dir,
+                        )
+                        skill_manage_tool = tool
+                if config.skills.enabled:
+                    skill_tools = skill_manager.get_skill_tools(
+                        tool_executor=tool_executor,
                     )
-                skill_few_shot_examples = skill_manager.get_few_shot_examples()
+                    tool_list.extend(skill_tools)
+                    if tool_list:
+                        tool_executor = ToolExecutor(
+                            tool_list, bus, capability_policy=sec.capability_policy
+                        )
+                    skill_few_shot_examples = skill_manager.get_few_shot_examples()
             except Exception as exc:
                 logger.warning("Failed to initialize skills: %s", exc)
 
@@ -320,7 +337,13 @@ class SystemBuilder:
                 logger.warning("Failed to initialize TraceStore", exc_info=True)
 
         capability_policy = sec.capability_policy
-        learning_orchestrator = self._setup_learning_orchestrator(config)
+        learning_orchestrator = self._setup_learning_orchestrator(
+            config,
+            bus=bus,
+            trace_store=trace_store,
+            skill_manage_tool=skill_manage_tool,
+            skill_manager=skill_manager,
+        )
 
         agent_manager = None
         if config.agent_manager.enabled:
@@ -604,6 +627,12 @@ class SystemBuilder:
                                     for t in external_tools
                                     if t.spec.name in tool_names
                                 ]
+                            external_names = {tool.spec.name for tool in external_tools}
+                            tools = [
+                                tool
+                                for tool in tools
+                                if tool.spec.name not in external_names
+                            ]
                             tools.extend(external_tools)
                         except Exception as exc:
                             logger.warning(
@@ -873,8 +902,21 @@ class SystemBuilder:
             return None
 
     @staticmethod
-    def _setup_learning_orchestrator(config: JarvisConfig):
-        if not config.learning.training_enabled:
+    def _setup_learning_orchestrator(
+        config: JarvisConfig,
+        *,
+        bus=None,
+        trace_store=None,
+        skill_manage_tool=None,
+        skill_manager=None,
+    ):
+        turn_learning = (
+            config.learning.enabled
+            and config.learning.auto_update
+            and bus is not None
+            and skill_manage_tool is not None
+        )
+        if not (config.learning.training_enabled or turn_learning):
             return None
         try:
             from openjarvis.core.config import DEFAULT_CONFIG_DIR
@@ -882,23 +924,35 @@ class SystemBuilder:
                 LearningOrchestrator,
             )
             from openjarvis.learning.training.lora import LoRATrainingConfig
-            from openjarvis.traces.store import TraceStore
 
-            trace_store = TraceStore(db_path=config.traces.db_path)
+            # Borrow the system's store: a second connection to the same file
+            # would outlive JarvisSystem.close() and split trace ownership.
+            store = trace_store
+            if store is None:
+                from openjarvis.traces.store import TraceStore
+
+                store = TraceStore(db_path=config.traces.db_path)
             config_dir = DEFAULT_CONFIG_DIR / "agent_configs"
 
             sft_cfg = config.learning.intelligence.sft
-            lora_config = LoRATrainingConfig(
-                lora_rank=sft_cfg.lora_rank,
-                lora_alpha=sft_cfg.lora_alpha,
+            lora_config = (
+                LoRATrainingConfig(
+                    lora_rank=sft_cfg.lora_rank,
+                    lora_alpha=sft_cfg.lora_alpha,
+                )
+                if config.learning.training_enabled
+                else None
             )
 
             return LearningOrchestrator(
-                trace_store=trace_store,
+                trace_store=store,
                 config_dir=config_dir,
                 min_improvement=config.learning.min_improvement,
                 min_sft_pairs=sft_cfg.min_pairs,
                 lora_config=lora_config,
+                bus=bus if turn_learning else None,
+                skill_manage_tool=skill_manage_tool if turn_learning else None,
+                skill_manager=skill_manager,
             )
         except Exception as exc:
             logger.warning("Failed to set up learning orchestrator: %s", exc)

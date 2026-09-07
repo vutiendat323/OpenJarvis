@@ -75,11 +75,11 @@ class _Direct:
         )
 
 
-def _tool(tmp_path, *, verified_orders=()):
+def _tool(tmp_path, *, verified_orders=(), conversational=False):
     """Wire the tool over a real snapshot store, so the payment precondition is
     exercised against the same query semantics production uses."""
     store = ApprovalStore(str(tmp_path / "approvals.db"))
-    gate = ExecutionApprovalGate(store)
+    gate = ExecutionApprovalGate(store, conversational=conversational)
     direct = _Direct()
     capability = _capability()
     snapshots = StructuredSnapshotStore(tmp_path / "structured.db")
@@ -231,6 +231,45 @@ def test_payment_rejects_non_allowlisted_shape_before_approval(tmp_path):
     assert rejected.success is False
     assert json.loads(rejected.content) == {"error_code": "payment_arguments_invalid"}
     assert store.list_pending() == []
+    assert direct.calls == []
+    store.close()
+    snapshots.close()
+
+
+def test_conversational_approval_executes_in_one_call(tmp_path):
+    """The kiosk has no operator to click approve, so payment never resumed.
+
+    With an operator gate the first call returns `approval_required` and the
+    Agent has to be told an approval id by somebody who is not in the room.
+    """
+    tool, store, direct, snapshots = _tool(
+        tmp_path, verified_orders=("order-1",), conversational=True
+    )
+
+    result = tool.execute(
+        source_id="trend-coffee",
+        operation="payment.initiate",
+        arguments={"order": "order-1", "paymentMethod": "bank-transfer"},
+    )
+
+    assert result.success is True
+    assert "pending_approval" not in result.metadata
+    assert len(direct.calls) == 1
+    store.close()
+    snapshots.close()
+
+
+def test_operator_gate_still_pauses_for_an_approval_id(tmp_path):
+    tool, store, direct, snapshots = _tool(tmp_path, verified_orders=("order-1",))
+
+    result = tool.execute(
+        source_id="trend-coffee",
+        operation="payment.initiate",
+        arguments={"order": "order-1", "paymentMethod": "bank-transfer"},
+    )
+
+    assert result.success is False
+    assert result.metadata["pending_approval"] is True
     assert direct.calls == []
     store.close()
     snapshots.close()

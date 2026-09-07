@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 
+from openjarvis.core.events import EventBus, EventType
 from openjarvis.merchants.fake import FakeMerchant
+from openjarvis.tools.display import DisplayMenuTool
 from openjarvis.tools.ordering import BranchListTool, MenuItemTool, MenuSearchTool
 
 BRANCH = "br-thu-duc"
@@ -46,6 +48,27 @@ def test_menu_search_reports_unavailable_products_rather_than_hiding_them():
     assert payload["products"][0]["available"] is False
 
 
+def test_menu_search_displays_every_successful_result():
+    bus = EventBus(record_history=True)
+    display_menu = DisplayMenuTool()
+    display_menu._bus = bus
+    tool = _tool(MenuSearchTool)
+    tool._display_menu = display_menu
+
+    result = tool.execute(query="", branch=BRANCH)
+
+    products = json.loads(result.content)["products"]
+    display = bus.history[-1]
+    assert display.event_type is EventType.DISPLAY_UPDATE
+    assert display.data["view"] == "menu"
+    assert [item["id"] for item in display.data["items"]] == [
+        product["slug"] for product in products
+    ]
+    assert [item["name"] for item in display.data["items"]] == [
+        product["name"] for product in products
+    ]
+
+
 def test_menu_search_requires_a_branch():
     """A menu without a branch is meaningless, and guessing one would put the
     customer's order at the wrong shop."""
@@ -79,3 +102,33 @@ def test_tool_without_a_merchant_fails_clearly():
     result = MenuSearchTool().execute(query="latte", branch=BRANCH)
     assert result.success is False
     assert "merchant_unavailable" in result.content
+
+
+class _SnapshotStatusMerchant(FakeMerchant):
+    def __init__(self, status: str):
+        super().__init__()
+        self._status = status
+
+    def snapshot_status(self, resource_type: str) -> str:
+        return self._status if resource_type in {"branch", "menu_item"} else ""
+
+
+def test_read_tools_fail_when_the_snapshot_is_not_synced():
+    merchant = _SnapshotStatusMerchant("menu_not_synced")
+
+    menu_search = _tool(MenuSearchTool, merchant).execute(query="latte", branch=BRANCH)
+    menu_item = _tool(MenuItemTool, merchant).execute(product="latte", branch=BRANCH)
+
+    assert menu_search.success is False
+    assert menu_search.content == "menu_not_synced"
+    assert menu_item.success is False
+    assert menu_item.content == "menu_not_synced"
+
+
+def test_branch_list_fails_when_branch_snapshot_is_stale():
+    result = _tool(
+        BranchListTool, _SnapshotStatusMerchant("branch_stale")
+    ).execute()
+
+    assert result.success is False
+    assert result.content == "branch_stale"

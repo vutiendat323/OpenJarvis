@@ -401,3 +401,40 @@ def test_trend_adapter_normalizes_reconstructed_order_and_payment_examples():
         "status": "pending",
         "order": "example-order",
     }
+
+
+def test_normalize_accepts_a_created_order_envelope_not_only_status_200():
+    """A create does not answer 200, and demanding it lost real orders.
+
+    `orders/public` accepted the request, the shop created the order, and
+    normalization then rejected the envelope -- which the execution engine can
+    only report as `mutation_ambiguous`, because the write had already landed.
+    """
+    from openjarvis.data_plane.adapters.trendcoffee import TrendCoffeeAdapter
+
+    batch = TrendCoffeeAdapter().normalize(
+        "order",
+        {
+            "statusCode": 201,
+            "message": "Create order successfully",
+            "result": {
+                "slug": "ORD-1",
+                "type": "take-out",
+                "branch": "ba9355f797",
+                "orderItems": [],
+            },
+        },
+    )
+
+    assert [record.resource_id for record in batch.records] == ["ORD-1"]
+
+
+def test_normalize_still_rejects_a_provider_error_envelope():
+    """The provider's failures carry six-digit application codes."""
+    from openjarvis.data_plane.adapters.trendcoffee import TrendCoffeeAdapter
+
+    for status in (101006, 105002, 127000, 500):
+        with pytest.raises(ValueError):
+            TrendCoffeeAdapter().normalize(
+                "order", {"statusCode": status, "message": "nope", "result": None}
+            )

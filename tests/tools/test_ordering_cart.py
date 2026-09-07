@@ -87,3 +87,74 @@ def test_cart_remove_of_an_unknown_line_fails():
     result = remove.execute(line_id="L999")
     assert result.success is False
     assert "unknown_line" in result.content
+
+
+def test_cart_set_is_declarative_so_a_repeated_call_does_not_accumulate():
+    """The defect this tool exists to remove.
+
+    `cart_add` appends. A voice turn interrupted mid-flight still mutated the
+    cart, the Agent never saw the acknowledgement, and the next turn added the
+    same drink again -- a customer asking for two coffees ended up with ten.
+    Re-running `cart_set` must be a no-op.
+    """
+    from openjarvis.tools.ordering import CartSetTool
+
+    merchant = FakeMerchant()
+    set_cart, view = _wired(merchant, CartSetTool, CartViewTool)
+    items = [{"variant": "ca-phe-den-std", "quantity": 2, "note": "ít đường"}]
+
+    for _ in range(5):
+        assert set_cart.execute(items=items).success
+
+    cart = json.loads(view.execute().content)
+    assert [(line["variant_slug"], line["quantity"]) for line in cart["lines"]] == [
+        ("ca-phe-den-std", 2)
+    ]
+
+
+def test_cart_set_replaces_rather_than_merges():
+    from openjarvis.tools.ordering import CartSetTool
+
+    merchant = FakeMerchant()
+    set_cart, view = _wired(merchant, CartSetTool, CartViewTool)
+    set_cart.execute(items=[{"variant": "ca-phe-den-std", "quantity": 1, "note": ""}])
+
+    set_cart.execute(items=[{"variant": "ca-phe-sua-std", "quantity": 3, "note": ""}])
+
+    cart = json.loads(view.execute().content)
+    assert [(line["variant_slug"], line["quantity"]) for line in cart["lines"]] == [
+        ("ca-phe-sua-std", 3)
+    ]
+
+
+def test_cart_set_returns_only_an_acknowledgement():
+    from openjarvis.tools.ordering import CartSetTool
+
+    assert CartSetTool().spec.metadata == {"mutates": True}
+    set_cart, = _wired(FakeMerchant(), CartSetTool)
+
+    result = set_cart.execute(
+        items=[{"variant": "ca-phe-den-std", "quantity": 1, "note": ""}]
+    )
+
+    assert json.loads(result.content) == {"set": True}
+
+
+def test_cart_set_leaves_the_previous_cart_untouched_when_one_item_is_bad():
+    """A half-applied cart is worse than the duplicate it replaced."""
+    from openjarvis.tools.ordering import CartSetTool
+
+    merchant = FakeMerchant()
+    set_cart, view = _wired(merchant, CartSetTool, CartViewTool)
+    set_cart.execute(items=[{"variant": "ca-phe-den-std", "quantity": 1, "note": ""}])
+
+    failed = set_cart.execute(
+        items=[
+            {"variant": "ca-phe-sua-std", "quantity": 1, "note": ""},
+            {"variant": "khong-ton-tai", "quantity": 1, "note": ""},
+        ]
+    )
+
+    assert not failed.success
+    cart = json.loads(view.execute().content)
+    assert [line["variant_slug"] for line in cart["lines"]] == ["ca-phe-den-std"]

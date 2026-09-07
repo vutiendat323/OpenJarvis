@@ -74,6 +74,7 @@ _RETRY_STATUSES = frozenset({429, 503})
 # `Retry-After: 999999`; the sleep runs on a worker thread holding an
 # httpx.Client long after ToolExecutor has reported a timeout, so it is capped.
 _MAX_RETRY_AFTER_SECONDS = 5.0
+_MAX_READ_PAGES = 1000
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
@@ -804,8 +805,14 @@ class DirectExecutionEngine:
     ) -> NormalizedBatch:
         self._normalization_adapter(capability)
         pages: list[NormalizedBatch] = []
+        page_signatures: set[tuple[str, ...]] = set()
         page = 1
         while True:
+            if page > _MAX_READ_PAGES:
+                raise DataPlaneError(
+                    DataPlaneErrorCode.SCHEMA_MISMATCH,
+                    "Provider pagination exceeded the safe page limit",
+                )
             page_arguments = dict(arguments)
             fields = set(_format_fields(operation.path))
             if "page" in fields:
@@ -814,7 +821,17 @@ class DirectExecutionEngine:
                 page_arguments.setdefault("size", 100)
             payload = self._dispatch(capability, operation, page_arguments)
             self._validate_response(operation, payload)
-            pages.append(self._normalize(capability, operation, payload))
+            batch = self._normalize(capability, operation, payload)
+            signature = tuple(record.resource_id for record in batch.records)
+            if signature in page_signatures:
+                if page > 1:
+                    break
+                raise DataPlaneError(
+                    DataPlaneErrorCode.SCHEMA_MISMATCH,
+                    "Provider pagination repeated a page",
+                )
+            page_signatures.add(signature)
+            pages.append(batch)
             if not _has_next(payload):
                 break
             page += 1

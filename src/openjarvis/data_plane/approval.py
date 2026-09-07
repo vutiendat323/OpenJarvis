@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 
 from openjarvis.data_plane.types import SourceCapability, TrustState
 from openjarvis.tools.approval_store import (
+    STATUS_APPROVED,
     STATUS_EXECUTED,
     STATUS_UNKNOWN,
     TIER_HIGH,
@@ -215,9 +216,48 @@ class ExecutionGrant:
 class ExecutionApprovalGate:
     """Prepare persisted proposals and mint exact one-time grants after approval."""
 
-    def __init__(self, store: ApprovalStore, *, owns_store: bool = False) -> None:
+    def __init__(
+        self,
+        store: ApprovalStore,
+        *,
+        owns_store: bool = False,
+        conversational: bool = False,
+    ) -> None:
         self._store = store
         self._owns_store = owns_store
+        self._conversational = conversational
+
+    @property
+    def conversational(self) -> bool:
+        """Whether the person the Agent is talking to is the approver.
+
+        Off by default: the operator queue assumes somebody is watching a
+        dashboard. A voice kiosk has no such person -- the customer who just
+        said "tôi xác nhận" is the only human in the transaction, and waiting
+        for a second one strands the order in silence.
+        """
+        return self._conversational
+
+    def prepare_and_authorize(
+        self,
+        source_id: str,
+        operation: str,
+        arguments: dict[str, object],
+        capability_revision: int,
+    ) -> ExecutionGrant:
+        """Queue and immediately grant one exact request, with no operator.
+
+        Only the *wait* is removed. The proposal is still persisted, and the
+        grant is still bound to this exact request hash and capability
+        revision, so a mutation that drifts from what was approved is refused
+        by ``ExecutionGrant.consume`` exactly as before.
+        """
+        if not self._conversational:
+            raise ApprovalError("approval_not_approved")
+        pending = self.prepare(source_id, operation, arguments, capability_revision)
+        if not self._store.update_status(pending.id, STATUS_APPROVED):
+            raise ApprovalError("approval_not_approved")
+        return self.authorize(pending.id, str(pending.payload["request_hash"]))
 
     def prepare(
         self,

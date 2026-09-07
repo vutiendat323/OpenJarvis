@@ -52,7 +52,20 @@ def _free_text_note(value: object) -> bool:
 
 
 def _envelope_result(payload: object) -> object:
-    if not isinstance(payload, dict) or payload.get("statusCode") != 200:
+    """Accept the provider's whole success range, not just the read code.
+
+    Reads answer ``statusCode: 200`` and a create answers 201. Pinning 200
+    rejected every order the shop had already made: the write landed, the
+    envelope was refused, and the only honest thing left to report was
+    ``mutation_ambiguous``. Failures carry six-digit application codes
+    (101006, 105002, 127000), so the 2xx range still separates them cleanly.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("Trend Coffee payload must be a successful provider envelope")
+    status = payload.get("statusCode")
+    if isinstance(status, bool) or not isinstance(status, int):
+        raise ValueError("Trend Coffee payload must be a successful provider envelope")
+    if not 200 <= status < 300:
         raise ValueError("Trend Coffee payload must be a successful provider envelope")
     return payload.get("result")
 
