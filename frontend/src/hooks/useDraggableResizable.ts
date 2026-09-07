@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   clampPosition,
+  computeCornerResize,
   computeResizeDimensions,
   getInitialPosition,
   type Dimensions,
   type Point,
+  type ResizeCorner,
 } from '@/utils/floatingGeometry';
 
 export interface UseDraggableResizableOptions {
@@ -51,7 +53,12 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
 
   const resizeStateRef = useRef<{
     startX: number;
+    startY: number;
     startWidth: number;
+    startHeight: number;
+    startPosX: number;
+    startPosY: number;
+    corner: ResizeCorner;
   } | null>(null);
 
   // Re-clamp on window resize
@@ -115,7 +122,7 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
   }, []);
 
   const onResizePointerDown = useCallback(
-    (e: React.PointerEvent) => {
+    (e: React.PointerEvent, corner: ResizeCorner = 'se') => {
       if (e.button !== 0) return;
       e.stopPropagation();
       const target = e.currentTarget as HTMLElement;
@@ -125,11 +132,16 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
 
       resizeStateRef.current = {
         startX: e.clientX,
+        startY: e.clientY,
         startWidth: size.width,
+        startHeight: size.height,
+        startPosX: position.x,
+        startPosY: position.y,
+        corner,
       };
       setIsResizing(true);
     },
-    [size.width],
+    [position.x, position.y, size.height, size.width],
   );
 
   const onResizePointerMove = useCallback(
@@ -137,9 +149,21 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
       if (!resizeStateRef.current) return;
       e.stopPropagation();
       const dx = e.clientX - resizeStateRef.current.startX;
-      const newSize = computeResizeDimensions(
-        resizeStateRef.current.startWidth,
+      const dy = e.clientY - resizeStateRef.current.startY;
+      const { position: newPos, size: newSize } = computeCornerResize(
+        {
+          startPos: {
+            x: resizeStateRef.current.startPosX,
+            y: resizeStateRef.current.startPosY,
+          },
+          startSize: {
+            width: resizeStateRef.current.startWidth,
+            height: resizeStateRef.current.startHeight,
+          },
+          corner: resizeStateRef.current.corner,
+        },
         dx,
+        dy,
         aspectRatio,
         minWidth,
         maxWidth,
@@ -149,7 +173,7 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
         typeof window !== 'undefined' && window.innerWidth > 0 && window.innerHeight > 0
           ? { width: window.innerWidth, height: window.innerHeight }
           : { width: 1920, height: 1080 };
-      setPosition((prev) => clampPosition(prev, newSize, bounds));
+      setPosition(clampPosition(newPos, newSize, bounds));
     },
     [aspectRatio, maxWidth, minWidth],
   );
@@ -164,11 +188,22 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
     setIsResizing(false);
   }, []);
 
+  const getResizeHandleProps = useCallback(
+    (corner: ResizeCorner) => ({
+      onPointerDown: (e: React.PointerEvent) => onResizePointerDown(e, corner),
+      onPointerMove: onResizePointerMove,
+      onPointerUp: onResizePointerUp,
+      onPointerCancel: onResizePointerUp,
+    }),
+    [onResizePointerDown, onResizePointerMove, onResizePointerUp],
+  );
+
   return {
     position,
     size,
     isDragging,
     isResizing,
+    getResizeHandleProps,
     cardHandlers: {
       onPointerDown: onCardPointerDown,
       onPointerMove: onCardPointerMove,
@@ -176,7 +211,7 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
       onPointerCancel: onCardPointerUp,
     },
     resizeHandlers: {
-      onPointerDown: onResizePointerDown,
+      onPointerDown: (e: React.PointerEvent) => onResizePointerDown(e, 'se'),
       onPointerMove: onResizePointerMove,
       onPointerUp: onResizePointerUp,
       onPointerCancel: onResizePointerUp,

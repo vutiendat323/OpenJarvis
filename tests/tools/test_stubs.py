@@ -186,6 +186,18 @@ class TestToolExecutor:
         end = [e for e in bus.history if e.event_type == EventType.TOOL_CALL_END][0]
         assert end.data["success"] is False
 
+    def test_event_bus_keeps_the_full_tool_result_for_learning(self):
+        bus = EventBus(record_history=True)
+        executor = ToolExecutor([_EchoTool()], bus=bus)
+        content = "x" * 12_000
+
+        executor.execute(
+            ToolCall(id="1", name="echo", arguments=f'{{"text":"{content}"}}')
+        )
+
+        end = [e for e in bus.history if e.event_type == EventType.TOOL_CALL_END][0]
+        assert end.data["result"] == content
+
     def test_no_bus_works(self):
         executor = ToolExecutor([_EchoTool()])
         call = ToolCall(id="1", name="echo", arguments='{"text":"ok"}')

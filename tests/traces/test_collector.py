@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Any, Optional
 
-from openjarvis.agents._stubs import AgentContext, AgentResult, BaseAgent
+import pytest
+
+from openjarvis.agents._stubs import (
+    AgentContext,
+    AgentResult,
+    AgentRunCompleted,
+    AgentTextDelta,
+    AgentToolFinished,
+    AgentToolStarted,
+    BaseAgent,
+)
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import StepType
 from openjarvis.traces.collector import TraceCollector
@@ -88,6 +99,100 @@ class _ToolAgent(BaseAgent):
         return AgentResult(content="4", turns=2)
 
 
+class _InterleavedToolAgent(BaseAgent):
+    """Simulate two parallel calls whose start/end events interleave."""
+
+    agent_id = "parallel_tool_agent"
+
+    def __init__(self, bus: EventBus) -> None:
+        self._bus = bus
+
+    def run(
+        self,
+        input: str,
+        context: Optional[AgentContext] = None,
+        **kwargs: Any,
+    ) -> AgentResult:
+        first = {"method": "GET", "url": "https://shop.example/menu/food"}
+        second = {"method": "GET", "url": "https://shop.example/menu/drinks"}
+        self._bus.publish(
+            EventType.TOOL_CALL_START,
+            {"tool": "http_request", "arguments": first},
+        )
+        self._bus.publish(
+            EventType.TOOL_CALL_START,
+            {"tool": "http_request", "arguments": second},
+        )
+        self._bus.publish(
+            EventType.TOOL_CALL_END,
+            {
+                "tool": "http_request",
+                "success": True,
+                "latency": 0.01,
+                "result": '{"items": ["food"]}',
+                "metadata": {"arguments": first},
+            },
+        )
+        self._bus.publish(
+            EventType.TOOL_CALL_END,
+            {
+                "tool": "http_request",
+                "success": True,
+                "latency": 0.01,
+                "result": '{"items": ["drinks"]}',
+                "metadata": {"arguments": second},
+            },
+        )
+        return AgentResult(content="menus displayed", turns=1)
+
+
+class _StreamingAgent(BaseAgent):
+    """Small local stream fixture covering every native stream event."""
+
+    agent_id = "streaming"
+
+    def __init__(self) -> None:
+        pass
+
+    def run(
+        self,
+        input: str,
+        context: Optional[AgentContext] = None,
+        **kwargs: Any,
+    ) -> AgentResult:
+        return AgentResult(content="completed", turns=1)
+
+    async def run_stream(
+        self,
+        input: str,
+        context: Optional[AgentContext] = None,
+        **kwargs: Any,
+    ):
+        yield AgentTextDelta("partial")
+        yield AgentToolStarted("local_tool")
+        yield AgentToolFinished("local_tool", ok=True)
+        yield AgentRunCompleted(AgentResult(content="completed", turns=1))
+
+
+class _BlockingStreamingAgent(_StreamingAgent):
+    """Stream fixture whose completion is never reached after cancellation."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def run_stream(
+        self,
+        input: str,
+        context: Optional[AgentContext] = None,
+        **kwargs: Any,
+    ):
+        yield AgentTextDelta("partial")
+        self.started.set()
+        await self.release.wait()
+        yield AgentRunCompleted(AgentResult(content="completed", turns=1))
+
+
 class TestTraceCollector:
     def test_basic_collection(self, tmp_path: Path) -> None:
         bus = EventBus()
@@ -136,6 +241,25 @@ class TestTraceCollector:
         assert len(tool_steps) == 1
         assert tool_steps[0].input["tool"] == "calculator"
         assert tool_steps[0].output["success"] is True
+        store.close()
+
+    def test_parallel_tool_steps_keep_their_own_arguments(self, tmp_path: Path) -> None:
+        """End metadata identifies each call even when starts overlap."""
+        bus = EventBus()
+        store = TraceStore(tmp_path / "test.db")
+        collector = TraceCollector(_InterleavedToolAgent(bus), store=store, bus=bus)
+
+        collector.run("show food and drinks")
+
+        steps = [
+            step
+            for step in store.list_traces()[0].steps
+            if step.step_type == StepType.TOOL_CALL
+        ]
+        assert [step.input["arguments"]["url"] for step in steps] == [
+            "https://shop.example/menu/food",
+            "https://shop.example/menu/drinks",
+        ]
         store.close()
 
     def test_records_respond_step(self, tmp_path: Path) -> None:
@@ -272,6 +396,75 @@ class TestTraceCollector:
         # No step with model="stray"
         for s in trace.steps:
             assert s.input.get("model") != "stray"
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_run_stream_forwards_events_and_records_one_completed_trace(
+        self, tmp_path: Path
+    ) -> None:
+        """Dropping a native event or terminal trace side effect is a bug."""
+        bus = EventBus(record_history=True)
+        store = TraceStore(tmp_path / "test.db")
+        collector = TraceCollector(_StreamingAgent(), store=store, bus=bus)
+
+        events = [event async for event in collector.run_stream("stream this")]
+
+        assert events == [
+            AgentTextDelta("partial"),
+            AgentToolStarted("local_tool"),
+            AgentToolFinished("local_tool", ok=True),
+            AgentRunCompleted(AgentResult(content="completed", turns=1)),
+        ]
+        assert store.count() == 1
+        assert store.list_traces()[0].result == "completed"
+        assert [event.event_type for event in bus.history].count(
+            EventType.TRACE_COMPLETE
+        ) == 1
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_run_stream_does_not_record_or_publish_when_abandoned(
+        self, tmp_path: Path
+    ) -> None:
+        """Saving before AgentRunCompleted would learn an unobserved answer."""
+        bus = EventBus(record_history=True)
+        store = TraceStore(tmp_path / "test.db")
+        collector = TraceCollector(_StreamingAgent(), store=store, bus=bus)
+
+        stream = collector.run_stream("stream this")
+        assert await stream.__anext__() == AgentTextDelta("partial")
+        await stream.aclose()
+
+        assert store.count() == 0
+        assert not any(
+            event.event_type == EventType.TRACE_COMPLETE for event in bus.history
+        )
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_run_stream_does_not_record_or_publish_when_cancelled(
+        self, tmp_path: Path
+    ) -> None:
+        """Cancelling a caller before completion must leave no trace behind."""
+        bus = EventBus(record_history=True)
+        store = TraceStore(tmp_path / "test.db")
+        agent = _BlockingStreamingAgent()
+        collector = TraceCollector(agent, store=store, bus=bus)
+
+        async def drain() -> None:
+            async for _event in collector.run_stream("stream this"):
+                pass
+
+        task = asyncio.create_task(drain())
+        await agent.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert store.count() == 0
+        assert not any(
+            event.event_type == EventType.TRACE_COMPLETE for event in bus.history
+        )
         store.close()
 
 

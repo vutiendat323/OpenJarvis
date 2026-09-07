@@ -13,8 +13,10 @@ class MockEngine:
     def __init__(self, responses: List[Dict[str, Any]]):
         self._responses = list(responses)
         self._call_count = 0
+        self.generate_kwargs: list[dict[str, Any]] = []
 
     def generate(self, messages, **kwargs):
+        self.generate_kwargs.append(dict(kwargs))
         if self._call_count < len(self._responses):
             resp = self._responses[self._call_count]
         else:
@@ -100,3 +102,27 @@ class TestContinuation:
         agent = ContinuationAgent(engine, "test-model")
         result = agent.run("Hi")
         assert result.content == "Done"
+
+    def test_continuation_keeps_tool_schemas(self):
+        engine = MockEngine(
+            [
+                {"content": "", "finish_reason": "stop"},
+            ]
+        )
+        agent = ContinuationAgent(engine, "test-model")
+        messages = agent._build_messages("Place the order")
+        tool_schema = [
+            {
+                "type": "function",
+                "function": {"name": "http_request", "parameters": {}},
+            }
+        ]
+
+        content = agent._check_continuation(
+            {"content": "", "finish_reason": "length"},
+            messages,
+            generation_kwargs={"tools": tool_schema},
+        )
+
+        assert content == ""
+        assert engine.generate_kwargs[0]["tools"] == tool_schema

@@ -67,6 +67,31 @@ class TestParameterExtraction:
         # "echoed" is produced by step 1, so it should NOT be an input param
         assert "echoed" not in props
 
+    def test_dotted_produced_output_root_is_not_exposed_as_param(self):
+        """A dotted reference to a prior result is internal pipeline context."""
+        manifest = SkillManifest(
+            name="order_chain",
+            steps=[
+                SkillStep(
+                    tool_name="echo",
+                    arguments_template=(
+                        '{"text": "{\\"order\\": {\\"id\\": \\"ord-123\\"}}"}'
+                    ),
+                    output_key="step_0",
+                ),
+                SkillStep(
+                    tool_name="echo",
+                    arguments_template='{"text": "{step_0.order.id}"}',
+                    output_key="step_1",
+                ),
+            ],
+        )
+
+        props = SkillTool(manifest, _make_executor()).spec.parameters["properties"]
+
+        assert "step_0" not in props
+        assert "step_0.order.id" not in props
+
     def test_instruction_only_skill_gets_task_param(self):
         """Skills with no steps (markdown-only) expose an optional 'task' param."""
         manifest = SkillManifest(

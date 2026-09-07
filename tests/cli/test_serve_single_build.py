@@ -18,6 +18,7 @@ wiring arguments. So the invariant these tests pin is exactly-once, not never:
 from __future__ import annotations
 
 import importlib
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -244,3 +245,32 @@ def test_executor_receives_required_system_attrs(tmp_path, monkeypatch):
     assert system.engine is not None
     assert system.model == "test-model"
     assert system.config is not None
+
+
+def test_serve_passes_its_trace_store_to_create_app(tmp_path, monkeypatch):
+    """A second TraceStore at the same path would split trace ownership."""
+    calls, build_spy = _counting_build()
+    captured: dict = {}
+    fake_app = SimpleNamespace(state=SimpleNamespace())
+
+    def create_app_stub(**kwargs):
+        captured.update(kwargs)
+        return fake_app
+
+    import openjarvis.server.app as app_module
+
+    monkeypatch.setattr(app_module, "create_app", create_app_stub)
+
+    result = _run_serve(
+        tmp_path,
+        monkeypatch,
+        build_spy=build_spy,
+        set_system_spy=MagicMock(),
+        configure=lambda config: (
+            setattr(config.traces, "enabled", True),
+            setattr(config.traces, "db_path", str(tmp_path / "traces.db")),
+        ),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["trace_store"] is fake_app.state.system.trace_store

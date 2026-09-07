@@ -16,9 +16,8 @@
 # is enabled. See configs/openjarvis/prompts/ordering-kiosk.md for how the
 # Agent is expected to use these tools.
 #
-# max_turns is 30, not the default 10 -- a full order is several
-# observation/decision pairs and the default would strand it mid-flow.
-# LoopGuard remains the real brake against a runaway loop.
+# Eight turns cover the measured order flow while bounding a malformed tool-call
+# loop before it burns another six-figure token total.
 #
 # Usage:
 #   OPENJARVIS_CONFIG=configs/openjarvis/examples/ordering-kiosk-mcp.toml jarvis serve
@@ -28,6 +27,14 @@ default = "ollama"
 
 [intelligence]
 default_model = "qwen3.5:9b"        # needs reliable function calling
+# The default 1024 is one budget shared by the model's chain-of-thought AND the
+# tool call that follows it. A reasoning model spends most of 1024 thinking, so
+# the tool call is emitted truncated: the JSON stops mid-argument, no parser can
+# read it, and the fragment either leaks into the reply as raw markup or leaves
+# the turn with nothing to say ("No response was generated"). Measured: every
+# failing turn stopped at exactly 1024 output tokens, while an order body is
+# only ~130 tokens. This is per inference call, not per turn.
+max_tokens = 4096
 # Not yet exercised end to end. `scripts/launcher.sh` passes
 # `--engine cloud --model "$MODEL"` on the CLI (default deepseek-v4-pro),
 # which overrides both keys above -- that combination is what the manual
@@ -37,27 +44,56 @@ default_model = "qwen3.5:9b"        # needs reliable function calling
 [agent]
 default_agent = "orchestrator"
 system_prompt_path = "configs/openjarvis/prompts/ordering-kiosk.md"
-max_turns = 30
-# The doctrine (one tool call = one mutation or one observation, never both)
-# only forces a reasoning turn between action and consequence if tool calls
-# run one at a time. Parallel dispatch would let a turn emitting cart_set +
-# cart_view get both results before the Agent reasons about either --
-# reaching the same collapse the doctrine exists to prevent, just around it
-# instead of through it. Not a performance knob here.
-parallel_tools = false
+max_turns = 8
+# Flipped to true deliberately, with the cost understood. Read the whole note
+# before flipping it back or leaving it.
+#
+# What it buys, measured: three catalogue reads in one batch took 0.23 + 0.25 +
+# 0.31s sequentially; run together that is 0.31s. About 0.5s on a turn that
+# takes 15-25s -- roughly 2%. The expensive part of a turn is the model
+# thinking for 4-8s between decisions, and parallel dispatch does not touch it.
+#
+# What it costs: `parallel_tools` is one boolean over every tool call in a
+# batch (orchestrator.py:620 -- there is no read/write filter). The doctrine
+# "one tool call = one mutation or one observation, never both" only holds while
+# calls run one at a time. With this true, a single batch may carry
+# `POST /orders/public` alongside `GET /orders/{slug}`, reading an order before
+# it exists, or alongside `POST /payment/initiate/public`, paying for one that
+# was never created. The evidence-store fingerprint refuses two *identical*
+# mutations, so a duplicated order is still blocked; two *different* mutations
+# in one batch are not.
+#
+# This preset points at a real shop with real money. The owner chose this
+# trade after being shown both numbers.
+parallel_tools = true
 
 [tools]
 # The five display_* tools drive the React `/customer-display` route through
 # the WebSocket bridge and are unrelated to the Data Plane; they stay enabled.
-# `http_request` is the spec's investigative read tool -- it is how an operator
-# inspects a provider response by hand. `shell_exec` is deliberately absent: the
-# kiosk is a public terminal whose threat model treats provider JSON and page
-# text as prompt-injection-bearing, and this preset declares no capability
-# policy, so an enabled `shell_exec` would be unrestricted shell on injection.
-enabled = "http_request,skill_manage,display_menu,display_cart,display_bill,display_payment_qr,display_clear,browser_snapshot,browser_find,browser_navigate,browser_navigate_back,browser_tabs,browser_click,browser_type,browser_fill_form,browser_select_option,browser_hover,browser_press_key,browser_wait_for,browser_handle_dialog,browser_drag,browser_drop,browser_resize,browser_close,browser_network_requests,browser_verify_element_visible,browser_verify_text_visible,browser_verify_value,browser_verify_list_visible"
+# The default kiosk Agent sees only the HTTP primitive, customer-display tools,
+# and skill replay. Playwright remains connected below for presentation and an
+# explicitly selected browser-agent discovery path, but its schemas do not tax
+# every ordinary kiosk inference. `repl` stays absent (ruling R9: in-process
+# object-graph escape on a public terminal).
+enabled = "http_request,skill_manage,display_menu,display_cart,display_bill,display_payment_qr,display_clear"
 # Only this origin may supply a payment QR. Empty would mean no QR can ever be
 # displayed; a wide list would mean the guard proves nothing.
 payment_trusted_origins = "https://trendcoffee.net"
+
+[skills]
+# The provider contract already lives in the system prompt. Loading the same
+# workspace skill as another Agent tool duplicates it and adds another route.
+# A learned skill still reaches the customer -- through `skill_manage run`,
+# which resolves it in the live manager without touching the agent's tool list.
+enabled = false
+
+[learning]
+# A completed, verified transaction becomes a replayable skill in this same
+# process. `training_enabled` stays false: this preset learns procedures, it
+# does not fine-tune a model.
+enabled = true
+auto_update = true
+training_enabled = false
 
 [server]
 host = "127.0.0.1"

@@ -96,6 +96,7 @@ export function InputArea({ onOpenVoice }: InputAreaProps) {
   const addMessage = useAppStore((s) => s.addMessage);
   const updateLastAssistant = useAppStore((s) => s.updateLastAssistant);
   const setStreamState = useAppStore((s) => s.setStreamState);
+  const setServerConversationId = useAppStore((s) => s.setServerConversationId);
   const resetStream = useAppStore((s) => s.resetStream);
   const modelLoading = useAppStore((s) => s.modelLoading);
   const deepResearch = useAppStore((s) => s.deepResearch);
@@ -374,13 +375,28 @@ export function InputArea({ onOpenVoice }: InputAreaProps) {
           }
         }
       } else {
+      // Rejoin the scope the server issued for this chat, so tool evidence
+      // from earlier turns is still the agent's to read.
+      const serverConversationId = useAppStore
+        .getState()
+        .conversations.find((c) => c.id === convId)?.serverConversationId;
+
       for await (const sseEvent of streamChat(
-        { model: selectedModel, messages: apiMessages, stream: true, temperature, max_tokens: maxTokens },
+        {
+          model: selectedModel,
+          messages: apiMessages,
+          stream: true,
+          temperature,
+          max_tokens: maxTokens,
+          conversation_id: serverConversationId,
+        },
         controller.signal,
       )) {
         const eventName = sseEvent.event;
 
-        if (eventName === 'agent_turn_start') {
+        if (eventName === 'conversation_scope') {
+          setServerConversationId(convId, sseEvent.data);
+        } else if (eventName === 'agent_turn_start') {
           setStreamState({ phase: 'Agent thinking...' });
         } else if (eventName === 'inference_start') {
           setStreamState({ phase: 'Generating...' });

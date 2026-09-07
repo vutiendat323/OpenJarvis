@@ -6,6 +6,8 @@ export interface CustomerMenuItem {
   price?: number;
   available?: boolean;
   note?: string;
+  image_url?: string;
+  category?: string;
 }
 
 export interface CustomerDisplayLine {
@@ -35,6 +37,7 @@ export type CustomerDisplayState =
       payment_slug: string;
       status: string;
       qr_code: string;
+      total?: number;
     };
 
 export const waitingState: CustomerDisplayState = { view: 'waiting' };
@@ -73,6 +76,8 @@ function pickMenuItem(value: unknown): CustomerMenuItem | null {
     ...(optionalNumber(value, 'price') !== undefined ? { price: optionalNumber(value, 'price') } : {}),
     ...(optionalBoolean(value, 'available') !== undefined ? { available: optionalBoolean(value, 'available') } : {}),
     ...(optionalString(value, 'note') !== undefined ? { note: optionalString(value, 'note') } : {}),
+    ...(optionalString(value, 'image_url') !== undefined ? { image_url: optionalString(value, 'image_url') } : {}),
+    ...(optionalString(value, 'category') !== undefined ? { category: optionalString(value, 'category') } : {}),
   };
 }
 
@@ -160,12 +165,17 @@ export function reduceCustomerDisplay(
     && typeof data.status === 'string'
     && typeof data.qr_code === 'string'
   ) {
+    const priorTotal = ('total' in state && typeof state.total === 'number') ? state.total : undefined;
+    const incomingTotal = optionalNumber(data, 'total');
+    const finalTotal = incomingTotal !== undefined ? incomingTotal : priorTotal;
+
     return {
       view: 'payment_qr',
       order_id: data.order_id,
       payment_slug: data.payment_slug,
       status: data.status,
       qr_code: data.qr_code,
+      ...(finalTotal !== undefined ? { total: finalTotal } : {}),
     };
   }
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from openjarvis.core.conversation import conversation_scope
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolResult
@@ -287,7 +289,7 @@ def test_display_clear_publishes_an_empty_view():
 
 
 def test_a_display_tool_without_a_bus_fails_rather_than_silently_doing_nothing():
-    result = DisplayMenuTool().execute(items=[])
+    result = DisplayMenuTool().execute(items=[{"id": "latte", "name": "Latte"}])
     assert result.success is False
     assert "display_unavailable" in result.content
 
@@ -310,10 +312,191 @@ def test_display_menu_with_a_manager_fails_before_a_session_is_active():
     tool = DisplayMenuTool()
     tool._presentation = PresentationSessionManager(EventBus(), client)
 
-    result = tool.execute(items=[])
+    result = tool.execute(items=[{"id": "latte", "name": "Latte"}])
 
     assert result.success is False
     assert "presentation_unavailable" in result.content
+
+
+def test_display_menu_rejects_an_empty_item_list_without_publishing():
+    # A model with nothing real to show (no fresh read, nothing usable left
+    # in context) must not get a false "success" it can narrate as if the
+    # menu were actually on screen.
+    tool, recorder = _wired(DisplayMenuTool)
+
+    result = tool.execute(items=[])
+
+    assert result == ToolResult(
+        tool_name="display_menu",
+        content="items_required",
+        success=False,
+    )
+    assert recorder.events == []
+
+
+def test_display_menu_schema_requires_at_least_one_item():
+    assert DisplayMenuTool().spec.parameters["properties"]["items"]["minItems"] == 1
+
+
+def test_display_menu_schema_offers_latest_http_evidence_for_complete_browsing():
+    spec = DisplayMenuTool().spec.parameters
+
+    assert spec["properties"]["all_from_latest_http"]["type"] == "boolean"
+    assert spec["required"] == []
+
+
+def test_display_menu_can_publish_every_product_from_latest_http_evidence():
+    tool, recorder = _wired(DisplayMenuTool)
+    payload = {
+        "result": {
+            "items": [
+                {
+                    "menuItems": [
+                        {
+                            "product": {
+                                "slug": "product-a",
+                                "name": "Taco gà",
+                                "isActive": True,
+                                "variants": [
+                                    {"slug": "variant-a", "price": 86_000}
+                                ],
+                            }
+                        },
+                        {
+                            "product": {
+                                "slug": "product-b",
+                                "name": "Burger gà",
+                                "isActive": False,
+                                "variants": [
+                                    {"slug": "variant-b", "price": 129_000}
+                                ],
+                            }
+                        },
+                    ]
+                }
+            ]
+        }
+    }
+
+    evidence.reset()
+    try:
+        with conversation_scope("test-display-complete-menu-evidence"):
+            evidence.record(
+                "http_request",
+                json.dumps(payload),
+                200,
+                "https://merchant.example/menu/specific/public",
+            )
+            result = tool.execute(all_from_latest_http=True)
+    finally:
+        evidence.reset()
+
+    assert result.success is True
+    assert recorder.events[0].data == {
+        "view": "menu",
+        "items": [
+            {
+                "id": "variant-a",
+                "name": "Taco gà",
+                "price": 86_000,
+                "available": True,
+            },
+            {
+                "id": "variant-b",
+                "name": "Burger gà",
+                "price": 129_000,
+                "available": False,
+            },
+        ],
+    }
+
+
+def test_display_menu_keeps_explicit_filtered_items_over_full_http_evidence():
+    tool, recorder = _wired(DisplayMenuTool)
+
+    evidence.reset()
+    try:
+        with conversation_scope("test-display-filter-wins"):
+            evidence.record(
+                "http_request",
+                json.dumps(
+                    {
+                        "result": {
+                            "items": [
+                                {
+                                    "menuItems": [
+                                        {
+                                            "product": {
+                                                "name": "Taco gà",
+                                                "variants": [
+                                                    {
+                                                        "slug": "variant-a",
+                                                        "price": 86_000,
+                                                    }
+                                                ],
+                                            }
+                                        },
+                                        {
+                                            "product": {
+                                                "name": "Mì Ý tôm",
+                                                "variants": [
+                                                    {
+                                                        "slug": "variant-b",
+                                                        "price": 172_000,
+                                                    }
+                                                ],
+                                            }
+                                        },
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ),
+                200,
+                "https://merchant.example/menu/specific/public",
+            )
+            result = tool.execute(
+                items=[{"id": "variant-a", "name": "Taco gà", "price": 86_000}],
+                all_from_latest_http=True,
+            )
+    finally:
+        evidence.reset()
+
+    assert result.success is True
+    assert recorder.events[0].data["items"] == [
+        {"id": "variant-a", "name": "Taco gà", "price": 86_000}
+    ]
+
+
+def test_display_menu_rejects_latest_http_mode_without_menu_evidence():
+    tool, recorder = _wired(DisplayMenuTool)
+
+    evidence.reset()
+    try:
+        with conversation_scope("test-display-missing-menu-evidence"):
+            result = tool.execute(all_from_latest_http=True)
+    finally:
+        evidence.reset()
+
+    assert result == ToolResult(
+        tool_name="display_menu",
+        content="menu_evidence_missing",
+        success=False,
+    )
+    assert recorder.events == []
+
+
+def test_display_menu_rejects_items_that_carry_no_recognized_field():
+    # Rows that survive field-picking down to nothing are the same failure
+    # as an empty list -- there is still nothing displayable.
+    tool, recorder = _wired(DisplayMenuTool)
+
+    result = tool.execute(items=[{"onclick": "alert(1)"}, {}])
+
+    assert result.success is False
+    assert result.content == "items_required"
+    assert recorder.events == []
 
 
 def test_display_update_is_forwarded_to_websocket_clients():

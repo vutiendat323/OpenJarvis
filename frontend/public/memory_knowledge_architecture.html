@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenJarvis-v2: Kiến Trúc 4 Cấp Độ Bộ Nhớ & Tri Thức</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --card-border: #30363d;
+      --text: #c9d1d9;
+      --text-bright: #f0f6fc;
+      --accent-blue: #58a6ff;
+      --accent-green: #3fb950;
+      --accent-purple: #bc8cff;
+      --accent-orange: #d29922;
+      --code-bg: #1f242c;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 40px;
+    }
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    header {
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 24px;
+      margin-bottom: 32px;
+    }
+    h1 {
+      font-size: 2.4rem;
+      color: var(--text-bright);
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 5px 14px;
+      border-radius: 12px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      background: #238636;
+      color: white;
+    }
+    .subtitle {
+      color: #8b949e;
+      font-size: 1.15rem;
+      margin-top: 10px;
+    }
+    .diagram-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 28px;
+      margin-bottom: 36px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.4);
+    }
+    .diagram-title {
+      font-size: 1.35rem;
+      color: var(--accent-blue);
+      font-weight: 700;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .mermaid {
+      background: #11151c;
+      border-radius: 10px;
+      padding: 24px;
+      border: 1px solid #21262d;
+      overflow-x: auto;
+    }
+    .tiers-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
+      margin-bottom: 36px;
+    }
+    @media (max-width: 1100px) {
+      .tiers-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 600px) {
+      .tiers-grid { grid-template-columns: 1fr; }
+    }
+    .tier-box {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 22px;
+      position: relative;
+      overflow: hidden;
+    }
+    .tier-box::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 5px;
+    }
+    .tier-1::before { background: var(--accent-purple); }
+    .tier-2::before { background: var(--accent-blue); }
+    .tier-3::before { background: var(--accent-green); }
+    .tier-4::before { background: var(--accent-orange); }
+
+    .tier-num {
+      font-size: 0.8rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      margin-bottom: 6px;
+    }
+    .tier-1 .tier-num { color: var(--accent-purple); }
+    .tier-2 .tier-num { color: var(--accent-blue); }
+    .tier-3 .tier-num { color: var(--accent-green); }
+    .tier-4 .tier-num { color: var(--accent-orange); }
+
+    .tier-name {
+      font-size: 1.2rem;
+      color: var(--text-bright);
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .tier-desc {
+      font-size: 0.92rem;
+      color: #8b949e;
+      margin-bottom: 16px;
+      line-height: 1.5;
+    }
+    .tier-paths {
+      list-style: none;
+      font-size: 0.88rem;
+    }
+    .tier-paths li {
+      margin-bottom: 8px;
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+    code {
+      background: var(--code-bg);
+      color: #ff7b72;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.85rem;
+    }
+    .flow-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 28px;
+      margin-bottom: 36px;
+    }
+    .flow-card h3 {
+      color: var(--text-bright);
+      margin-bottom: 18px;
+      font-size: 1.3rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>
+        <span>Kiến Trúc Bộ Nhớ & Tri Thức (Memory & Knowledge)</span>
+        <span class="badge">OpenJarvis-v2 Architecture</span>
+      </h1>
+      <p class="subtitle">Mô hình phân tầng 4 cấp độ: Persona tĩnh, Facts tự động, Structured Data Plane và Working Evidence</p>
+    </header>
+
+    <!-- SƠ ĐỒ CHÍNH DẠNG FLOWCHART TOP-DOWN RÕ NÉT -->
+    <div class="diagram-card">
+      <div class="diagram-title">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+        <span>Sơ Đồ Phân Tầng 4 Cấp Độ Bộ Nhớ & Luồng Tri Thức</span>
+      </div>
+      <div class="mermaid">
+flowchart TD
+    %% TẦNG 1: PERSONA
+    subgraph T1 ["CẤP 1: PERSONA & KÝ ỨC ĐỊNH DANH (Markdown Files tĩnh)"]
+        SOUL["SOUL.md — Bản sắc, phong cách Agent (Max 4000 ký tự)"]
+        MEM["MEMORY.md — Quy tắc cứng, chỉ dẫn bất biến (Max 2500 ký tự)"]
+        USER["USER.md — Hồ sơ, thói quen & sở thích người dùng (Max 1500 ký tự)"]
+    end
+
+    %% TẦNG 2: MEMORY SERVICE
+    subgraph T2 ["CẤP 2: LONG-TERM MEMORY SERVICE (Fact Extraction tự động ngầm)"]
+        Worker["Memory Worker Daemon (Thread ngầm không chặn luồng chat)"]
+        FactStore["LocalFactStore (~/.openjarvis/memory_facts.jsonl — Max 1000 facts)"]
+        DocDB["Document & Vector Store (~/.openjarvis/memory.db)"]
+        ContextInj["Context Injection (inject_context: top-5 facts/docs, max 2048 tokens)"]
+    end
+
+    %% TẦNG TRUNG TÂM: PROMPT & ORCHESTRATOR
+    subgraph Core ["BỘ LẮP RÁP PROMPT & SUY LUẬN TRUNG TÂM"]
+        Builder["SystemPromptBuilder (Frozen Prefix tối ưu KV Cache + Dynamic Suffix)"]
+        Orchestrator["Orchestrator Agent (LLM Function Calling & Decision Making)"]
+    end
+
+    %% TẦNG 3: DATA PLANE
+    subgraph T3 ["CẤP 3: STRUCTURED DATA PLANE (Tri thức Nghiệp vụ & API Snapshots)"]
+        SyncCron["Catalog Sync Job (TrendCoffeeAdapter / Cron Task)"]
+        SnapStore["StructuredSnapshotStore (~/.openjarvis/structured.db)"]
+        MerchPort["MerchantPort (Catalog, Biến thể & Kiểm soát độ tươi 3600s)"]
+    end
+
+    %% TẦNG 4: EVIDENCE & TRACES
+    subgraph T4 ["CẤP 4: WORKING EVIDENCE & TRACES (Bằng chứng Giao dịch & Học hỏi)"]
+        Evidence["ToolEvidence (In-memory per Conversation Scope — HTTP Status, URL, Body)"]
+        Claim["MutationClaim Ledger (Fingerprint SHA-256 chống đặt trùng đơn hàng)"]
+        TraceDB["TraceStore (~/.openjarvis/traces.db 5.3 MB — Lưu vết toàn bộ lượt chạy)"]
+        Learning["Turn Learning Orchestrator (Tự động đóng gói giao dịch thành Skill)"]
+    end
+
+    %% CÁC LIÊN KẾT LUỒNG DỮ LIỆU
+    T1 -->|Ghép vào Frozen Prefix| Builder
+    Worker -->|Trích xuất Fact| FactStore
+    FactStore --> ContextInj
+    DocDB --> ContextInj
+    ContextInj -->|Inject Context| Builder
+
+    Builder --> Orchestrator
+
+    SyncCron --> SnapStore
+    SnapStore --> MerchPort
+    MerchPort -->|Cung cấp Menu & Branch đã xác thực| Orchestrator
+
+    Orchestrator -->|Gửi HTTP Tool Call| Evidence
+    Evidence --> Claim
+    Evidence -->|Xác thực nguồn gốc Trusted Origin| Orchestrator
+    Orchestrator -->|Phát hành TRACE_COMPLETE| TraceDB
+    TraceDB --> Learning
+      </div>
+    </div>
+
+    <!-- 4 TIER DETAILS -->
+    <div class="tiers-grid">
+      <div class="tier-box tier-1">
+        <div class="tier-num">Cấp 1 &bull; Persona & Identity</div>
+        <div class="tier-name">Ký Ức Tĩnh Định Danh</div>
+        <p class="tier-desc">Định hình phong thái, giọng văn và các nguyên tắc cứng. Nằm ở <b>Frozen Prefix</b> để tối ưu KV cache của mô hình.</p>
+        <ul class="tier-paths">
+          <li><span>📂</span> <code>~/.openjarvis/SOUL.md</code></li>
+          <li><span>📂</span> <code>~/.openjarvis/MEMORY.md</code></li>
+          <li><span>📂</span> <code>~/.openjarvis/USER.md</code></li>
+          <li><span>⚙️</span> <code>SystemPromptBuilder</code></li>
+        </ul>
+      </div>
+
+      <div class="tier-box tier-2">
+        <div class="tier-num">Cấp 2 &bull; Long-Term Memory</div>
+        <div class="tier-name">Fact Extraction Tự Động</div>
+        <p class="tier-desc">Dịch vụ ngầm tự động trích xuất các sự thật lâu bền từ tin nhắn khách hàng mà không làm chậm độ trễ hội thoại.</p>
+        <ul class="tier-paths">
+          <li><span>📂</span> <code>~/.openjarvis/memory_facts.jsonl</code></li>
+          <li><span>📂</span> <code>~/.openjarvis/memory.db</code></li>
+          <li><span>⚙️</span> <code>MemoryService &amp; Extractor</code></li>
+          <li><span>🎯</span> <code>inject_context()</code> (Top-5)</li>
+        </ul>
+      </div>
+
+      <div class="tier-box tier-3">
+        <div class="tier-num">Cấp 3 &bull; Data Plane</div>
+        <div class="tier-name">Tri Thức Nghiệp Vụ &amp; API</div>
+        <p class="tier-desc">Lưu trữ snapshot dữ liệu sản phẩm, biến thể, giá cả và chi nhánh có kiểm tra độ tươi (max age 3600s).</p>
+        <ul class="tier-paths">
+          <li><span>📂</span> <code>~/.openjarvis/structured.db</code></li>
+          <li><span>⚙️</span> <code>StructuredSnapshotStore</code></li>
+          <li><span>⚙️</span> <code>TrendCoffeeAdapter</code></li>
+          <li><span>🎯</span> <code>MerchantPort</code></li>
+        </ul>
+      </div>
+
+      <div class="tier-box tier-4">
+        <div class="tier-num">Cấp 4 &bull; Evidence &amp; Traces</div>
+        <div class="tier-name">Bằng Chứng &amp; Học Hỏi</div>
+        <p class="tier-desc">Lưu chứng từ HTTP để kiểm tra an toàn hiển thị VietQR, chống gửi trùng đơn, và lưu vết episodic để tự sinh Skill.</p>
+        <ul class="tier-paths">
+          <li><span>🧠</span> <code>ToolEvidence</code> (RAM per Scope)</li>
+          <li><span>🔒</span> <code>MutationClaim</code> (SHA-256)</li>
+          <li><span>📂</span> <code>~/.openjarvis/traces.db</code> (5.3MB)</li>
+          <li><span>🚀</span> <code>LearningOrchestrator</code></li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- CHI TIẾT LUỒNG TRÍ NHỚ ĐỘNG (SEQUENCE) -->
+    <div class="flow-card">
+      <h3>Quy Trình Trích Xuất &amp; Tái Sử Dụng Trí Nhớ Dài Hạn (Fact Extraction &amp; Context Injection)</h3>
+      <div class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as Khách Hàng (User)
+    participant Server as FastAPI / v1/chat/completions
+    participant Agent as Orchestrator Agent
+    participant MemQueue as Memory Queue (max 256)
+    participant Worker as Background Fact Extractor
+    participant Store as LocalFactStore (JSONL)
+    participant Context as Context Injection
+
+    User->>Server: "Cho mình 1 ly cà phê sữa ít đường nhé"
+    Server->>Context: Tra cứu Facts & Memory liên quan
+    Context-->>Server: [Fact: "Khách thích uống ít đường"]
+    Server->>Agent: Prompt kèm Context đã inject
+    Agent->>User: "Dạ vâng, 1 cà phê sữa ít đường của bạn đây ạ!"
+    Server->>MemQueue: submit(user_msg, bot_msg) (Non-blocking)
+    Note over MemQueue,Worker: Xử lý ngầm Out-of-Band (Không lag lượt chat)
+    Worker->>MemQueue: Lấy cặp hội thoại
+    Worker->>Worker: LLM phân tích trích xuất Fact
+    Worker->>Store: Atomic append: {"text": "Khách thích ít đường"}
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      themeVariables: {
+        darkMode: true,
+        background: '#11151c',
+        primaryColor: '#1f6feb',
+        primaryTextColor: '#f0f6fc',
+        primaryBorderColor: '#388bfd',
+        lineColor: '#58a6ff',
+        secondaryColor: '#238636',
+        tertiaryColor: '#161b22'
+      }
+    });
+  </script>
+</body>
+</html>

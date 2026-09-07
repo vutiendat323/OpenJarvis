@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import MagicMock
 
 from openjarvis.agents._stubs import (
@@ -143,6 +144,15 @@ class TestEmitTurnEnd:
 
 
 class TestBuildMessages:
+    def test_system_context_contains_current_local_date(self):
+        engine = MagicMock()
+        agent = _ConcreteAgent(engine, "m")
+
+        messages = agent._build_messages("hello", system_prompt="Be helpful.")
+
+        today = datetime.now().astimezone().date().isoformat()
+        assert f"Current local date: {today}" in messages[0].content
+
     def test_default_system_prompt_injected(self):
         engine = MagicMock()
         agent = _ConcreteAgent(engine, "m")
@@ -159,10 +169,10 @@ class TestBuildMessages:
         messages = agent._build_messages("hello", system_prompt="Be helpful.")
         assert len(messages) == 2
         assert messages[0].role == Role.SYSTEM
-        assert messages[0].content == "Be helpful."
+        assert messages[0].content.startswith("Be helpful.\n\nCurrent local date:")
         assert messages[1].role == Role.USER
 
-    def test_empty_config_default_no_system_message(self, monkeypatch):
+    def test_empty_config_still_injects_date_system_message(self, monkeypatch):
         from openjarvis.core.config import JarvisConfig
 
         empty_cfg = JarvisConfig()
@@ -172,8 +182,10 @@ class TestBuildMessages:
         engine = MagicMock()
         agent = _ConcreteAgent(engine, "m")
         messages = agent._build_messages("hello")
-        assert len(messages) == 1
-        assert messages[0].role == Role.USER
+        assert len(messages) == 2
+        assert messages[0].role == Role.SYSTEM
+        assert messages[0].content.startswith("Current local date:")
+        assert messages[1].role == Role.USER
 
     def test_with_context(self):
         engine = MagicMock()
@@ -201,7 +213,7 @@ class TestBuildMessages:
         )
         assert len(messages) == 3
         assert messages[0].role == Role.SYSTEM
-        assert messages[0].content == "System."
+        assert messages[0].content.startswith("System.\n\nCurrent local date:")
         assert messages[1].content == "prev"
         assert messages[2].content == "new"
 

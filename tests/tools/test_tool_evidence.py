@@ -165,6 +165,48 @@ def test_last_result_returns_the_most_recent_matching_body():
         assert evidence.last_result("nothing_called_this") == ""
 
 
+def test_model_context_is_bounded_without_changing_raw_evidence():
+    executor = ToolExecutor([_Echo()])
+    large_body = json.dumps(
+        {
+            "products": [
+                {
+                    "id": f"item-{index:03d}",
+                    "description": "x" * 500,
+                }
+                for index in range(100)
+            ]
+        }
+    )
+
+    with conversation_scope("a"):
+        executor.execute(_call(body=large_body, url="https://example.test/products"))
+        executor.execute(
+            _call(
+                body='{"orderId":"ord-compact-7"}',
+                status=201,
+                url="https://example.test/orders",
+            )
+        )
+
+        context = evidence.model_context(max_chars=2_000)
+
+        assert len(context) <= 2_000
+        assert "ord-compact-7" in context
+        assert evidence.last_result("http_request") == '{"orderId":"ord-compact-7"}'
+
+
+def test_model_context_is_isolated_and_requires_a_framework_scope():
+    with conversation_scope("a"):
+        evidence.record("http_request", '{"orderId":"ord-a"}', 201, "https://a.test")
+        assert "ord-a" in evidence.model_context()
+
+    with conversation_scope("b"):
+        assert evidence.model_context() == ""
+
+    assert evidence.model_context() == ""
+
+
 def test_evidence_is_bounded_by_total_bytes(monkeypatch):
     monkeypatch.setattr(evidence, "_MAX_BYTES", 10)
     executor = ToolExecutor([_Echo()])
@@ -243,3 +285,171 @@ def test_a_redirect_to_an_untrusted_host_is_not_trusted():
         assert not evidence.observed_in_tool_output(
             "QR_FORGED", require_ok=True, trusted_origins=origins
         )
+
+
+# ---------------------------------------------------------------------------
+# Exact mutation deduplication
+# ---------------------------------------------------------------------------
+
+
+def test_an_identical_mutation_is_claimed_once():
+    """The second identical POST must never reach the network."""
+    with conversation_scope("dedupe-1"):
+        first = evidence.claim_mutation(
+            "POST", "https://shop.example/orders", {"drink": "latte", "qty": 1}
+        )
+        evidence.finish_mutation(first, "response_seen")
+        second = evidence.claim_mutation(
+            "POST", "https://shop.example/orders", {"drink": "latte", "qty": 1}
+        )
+
+    assert first.allowed is True
+    assert second.allowed is False
+    assert second.prior_outcome == "response_seen"
+
+
+def test_equivalent_json_bodies_are_one_fingerprint():
+    """Key order and whitespace are not a customer's second order."""
+    with conversation_scope("dedupe-2"):
+        first = evidence.claim_mutation(
+            "POST", "https://shop.example/orders", {"a": 1, "b": [1, 2]}
+        )
+        evidence.finish_mutation(first, "response_seen")
+        second = evidence.claim_mutation(
+            "post", "https://shop.example/orders", {"b": [1, 2], "a": 1}
+        )
+
+    assert second.allowed is False
+
+
+def test_a_different_quantity_is_a_different_mutation():
+    with conversation_scope("dedupe-3"):
+        first = evidence.claim_mutation(
+            "POST", "https://shop.example/orders", {"drink": "latte", "qty": 1}
+        )
+        evidence.finish_mutation(first, "response_seen")
+        second = evidence.claim_mutation(
+            "POST", "https://shop.example/orders", {"drink": "latte", "qty": 2}
+        )
+
+    assert second.allowed is True
+
+
+def test_two_conversations_do_not_collide():
+    """One customer's order must not silence another's identical one."""
+    with conversation_scope("dedupe-a"):
+        first = evidence.claim_mutation("POST", "https://shop.example/o", {"x": 1})
+        evidence.finish_mutation(first, "response_seen")
+    with conversation_scope("dedupe-b"):
+        other = evidence.claim_mutation("POST", "https://shop.example/o", {"x": 1})
+
+    assert first.allowed is True
+    assert other.allowed is True
+
+
+def test_a_request_proven_not_sent_can_be_retried():
+    with conversation_scope("dedupe-4"):
+        first = evidence.claim_mutation("POST", "https://shop.example/o", {"x": 1})
+        evidence.finish_mutation(first, "not_sent")
+        retry = evidence.claim_mutation("POST", "https://shop.example/o", {"x": 1})
+
+    assert retry.allowed is True
+
+
+def test_an_ambiguous_request_is_never_retried():
+    """A timeout after a mutation does not prove the mutation did not happen."""
+    with conversation_scope("dedupe-5"):
+        first = evidence.claim_mutation("POST", "https://shop.example/o", {"x": 1})
+        evidence.finish_mutation(first, "ambiguous")
+        retry = evidence.claim_mutation("POST", "https://shop.example/o", {"x": 1})
+
+    assert retry.allowed is False
+    assert retry.prior_outcome == "ambiguous"
+
+
+def test_an_unfinished_claim_blocks_a_second_one():
+    with conversation_scope("dedupe-6"):
+        first = evidence.claim_mutation("POST", "https://shop.example/o", {"x": 1})
+        second = evidence.claim_mutation("POST", "https://shop.example/o", {"x": 1})
+
+    assert first.allowed is True
+    assert second.allowed is False
+    assert second.prior_outcome == "in_flight"
+
+
+def test_the_claim_interface_does_not_accept_headers():
+    """Retaining expanded headers process-wide is how secrets leaked before."""
+    import inspect
+
+    parameters = inspect.signature(evidence.claim_mutation).parameters
+
+    assert "headers" not in parameters
+    assert set(parameters) == {"method", "url", "body"}
+
+
+def test_a_claim_retains_no_raw_body():
+    """Only a digest may survive; the order body itself must not be stored."""
+    with conversation_scope("dedupe-7"):
+        claim = evidence.claim_mutation(
+            "POST", "https://shop.example/o", {"secret_note": "cardholder-name"}
+        )
+        evidence.finish_mutation(claim, "response_seen")
+        stored = repr(evidence._MUTATIONS)
+
+    assert "cardholder-name" not in stored
+    assert len(claim.fingerprint) == 64
+
+
+def test_concurrent_identical_claims_admit_exactly_one():
+    """Two threads racing the same order must produce one network dispatch."""
+    import contextvars
+    import threading
+
+    barrier = threading.Barrier(2)
+    results: list = []
+    results_lock = threading.Lock()
+
+    def attempt() -> None:
+        barrier.wait(timeout=5)
+        claim = evidence.claim_mutation("POST", "https://shop.example/o", {"x": 1})
+        with results_lock:
+            results.append(claim)
+
+    with conversation_scope("dedupe-race"):
+        # One Context cannot be entered by two threads at once, so each thread
+        # gets its own copy of this conversation's scope.
+        threads = [
+            threading.Thread(target=contextvars.copy_context().run, args=(attempt,))
+            for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+    assert len(results) == 2
+    assert sum(1 for claim in results if claim.allowed) == 1
+
+
+def test_fingerprints_are_bounded_per_conversation():
+    """A long conversation must not accumulate claims forever."""
+    with conversation_scope("dedupe-bound"):
+        for index in range(evidence._MAX_MUTATIONS + 5):
+            claim = evidence.claim_mutation(
+                "POST", "https://shop.example/o", {"n": index}
+            )
+            evidence.finish_mutation(claim, "response_seen")
+        held = len(evidence._MUTATIONS["dedupe-bound"])
+
+    assert held == evidence._MAX_MUTATIONS
+
+
+def test_a_scopeless_claim_is_always_granted():
+    """No conversation means no cross-turn replay to prevent."""
+    first = evidence.claim_mutation("POST", "https://shop.example/o", {"x": 1})
+    evidence.finish_mutation(first, "response_seen")
+    second = evidence.claim_mutation("POST", "https://shop.example/o", {"x": 1})
+
+    assert first.allowed is True
+    assert second.allowed is True
+    assert "" not in evidence._MUTATIONS

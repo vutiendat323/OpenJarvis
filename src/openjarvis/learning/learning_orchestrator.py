@@ -9,11 +9,17 @@ gates acceptance on an evaluation function.
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 
 logger = logging.getLogger(__name__)
+
+# How long the worker waits for a trace before re-checking the stop flag.
+# It bounds close() beyond the caller's own join timeout.
+_DRAIN_POLL_SECONDS = 0.05
 
 
 class LearningOrchestrator:
@@ -53,6 +59,10 @@ class LearningOrchestrator:
         min_quality: float = 0.7,
         lora_config: Optional[Any] = None,
         model_name: Optional[str] = None,
+        bus: Any = None,
+        skill_manage_tool: Any = None,
+        skill_manager: Any = None,
+        queue_maxsize: int = 64,
     ) -> None:
         from openjarvis.learning.agents.agent_evolver import AgentConfigEvolver
         from openjarvis.learning.training.data import TrainingDataMiner
@@ -67,6 +77,93 @@ class LearningOrchestrator:
 
         self._miner = TrainingDataMiner(trace_store, min_quality=min_quality)
         self._evolver = AgentConfigEvolver(trace_store, config_dir=self._config_dir)
+
+        self._skill_manage_tool = skill_manage_tool
+        self._skill_manager = skill_manager
+        self._bus = bus
+        self._queue: Optional[queue.Queue] = None
+        self._worker: Optional[threading.Thread] = None
+        self._stopping = threading.Event()
+        if bus is not None and skill_manage_tool is not None:
+            from openjarvis.core.events import EventType
+
+            self._queue = queue.Queue(maxsize=queue_maxsize)
+            bus.subscribe(EventType.TRACE_COMPLETE, self._on_trace_complete)
+            self._worker = threading.Thread(
+                target=self._drain_traces,
+                name="openjarvis-turn-learning",
+                daemon=True,
+            )
+            self._worker.start()
+
+    # ------------------------------------------------------------------
+    # turn learning — one completed trace becomes one runnable skill
+    # ------------------------------------------------------------------
+
+    def _on_trace_complete(self, event: Any) -> None:
+        """Hand the trace to the worker. Never block the request path."""
+        trace = getattr(event, "data", {}).get("trace")
+        if trace is None or self._queue is None:
+            return
+        try:
+            self._queue.put_nowait(trace)
+        except queue.Full:
+            logger.warning("Turn-learning queue full; dropping completed trace")
+
+    def _drain_traces(self) -> None:
+        while True:
+            try:
+                trace = self._queue.get(timeout=_DRAIN_POLL_SECONDS)
+            except queue.Empty:
+                if self._stopping.is_set():
+                    return
+                continue
+            try:
+                self._learn_one(trace)
+            except Exception:
+                logger.warning("Turn learning failed for a trace", exc_info=True)
+            finally:
+                self._queue.task_done()
+
+    def _learn_one(self, trace: Any) -> None:
+        from openjarvis.learning.agents.skill_discovery import SkillDiscovery
+
+        manifest = SkillDiscovery().parameterize_trace(trace)
+        if manifest is None:
+            return
+        if self._skill_manager is not None and manifest.name in (
+            self._skill_manager.skill_names()
+        ):
+            return  # the deterministic name means this intent is already learned
+        self._skill_manage_tool.execute(
+            action="create",
+            name=manifest.name,
+            description=manifest.description,
+            steps=[
+                {
+                    "tool_name": step.tool_name,
+                    "arguments_template": step.arguments_template,
+                    "output_key": step.output_key,
+                }
+                for step in manifest.steps
+            ],
+            intent=manifest.metadata.get("intent", ""),
+            requires_fresh_confirmation=manifest.metadata.get(
+                "requires_fresh_confirmation", True
+            ),
+        )
+
+    def close(self, timeout: float = 5.0) -> None:
+        """Drain what is already queued, then stop the worker. Idempotent."""
+        self._stopping.set()
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.join(timeout)
+        if self._bus is not None:
+            from openjarvis.core.events import EventType
+
+            self._bus.unsubscribe(EventType.TRACE_COMPLETE, self._on_trace_complete)
+            self._bus = None
 
     # ------------------------------------------------------------------
     # public API
@@ -235,13 +332,18 @@ class LearningOrchestrator:
         if not auto_optimize:
             return None
         try:
-            from openjarvis.core.events import EventBus
-            from openjarvis.learning.agents.skill_optimizer import SkillOptimizer
-            from openjarvis.skills.manager import SkillManager
+            from openjarvis.learning.agents import skill_optimizer as optimizer_module
 
-            mgr = SkillManager(bus=EventBus())
-            mgr.discover()
-            opt = SkillOptimizer(
+            # Optimizing a private empty manager would tune skills nobody
+            # serves; reuse the live one whenever composition injected it.
+            mgr = self._skill_manager
+            if mgr is None:
+                from openjarvis.core.events import EventBus
+                from openjarvis.skills.manager import SkillManager
+
+                mgr = SkillManager(bus=EventBus())
+                mgr.discover()
+            opt = optimizer_module.SkillOptimizer(
                 min_traces_per_skill=min_traces_per_skill,
                 optimizer=optimizer,
             )

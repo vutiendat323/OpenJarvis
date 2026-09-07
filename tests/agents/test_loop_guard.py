@@ -82,6 +82,34 @@ class TestLoopGuard:
         ]
         assert len(events) == 1
 
+    def test_failed_source_sync_is_not_retried_for_the_same_source_this_turn(self):
+        guard, _ = self._make_guard()
+        arguments = '{"source_id": "trend-coffee", "resources": ["menu_item"]}'
+        guard.note_result("source_sync", arguments, success=False)
+
+        verdict = guard.check_call(
+            "source_sync",
+            '{"source_id": "trend-coffee", "resources": ["branch"]}',
+        )
+
+        assert verdict.blocked
+        assert "already failed" in verdict.reason
+
+    def test_source_sync_for_a_different_source_can_recover(self):
+        guard, _ = self._make_guard()
+        guard.note_result(
+            "source_sync",
+            '{"source_id": "trendcoffee.net", "resources": ["menu_item"]}',
+            success=False,
+        )
+
+        verdict = guard.check_call(
+            "source_sync",
+            '{"source_id": "trend-coffee", "resources": ["menu_item"]}',
+        )
+
+        assert not verdict.blocked
+
     def test_reset(self):
         guard, _ = self._make_guard(max_identical_calls=2)
         guard.check_call("x", '{"a": 1}')

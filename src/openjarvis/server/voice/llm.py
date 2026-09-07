@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from typing import Any, Literal
 
 from pipecat.frames.frames import (
     Frame,
+    InterruptionFrame,
     LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
@@ -29,6 +31,29 @@ from openjarvis.server.voice.runtime import VOICE_SYSTEM_PROMPT
 from openjarvis.server.voice.text import normalize_speech_text
 
 logger = logging.getLogger("openjarvis.server.voice")
+
+
+class VoiceTurnState:
+    """Session-local generation identity used to fence interrupted turns."""
+
+    def __init__(self) -> None:
+        self._active_turn_id: int | None = None
+        self.turn_id = 0
+
+    @property
+    def active_turn_id(self) -> int | None:
+        return self._active_turn_id
+
+    def begin_turn(self) -> int:
+        self.turn_id += 1
+        self._active_turn_id = self.turn_id
+        return self.turn_id
+
+    def interrupt(self) -> None:
+        self._active_turn_id = None
+
+    def is_active(self, turn_id: int) -> bool:
+        return self._active_turn_id == turn_id
 
 
 def message_text(message: Any) -> str:
@@ -160,9 +185,9 @@ def voice_activity_frame(
 class OpenJarvisLLMService(LLMService):
     """Answer through the native Agent, which owns tools, memory, and policy.
 
-    Every delta is pushed the moment it arrives. Collecting them first would
-    keep TTS silent until generation ended, which is the latency defect this
-    runtime exists to remove.
+    The first round streams immediately so TTS can acknowledge the turn early.
+    After a tool starts, later rounds are buffered until they prove final; this
+    keeps tool-loop drafts from being spoken as repeated answers.
     """
 
     def __init__(
@@ -170,6 +195,7 @@ class OpenJarvisLLMService(LLMService):
         binding: Any,
         *,
         recall: tuple[Any, Any] | None = None,
+        turn_state: VoiceTurnState | None = None,
         **kwargs: Any,
     ) -> None:
         # None, not unset: every field left NOT_GIVEN makes pipecat log an
@@ -194,27 +220,70 @@ class OpenJarvisLLMService(LLMService):
         super().__init__(**kwargs)
         self._binding = binding
         self._recall = recall
+        self._turn_state = turn_state or VoiceTurnState()
 
     async def stream_agent(
-        self, prompt: str, context: AgentContext
+        self,
+        prompt: str,
+        context: AgentContext,
+        *,
+        turn_id: int | None = None,
     ) -> AsyncGenerator[Frame, None]:
-        """Yield the Agent's visible text as Pipecat frames, unbuffered.
+        """Yield the first round immediately and only the final later round.
 
         Each delta is projected into speech text before it leaves: the Agent
         answers the screen (markdown, bullet lists, emoji), and the VieNeu
         voice would read the syntax out loud. The projector holds back
         incomplete markdown so a partial ``**bo`` never reaches TTS, and
-        flushes the remainder at the end of the response.
+        flushes the remainder at a tool boundary or the end of the response.
         """
         projector = _SpeechProjector()
+        tool_round_started = False
+        later_round: list[str] = []
+        if turn_id is None:
+            turn_id = self._turn_state.begin_turn()
         yield voice_activity_frame("inference", model=self._binding.model)
-        async for event in self._binding.run_stream(prompt, context):
-            if isinstance(event, AgentToolStarted):
-                yield voice_activity_frame("tool", tool_name=event.tool_name)
-            elif isinstance(event, AgentToolFinished):
-                yield voice_activity_frame("inference", model=self._binding.model)
-            if isinstance(event, AgentTextDelta):
-                speech = projector.push(event.content)
+        stream = self._binding.run_stream(prompt, context)
+        step: asyncio.Task | None = None
+        try:
+            while True:
+                step = asyncio.ensure_future(anext(stream))
+                try:
+                    event = await step
+                except StopAsyncIteration:
+                    step = None
+                    break
+                if not self._turn_state.is_active(turn_id):
+                    return
+
+                if isinstance(event, AgentToolStarted):
+                    if tool_round_started:
+                        # This buffered narration belongs to another intermediate
+                        # tool round. The customer already heard the first round;
+                        # speaking every draft is what repeated the same order.
+                        later_round.clear()
+                    else:
+                        speech = projector.finish()
+                        if speech:
+                            yield LLMTextFrame(f"{speech} ")
+                        tool_round_started = True
+                    yield voice_activity_frame("tool", tool_name=event.tool_name)
+                elif isinstance(event, AgentToolFinished):
+                    yield voice_activity_frame("inference", model=self._binding.model)
+                if isinstance(event, AgentTextDelta):
+                    if tool_round_started:
+                        later_round.append(event.content)
+                    else:
+                        speech = projector.push(event.content)
+                        if speech:
+                            yield LLMTextFrame(speech)
+        finally:
+            if step is not None:
+                step.cancel()
+        if tool_round_started:
+            projector = _SpeechProjector()
+            for content in later_round:
+                speech = projector.push(content)
                 if speech:
                     yield LLMTextFrame(speech)
         speech = projector.finish()
@@ -223,6 +292,11 @@ class OpenJarvisLLMService(LLMService):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         """Answer an aggregated context, or pass the frame along."""
+        if isinstance(frame, InterruptionFrame):
+            # Invalidate the generation before Pipecat cancels the process task.
+            # Any custom iterator cleanup that races with cancellation can then
+            # no longer emit frames for the interrupted turn.
+            self._turn_state.interrupt()
         # First: the base class routes InterruptionFrame to
         # _handle_interruptions, which cancels in-flight tool calls. Skipping
         # it would lose barge-in while the Agent is inside a tool.
@@ -235,19 +309,27 @@ class OpenJarvisLLMService(LLMService):
         prompt, context = agent_input(frame.context, self._recall)
         if not prompt:
             return
+        turn_id = self._turn_state.begin_turn()
 
+        completed = False
         try:
             await self.push_frame(voice_activity_frame("processing"))
             await self.push_frame(LLMFullResponseStartFrame())
             await self.start_processing_metrics()
-            async for pushed in self.stream_agent(prompt, context):
+            async for pushed in self.stream_agent(prompt, context, turn_id=turn_id):
+                if not self._turn_state.is_active(turn_id):
+                    break
                 await self.push_frame(pushed)
+            completed = self._turn_state.is_active(turn_id)
         except Exception as error:  # noqa: BLE001 - surfaced as a pipeline error frame
+            self._turn_state.interrupt()
             await self.push_error(
                 error_msg=f"Error during completion: {error}", exception=error
             )
+            # This response did not complete, so reset downstream aggregation
+            # instead of flushing its partial text as a successful reply.
+            await self.push_frame(InterruptionFrame())
         finally:
             await self.stop_processing_metrics()
-            # In a finally, so an interruption that cancels generation still
-            # closes the response and does not strand the aggregator.
+        if completed:
             await self.push_frame(LLMFullResponseEndFrame())

@@ -19,11 +19,13 @@ from openjarvis.agents.monitor_operative import MonitorOperativeAgent
 from openjarvis.agents.operative import OperativeAgent
 from openjarvis.agents.orchestrator import OrchestratorAgent
 from openjarvis.agents.runtime import NativeAgentRuntime
+from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import Message, Role, ToolResult
 from openjarvis.engine._stubs import StreamChunk
 from openjarvis.sessions.session import SessionStore
 from openjarvis.tools._stubs import BaseTool, ToolSpec
 from openjarvis.tools.storage._stubs import RetrievalResult
+from openjarvis.traces.store import TraceStore
 
 
 class GeneratingAgent(BaseAgent):
@@ -59,6 +61,29 @@ async def test_binding_pins_model_without_mutating_agent() -> None:
     assert agent._model == "server-default"
     assert binding.snapshot.agent_id == "test-agent"
     assert binding.snapshot.model == "voice-pinned"
+
+
+@pytest.mark.asyncio
+async def test_runtime_stream_records_a_completed_trace_in_the_injected_store(
+    tmp_path,
+) -> None:
+    """The runtime stream must use the server-owned collector dependencies."""
+    bus = EventBus(record_history=True)
+    store = TraceStore(tmp_path / "traces.db")
+    runtime = NativeAgentRuntime(
+        GeneratingAgent(RecordingEngine(), "server-default", bus=bus),
+        trace_store=store,
+        bus=bus,
+    )
+
+    result = await runtime.bind(model="voice-pinned").run("hello", AgentContext())
+
+    assert result.content == "answer:voice-pinned"
+    assert store.count() == 1
+    assert [event.event_type for event in bus.history].count(
+        EventType.TRACE_COMPLETE
+    ) == 1
+    store.close()
 
 
 @pytest.mark.asyncio

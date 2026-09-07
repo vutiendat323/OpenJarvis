@@ -24,6 +24,7 @@ class SkillResult:
 
 # Resolver callback: given a skill name and the current context, returns a SkillResult.
 SkillResolver = Callable[[str, Dict[str, Any]], SkillResult]
+_MISSING = object()
 
 
 class SkillExecutor:
@@ -204,16 +205,89 @@ class SkillExecutor:
 
     @staticmethod
     def _render_template(template: str, ctx: Dict[str, Any]) -> str:
-        """Simple {key} placeholder rendering."""
+        """Render simple or dotted placeholders while preserving JSON syntax."""
+        try:
+            parsed = json.loads(template)
+        except json.JSONDecodeError:
+            return SkillExecutor._render_legacy_template(template, ctx)
+        rendered = SkillExecutor._render_json_value(parsed, ctx)
+        return json.dumps(rendered, ensure_ascii=False)
+
+    @staticmethod
+    def _render_json_value(value: Any, ctx: Dict[str, Any]) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: SkillExecutor._render_json_value(child, ctx)
+                for key, child in value.items()
+            }
+        if isinstance(value, list):
+            return [SkillExecutor._render_json_value(child, ctx) for child in value]
+        if not isinstance(value, str):
+            return value
+
+        full_placeholder = re.fullmatch(r"\{(\w+(?:\.\w+)*)\}", value)
+        if full_placeholder:
+            resolved = SkillExecutor._resolve_placeholder(
+                full_placeholder.group(1), ctx
+            )
+            if resolved is _MISSING:
+                raise ValueError(f"Unresolved placeholder: {full_placeholder.group(1)}")
+            return resolved
 
         def _replace(match: re.Match) -> str:
-            key = match.group(1)
-            val = ctx.get(key, match.group(0))
-            if isinstance(val, str):
-                return val
-            return json.dumps(val)
+            resolved = SkillExecutor._resolve_placeholder(match.group(1), ctx)
+            if resolved is _MISSING:
+                raise ValueError(f"Unresolved placeholder: {match.group(1)}")
+            if isinstance(resolved, str):
+                return resolved
+            return json.dumps(resolved, ensure_ascii=False)
 
-        return re.sub(r"\{(\w+)\}", _replace, template)
+        return re.sub(r"\{(\w+(?:\.\w+)*)\}", _replace, value)
+
+    @staticmethod
+    def _render_legacy_template(template: str, ctx: Dict[str, Any]) -> str:
+        """Keep legacy placeholder behavior for non-JSON templates."""
+
+        def _replace(match: re.Match) -> str:
+            value = SkillExecutor._resolve_placeholder(match.group(1), ctx)
+            if value is _MISSING:
+                raise ValueError(f"Unresolved placeholder: {match.group(1)}")
+            rendered = json.dumps(value, ensure_ascii=False)
+            inside_json_string = (
+                match.start() > 0
+                and match.end() < len(template)
+                and template[match.start() - 1] == '"'
+                and template[match.end()] == '"'
+            )
+            if isinstance(value, str) and inside_json_string:
+                return rendered[1:-1]
+            return rendered
+
+        return re.sub(r"\{(\w+(?:\.\w+)*)\}", _replace, template)
+
+    @staticmethod
+    def _resolve_placeholder(key: str, ctx: Dict[str, Any]) -> Any:
+        root, *path = key.split(".")
+        value = ctx.get(root, _MISSING)
+        if value is _MISSING:
+            return _MISSING
+        if path and isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                return _MISSING
+        for segment in path:
+            if isinstance(value, dict) and segment in value:
+                value = value[segment]
+            elif (
+                isinstance(value, list)
+                and segment.isdigit()
+                and int(segment) < len(value)
+            ):
+                value = value[int(segment)]
+            else:
+                return _MISSING
+        return value
 
 
 __all__ = ["SkillExecutor", "SkillResolver", "SkillResult"]

@@ -67,14 +67,18 @@ def build_voice_pipeline(
         SpeechTimeoutUserTurnStopStrategy,
     )
 
-    from openjarvis.server.voice.llm import OpenJarvisLLMService
+    from openjarvis.server.voice.llm import (
+        OpenJarvisLLMService,
+        VoiceTurnState,
+    )
     from openjarvis.server.voice.tts import VieNeuTTSService
 
     transport = SmallWebRTCTransport(
         webrtc_connection=connection,
         params=TransportParams(audio_in_enabled=True, audio_out_enabled=True),
     )
-    llm = OpenJarvisLLMService(binding, recall=recall)
+    turn_state = VoiceTurnState()
+    llm = OpenJarvisLLMService(binding, recall=recall, turn_state=turn_state)
     context = LLMContext()
     # In 1.7.0 the VAD analyser belongs to the user aggregator, not the
     # transport, and interruption is always on — there is no flag to enable.

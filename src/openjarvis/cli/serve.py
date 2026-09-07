@@ -497,6 +497,7 @@ def serve(
         mcp_tools=system.mcp_tools,
         mcp_clients=system._mcp_clients,
         presentation_session_manager=system.presentation_session_manager,
+        trace_store=system.trace_store,
         api_key=api_key,
         webhook_config=webhook_config,
         cors_origins=cors_origins,

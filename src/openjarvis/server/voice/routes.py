@@ -31,6 +31,36 @@ router = APIRouter(tags=["pipecat-voice"])
 # that fires twice cannot write the conversation twice.
 _SAVED_ATTR = "_openjarvis_saved_upto"
 
+# A reloaded or closed tab often leaves the peer in "disconnected" rather than
+# "closed"/"failed", and that state alone would hold the single voice lease
+# until the session TTL — every retry meanwhile answers 409. Treat it as gone
+# once it persists, while still allowing a brief blip to recover.
+_PEER_DISCONNECT_GRACE_SECONDS = 5.0
+_PEER_POLL_SECONDS = 0.5
+
+
+async def await_peer_gone(peer: Any) -> None:
+    """Return once the WebRTC peer is gone for good.
+
+    "closed"/"failed" are terminal immediately. A tab that vanishes without
+    closing its connection only reaches "disconnected", so that counts too —
+    but only once it persists, so a brief blip still gets to recover.
+    """
+    loop = asyncio.get_running_loop()
+    disconnected_since: float | None = None
+    while True:
+        state = getattr(peer, "connectionState", None)
+        if state in ("closed", "failed"):
+            return
+        if state == "disconnected":
+            if disconnected_since is None:
+                disconnected_since = loop.time()
+            elif loop.time() - disconnected_since >= _PEER_DISCONNECT_GRACE_SECONDS:
+                return
+        else:
+            disconnected_since = None
+        await asyncio.sleep(_PEER_POLL_SECONDS)
+
 
 def save_voice_conversation(
     sessions: Any, *, voice_session_id: str, chat_thread_id: str, context: Any
@@ -284,17 +314,8 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
         # runner.run() only returns on idle timeout or cancellation; the peer
         # leaving must not hold the lease for minutes. Watch the ICE state and
         # reap the pipeline the moment it goes.
-        closed = asyncio.Event()
-        peer = connection.pc
-
-        def _on_connection_state_change() -> None:
-            if peer.connectionState in ("closed", "failed"):
-                closed.set()
-
-        peer.on("connectionstatechange", _on_connection_state_change)
-
         run_task = asyncio.create_task(runner.run())
-        closed_task = asyncio.create_task(closed.wait())
+        closed_task = asyncio.create_task(await_peer_gone(connection.pc))
         try:
             await asyncio.wait(
                 {run_task, closed_task}, return_when=asyncio.FIRST_COMPLETED
@@ -319,9 +340,11 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
                 voice_session_id=session.voice_session_id,
                 chat_thread_id=session.chat_thread_id,
             )
-            # In the same finally as the save: a lease that outlives its
-            # pipeline refuses every later session with a text fallback.
-            sessions.end_session(session.voice_session_id, reason="disconnected")
+            # The lease itself is released by the task's done-callback (see
+            # start_pipeline), not here: kiosk's presentation-reset endpoint
+            # cancels this same task independently of this teardown path, and
+            # a cancel landing between the two awaits above would otherwise
+            # skip an inline end_session() call and leak the lease.
 
     async def start_pipeline(connection: Any) -> None:
         # pipecat runs this callback inside its own try/except: a failure here
@@ -358,6 +381,23 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
                 task = asyncio.create_task(
                     run_until_disconnected(worker, context, connection)
                 )
+            # Guarantees the lease is freed exactly once, however this task
+            # ends. Two independent paths can end it: the natural teardown
+            # above, and kiosk's presentation-reset endpoint, which cancels
+            # this same task directly on an unrelated trigger (the display
+            # resetting). If that cancel lands while the natural teardown is
+            # already mid-cleanup, it can abort before reaching end_session()
+            # and leak the lease until the 300s TTL reclaims it. A done
+            # callback fires once the task is truly finished — success,
+            # exception, or cancelled — independent of which cleanup path (if
+            # any) actually completed, closing that race. end_session() is a
+            # sync, idempotent status check, so double-firing alongside the
+            # natural path's own call is harmless.
+            task.add_done_callback(
+                lambda _t: sessions.end_session(
+                    session.voice_session_id, reason="task_done"
+                )
+            )
             request.app.state.pipecat_voice_generation = generation
             request.app.state.pipecat_voice_task = task
         except Exception:

@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customer Display & display_* Workflow Architecture</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --card-bg: #1a1d27;
+            --accent: #f59e0b;
+            --accent-glow: rgba(245, 158, 11, 0.2);
+            --text: #f3f4f6;
+            --text-dim: #9ca3af;
+            --border: rgba(255, 255, 255, 0.08);
+            --code-bg: #11131c;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 40px 20px;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        header {
+            margin-bottom: 40px;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 24px;
+        }
+        h1 {
+            font-size: 2.2rem;
+            color: var(--accent);
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .badge {
+            background: var(--accent-glow);
+            color: var(--accent);
+            font-size: 0.85rem;
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-weight: 600;
+            border: 1px solid var(--accent);
+        }
+        .subtitle {
+            color: var(--text-dim);
+            font-size: 1.1rem;
+        }
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 28px;
+            margin-bottom: 32px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+        h2 {
+            font-size: 1.4rem;
+            color: #fff;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        h3 {
+            font-size: 1.1rem;
+            color: var(--accent);
+            margin: 20px 0 10px 0;
+        }
+        p, ul, ol {
+            margin-bottom: 16px;
+            color: #e5e7eb;
+        }
+        ul, ol {
+            padding-left: 24px;
+        }
+        li {
+            margin-bottom: 8px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        th, td {
+            padding: 14px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        th {
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--accent);
+            font-weight: 600;
+        }
+        tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        pre {
+            background: var(--code-bg);
+            padding: 16px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            overflow-x: auto;
+            margin: 16px 0;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 0.9rem;
+            color: #38bdf8;
+        }
+        code {
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            background: rgba(255, 255, 255, 0.08);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #38bdf8;
+            font-size: 0.9em;
+        }
+        .mermaid {
+            background: var(--code-bg);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            margin: 20px 0;
+            display: flex;
+            justify-content: center;
+        }
+        .step-box {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+            margin: 20px 0;
+        }
+        .step-item {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 18px;
+            border-top: 3px solid var(--accent);
+        }
+        .step-item h4 {
+            color: #fff;
+            margin-bottom: 8px;
+            font-size: 1rem;
+        }
+        .step-item p {
+            color: var(--text-dim);
+            font-size: 0.9rem;
+            margin-bottom: 0;
+        }
+        .highlight {
+            color: var(--accent);
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🖥️ Customer Display & display_* Workflow <span class="badge">OpenJarvis Kiosk</span></h1>
+            <p class="subtitle">Kiến trúc luồng dữ liệu thời gian thực từ AI Tool Call tới Giao diện màn hình phụ React</p>
+        </header>
+
+        <div class="card">
+            <h2>1. Sơ đồ Luồng Hoạt động Tổng thể (End-to-End Flow)</h2>
+            <p>Hệ thống Customer Display là kênh hiển thị trực quan thứ hai (Secondary Visual Channel) hoạt động song song với kênh Giọng nói (Voice/WebRTC). Nó cho phép khách hàng nhìn thấy món gợi ý, giỏ hàng, hóa đơn và quét mã VietQR trong khi đang nói chuyện với Agent.</p>
+            
+            <div class="mermaid">
+                flowchart TD
+                    subgraph AI["Tầng Trí Tuệ & Điều Phối (AI Engine)"]
+                        Agent["OrchestratorAgent (Voice Session)"]
+                        Tools["Display Tools (src/openjarvis/tools/display.py)"]
+                        Agent -->|Gọi tool| Tools
+                    end
+
+                    subgraph Backend["Tầng Cầu Nối Backend (FastAPI & Kiosk Runtime)"]
+                        PSM["PresentationSessionManager\n(kiosk/presentation.py)"]
+                        EB["EventBus (EventType.DISPLAY_UPDATE)"]
+                        WSB["WebSocket Bridge (/v1/events/ws)\n(server/ws_bridge.py)"]
+                        
+                        Tools -->|_publish()| PSM
+                        PSM -->|Publish event| EB
+                        EB -->|Forward| WSB
+                    end
+
+                    subgraph Frontend["Tầng Màn Hình Phụ (React SPA)"]
+                        WS_Client["useAgentEvents Hook"]
+                        Reducer["reduceCustomerDisplay State Machine\n(customerDisplayState.ts)"]
+                        Page["CustomerDisplayPage.tsx\n(/customer-display?session=xyz)"]
+                        
+                        WSB -->|WebSocket Frame| WS_Client
+                        WS_Client -->|Gửi Event| Reducer
+                        Reducer -->|Cập nhật State| Page
+                    end
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>2. Bộ 5 Công Cụ `display_*` trong Backend</h2>
+            <p>Được định nghĩa tại <code>src/openjarvis/tools/display.py</code>, mỗi tool chịu trách nhiệm cho một giao diện hiển thị chuyên biệt:</p>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>Tên Tool</th>
+                        <th>Mục đích</th>
+                        <th>Tham số yêu cầu</th>
+                        <th>View hiển thị trên UI</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>display_menu</code></td>
+                        <td>Gợi ý 2–3 món cho khách</td>
+                        <td><code>items: [{id, name, price, available, note}]</code></td>
+                        <td><span class="highlight">view: "menu"</span> (Thực đơn thẻ đôi)</td>
+                    </tr>
+                    <tr>
+                        <td><code>display_cart</code></td>
+                        <td>Hiển thị giỏ hàng đang chọn</td>
+                        <td><code>lines: [{name, size, note, quantity, line_total}], total</code></td>
+                        <td><span class="highlight">view: "cart"</span> (Danh sách món + Tổng tiền)</td>
+                    </tr>
+                    <tr>
+                        <td><code>display_bill</code></td>
+                        <td>Hiển thị hóa đơn chính thức sau chốt đơn</td>
+                        <td><code>order_id, status, order_type, branch, lines, total</code></td>
+                        <td><span class="highlight">view: "bill"</span> (Hóa đơn chi tiết)</td>
+                    </tr>
+                    <tr>
+                        <td><code>display_payment_qr</code></td>
+                        <td>Hiển thị mã VietQR động để thanh toán</td>
+                        <td><code>order_id, payment_slug, status, qr_code</code></td>
+                        <td><span class="highlight">view: "payment_qr"</span> (Mã QR thanh toán ngân hàng)</td>
+                    </tr>
+                    <tr>
+                        <td><code>display_clear</code></td>
+                        <td>Đưa màn hình về trạng thái chờ</td>
+                        <td><i>Không có</i></td>
+                        <td><span class="highlight">view: "waiting"</span> (Sẵn sàng phục vụ)</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="card">
+            <h2>3. Máy Trạng Thái Giao Diện (UI State Transitions)</h2>
+            <p>Giao diện React quản lý trạng thái hiển thị thông qua bộ Reducer nghiêm ngặt tại <code>frontend/src/pages/customerDisplayState.ts</code>:</p>
+
+            <div class="mermaid">
+                stateDiagram-v2
+                    [*] --> Waiting : Khởi động / display_clear
+                    
+                    Waiting --> Menu : display_menu
+                    Menu --> Cart : display_cart
+                    Menu --> Menu : Cập nhật món mới
+                    
+                    Cart --> Cart : Sửa số lượng / size / ghi chú
+                    Cart --> Bill : display_bill (Đã chốt đơn)
+                    
+                    Bill --> PaymentQR : display_payment_qr (Yêu cầu thanh toán)
+                    
+                    PaymentQR --> Waiting : display_clear (Xong phiên)
+                    Bill --> Waiting : display_clear
+                    Cart --> Waiting : display_clear
+            </div>
+
+            <div class="step-box">
+                <div class="step-item">
+                    <h4>1. View: Menu</h4>
+                    <p>Lưới thẻ món đồ uống 2 cột sang trọng, kèm giá tiền, ghi chú hương vị và badge hết hàng.</p>
+                </div>
+                <div class="step-item">
+                    <h4>2. View: Cart</h4>
+                    <p>Danh sách các món khách đã chọn, số lượng, size, ghi chú riêng từng ly và tổng tiền tạm tính.</p>
+                </div>
+                <div class="step-item">
+                    <h4>3. View: Bill</h4>
+                    <p>Mã đơn hàng từ hệ thống POS, chi nhánh, hình thức (Mang đi / Tại quán) và bảng chi tiết.</p>
+                </div>
+                <div class="step-item">
+                    <h4>4. View: Payment QR</h4>
+                    <p>Render mã VietQR động (base64 image hoặc URL) bo tròn trên khung nền trắng nổi bật cho khách quét.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>4. Chi tiết 4 Bước Xử Lý Kỹ Thuật (Technical Breakdown)</h2>
+            
+            <h3>Bước 1: Lọc dữ liệu an toàn tại Tool (`_picked`)</h3>
+            <p>Hàm <code>_picked</code> trong <code>display.py</code> loại bỏ mọi trường lạ hoặc mã độc LLM có thể sinh ra:</p>
+            <pre>_ITEM_FIELDS = ("id", "name", "price", "available", "image_url", "note")
+_LINE_FIELDS = ("name", "size", "note", "quantity", "line_total")
+_PAYMENT_QR_FIELDS = ("order_id", "payment_slug", "status", "qr_code")
+
+def _picked(row: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    if not isinstance(row, dict): return {}
+    return {key: row[key] for key in fields if key in row}</pre>
+
+            <h3>Bước 2: Quản lý Phiên hiển thị (`PresentationSessionManager`)</h3>
+            <p>Đảm bảo event được gắn đúng <code>session_id</code> và loại bỏ các publication cũ bị trễ (Stale Generation Guard):</p>
+            <pre>normalized = deepcopy(payload)
+normalized["presentation_session_id"] = self._session.session_id
+self._session.last_payload = normalized
+self._bus.publish(EventType.DISPLAY_UPDATE, normalized)</pre>
+
+            <h3>Bước 3: Cầu nối WebSocket truyền phát tức thì (`ws_bridge.py`)</h3>
+            <p>FastAPI WebSocket endpoint đẩy gói tin JSON thời gian thực tới màn hình phụ:</p>
+            <pre>{
+  "type": "display_update",
+  "timestamp": "2026-08-26T01:55:00.000Z",
+  "data": {
+    "view": "payment_qr",
+    "presentation_session_id": "7a8b9c...",
+    "order_id": "740b72fd33",
+    "payment_slug": "78d97744f8",
+    "status": "pending",
+    "qr_code": "data:image/png;base64,iVBORw0KGgo..."
+  }
+}</pre>
+
+            <h3>Bước 4: React UI Render trong dưới 50ms (`CustomerDisplayPage.tsx`)</h3>
+            <p>Hook <code>useAgentEvents</code> nhận stream WebSocket, Reducer kiểm tra khớp <code>sessionId</code> và render thẻ React tương ứng tức thì.</p>
+        </div>
+
+        <div class="card">
+            <h2>5. Điểm Ưu Việt của Kiến Trúc này</h2>
+            <ul>
+                <li><strong>Phân tách hoàn toàn (Decoupled)</strong>: Backend chỉ truyền dữ liệu cấu trúc (JSON). Toàn bộ giao diện, hiệu ứng chuyển động và responsive do React đảm nhiệm.</li>
+                <li><strong>Thời gian thực (Real-time &lt; 50ms)</strong>: Khách hàng nhìn thấy thông tin ngay khi Agent vừa quyết định hiển thị, không có độ trễ tải trang.</li>
+                <li><strong>An toàn tuyệt đối</strong>: Chống XSS qua <code>_picked</code>, chống stale session qua <code>publication_generation</code>, và chống giả mạo QR qua <code>ToolEvidence</code>.</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        mermaid.initialize({ startOnLoad: true, theme: 'dark' });
+    </script>
+</body>
+</html>

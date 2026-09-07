@@ -115,6 +115,7 @@ describe('reduceCustomerDisplay', () => {
       payment_slug: 'payment-1',
       status: 'pending',
       qr_code: 'merchant-opaque-qr',
+      total: 45000,
       html: '<img src=x onerror=alert(1)>',
       receipt_id: 'receipt-that-must-not-be-shown',
     }), 'A')).toEqual({
@@ -123,6 +124,34 @@ describe('reduceCustomerDisplay', () => {
       payment_slug: 'payment-1',
       status: 'pending',
       qr_code: 'merchant-opaque-qr',
+      total: 45000,
+    });
+  });
+
+  it('inherits total from prior bill/cart state if omitted in payment_qr event', () => {
+    const priorBill: CustomerDisplayState = {
+      view: 'bill',
+      order_id: 'order-1',
+      status: 'placed',
+      order_type: 'take-out',
+      branch: 'br-thu-duc',
+      lines: [{ name: 'Cà phê đen', quantity: 1, line_total: 40000 }],
+      total: 40000,
+    };
+
+    expect(reduceCustomerDisplay(priorBill, displayEvent('A', {
+      view: 'payment_qr',
+      order_id: 'order-1',
+      payment_slug: 'payment-1',
+      status: 'pending',
+      qr_code: 'merchant-opaque-qr',
+    }), 'A')).toEqual({
+      view: 'payment_qr',
+      order_id: 'order-1',
+      payment_slug: 'payment-1',
+      status: 'pending',
+      qr_code: 'merchant-opaque-qr',
+      total: 40000,
     });
   });
 });

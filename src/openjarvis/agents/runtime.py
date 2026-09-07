@@ -17,6 +17,7 @@ from openjarvis.agents._stubs import (
     BaseAgent,
 )
 from openjarvis.tools.mcp_adapter import MCPToolAdapter
+from openjarvis.traces.collector import TraceCollector
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,8 +93,11 @@ class NativeAgentRuntime:
         agent: BaseAgent,
         *,
         data_source_configuration: DataSourceConfigurationSnapshot | None = None,
+        trace_store: Any = None,
+        bus: Any = None,
     ) -> None:
         self._agent = agent
+        self._trace_collector = TraceCollector(agent, store=trace_store, bus=bus)
         self._lock = asyncio.Lock()
         self._staged_persistence: dict[str, AgentPersistenceStaging] = {}
         self._data_source_configuration = data_source_configuration or (
@@ -146,7 +150,7 @@ class NativeAgentRuntime:
         staging_token = _RUN_PERSISTENCE.set(staging)
         drained = False
         try:
-            async for event in self._agent.run_stream(
+            async for event in self._trace_collector.run_stream(
                 input,
                 context,
                 model=binding.model,

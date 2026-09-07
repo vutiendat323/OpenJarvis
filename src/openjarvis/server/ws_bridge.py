@@ -44,14 +44,23 @@ def create_ws_router(
     router = APIRouter()
     # Each connected client gets a queue + loop ref for thread-safe event delivery
     clients: dict[WebSocket, tuple[asyncio.Queue, asyncio.AbstractEventLoop]] = {}
+    # The kiosk FSM publishes its state only on a transition. A client that
+    # connects mid-state would otherwise stay on its default ("idle", mic off)
+    # until the next transition — so a person already standing in the zone when
+    # the page loads never gets the consent popup. Keep the last payload and
+    # replay it on connect, the way display events are replayed below.
+    last_kiosk_state: dict[str, Any] | None = None
 
     def _on_event(event: Event) -> None:
         """Forward event to all connected WebSocket client queues (thread-safe)."""
+        nonlocal last_kiosk_state
         payload = {
             "type": event.event_type.value,
             "timestamp": event.timestamp,
             "data": event.data or {},
         }
+        if event.event_type is EventType.KIOSK_STATE_CHANGED:
+            last_kiosk_state = payload
         for ws, (queue, loop) in list(clients.items()):
             agent_filter = getattr(ws, "_agent_filter", None)
             # Tick events carry "agent_id"; tool-call events carry "agent".
@@ -116,6 +125,14 @@ def create_ws_router(
                             "data": replay,
                         }
                     )
+            # Only unfiltered subscribers receive kiosk state, so only they
+            # need the snapshot — the filters below would drop it anyway.
+            if (
+                last_kiosk_state is not None
+                and not agent_id
+                and not presentation_session_id
+            ):
+                queue.put_nowait(last_kiosk_state)
             recv = asyncio.create_task(websocket.receive())
             payload = asyncio.create_task(queue.get())
             while True:

@@ -161,7 +161,14 @@ fi
 echo
 echo "Verification:"
 tools=$(grep -o 'Agent tools:.*' "$BACKEND_LOG" | tr ',' '\n' | grep -c 'browser_' || true)
-printf '  browser tools   %s %s\n' "$tools" "$([ "$tools" -ge 21 ] && echo OK || echo 'FAIL (check OPENJARVIS_CONFIG)')"
+expected_tools=$("$ROOT_DIR/.venv/bin/python" -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as stream:
+    value = tomllib.load(stream).get("tools", {}).get("enabled", "")
+names = value if isinstance(value, list) else value.split(",")
+print(sum(str(name).strip().startswith("browser_") for name in names))
+' "$MCP_CONFIG_PATH")
+printf '  agent browser tools  %s %s\n' "$tools" "$([ "$tools" -eq "$expected_tools" ] && echo OK || echo "FAIL (expected $expected_tools)")"
 
 mcp=$(pgrep -f '@playwright/mcp' | wc -l)
 printf '  playwright mcp  %s %s\n' "$mcp" "$([ "$mcp" -eq 1 ] && echo OK || echo 'unexpected count')"

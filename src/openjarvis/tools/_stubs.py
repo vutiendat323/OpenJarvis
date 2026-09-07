@@ -314,7 +314,7 @@ class ToolExecutor:
 
         # Emit end event
         if self._bus:
-            result_text = str(result.content)[:10240] if result.content else ""
+            result_text = str(result.content) if result.content else ""
             # Pass through ToolResult.metadata so downstream consumers
             # (TraceCollector → TraceStep.metadata → SkillOptimizer) can
             # see skill-tagged invocations.  Filter to JSON-serializable

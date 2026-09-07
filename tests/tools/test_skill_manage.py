@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 import tomllib
 
+from openjarvis.core.events import EventBus
+from openjarvis.core.types import ToolResult
+from openjarvis.skills.executor import SkillResult
 from openjarvis.skills.loader import load_skill
+from openjarvis.skills.manager import SkillManager
 from openjarvis.tools.skill_manage import SkillManageTool
 
 
@@ -90,6 +95,190 @@ def test_skill_load(skills_dir: Path):
     result = tool.execute(action="load", name="my_skill")
     assert "web_search" in result.content
     assert "My skill desc" in result.content
+
+
+def test_skill_run_returns_only_the_final_inner_result(skills_dir: Path) -> None:
+    class Manager:
+        def execute(self, name: str, context: dict) -> SkillResult:
+            assert name == "order-coffee"
+            assert context == {
+                "size": "large",
+                "today": datetime.now().astimezone().date().isoformat(),
+            }
+            return SkillResult(
+                skill_name=name,
+                success=False,
+                step_results=[
+                    ToolResult(tool_name="http_request", content="request sent"),
+                    ToolResult(
+                        tool_name="display_bill",
+                        content="payment required",
+                        success=False,
+                        metadata={"approval_id": "approval-1"},
+                    ),
+                ],
+            )
+
+    result = SkillManageTool(skills_dir=skills_dir, skill_manager=Manager()).execute(
+        action="run",
+        name="order-coffee",
+        context={"size": "large"},
+    )
+
+    assert result.tool_name == "skill_manage"
+    assert result.success is False
+    assert result.content == "payment required"
+    assert result.metadata == {"approval_id": "approval-1"}
+
+
+def test_skill_run_marks_a_successful_inner_display_and_supplies_today(
+    skills_dir: Path,
+) -> None:
+    class Manager:
+        def execute(self, name: str, context: dict) -> SkillResult:
+            assert context["today"] == datetime.now().astimezone().date().isoformat()
+            return SkillResult(
+                skill_name=name,
+                success=True,
+                step_results=[
+                    ToolResult(tool_name="http_request", content="fresh menu"),
+                    ToolResult(
+                        tool_name="display_menu",
+                        content="shown",
+                        metadata={"presentation_id": "p-1"},
+                    ),
+                ],
+            )
+
+    result = SkillManageTool(skills_dir=skills_dir, skill_manager=Manager()).execute(
+        action="run", name="read-menu", context={}
+    )
+
+    assert result.success is True
+    assert result.metadata == {
+        "presentation_id": "p-1",
+        "completed_display": True,
+    }
+
+
+def test_skill_run_without_runtime_dependencies_does_not_create_a_directory(
+    tmp_path: Path,
+) -> None:
+    skills_dir = tmp_path / "skills"
+
+    result = SkillManageTool(skills_dir=skills_dir).execute(
+        action="run",
+        name="order-coffee",
+        context={},
+    )
+
+    assert result.success is False
+    assert "manager unavailable" in result.content.lower()
+    assert not skills_dir.exists()
+
+
+def test_skill_manage_schema_exposes_run_context_and_create_intent() -> None:
+    properties = SkillManageTool().spec.parameters["properties"]
+
+    assert "run" in properties["action"]["enum"]
+    assert properties["context"]["type"] == "object"
+    assert properties["intent"]["type"] == "string"
+
+
+def test_read_skill_memory_hint_does_not_require_confirmation(tmp_path: Path) -> None:
+    """Safe learned reads should be immediately reusable on a later turn."""
+
+    class Memory:
+        def __init__(self) -> None:
+            self.records = []
+
+        def store(self, content, **kwargs):
+            self.records.append({"content": content, **kwargs})
+
+    memory = Memory()
+    tool = SkillManageTool(skills_dir=tmp_path / "skills", memory_backend=memory)
+
+    result = tool.execute(
+        action="create",
+        name="read-menu",
+        description="Read a live menu",
+        steps=[],
+        intent="Show the food menu",
+        requires_fresh_confirmation=False,
+    )
+
+    assert result.success is True
+    assert memory.records[0]["metadata"]["requires_fresh_confirmation"] is False
+    assert "No confirmation is required" in memory.records[0]["content"]
+
+
+def test_skill_create_hot_discovers_and_remembers_normalized_intent(
+    skills_dir: Path,
+) -> None:
+    class Memory:
+        def __init__(self) -> None:
+            self.records: list[dict] = []
+
+        def store(self, content: str, *, source: str, metadata: dict) -> str:
+            self.records.append(
+                {"content": content, "source": source, "metadata": metadata}
+            )
+            return "memory-1"
+
+    manager = SkillManager(bus=EventBus())
+    memory = Memory()
+    result = SkillManageTool(
+        skills_dir=skills_dir,
+        skill_manager=manager,
+        memory_backend=memory,
+    ).execute(
+        action="create",
+        name="order-coffee",
+        description="Order coffee after confirmation.",
+        steps=[{"tool_name": "http_request", "arguments_template": "{}"}],
+        intent="  Order   Coffee  ",
+    )
+
+    assert result.success is True
+    assert manager.resolve("order-coffee").name == "order-coffee"
+    assert memory.records == [
+        {
+            "content": (
+                "Intent 'order coffee' maps to skill 'order-coffee'. "
+                "Run only after fresh confirmation."
+            ),
+            "source": "openjarvis.skill_learning",
+            "metadata": {
+                "intent": "order coffee",
+                "skill_name": "order-coffee",
+                "requires_fresh_confirmation": True,
+            },
+        }
+    ]
+
+
+def test_skill_create_survives_a_failing_memory_backend(skills_dir: Path) -> None:
+    """The skill file is already on disk; a Memory outage must not raise."""
+
+    class BrokenMemory:
+        def store(self, content: str, *, source: str, metadata: dict) -> str:
+            raise RuntimeError("memory backend down")
+
+    manager = SkillManager(bus=EventBus())
+    result = SkillManageTool(
+        skills_dir=skills_dir,
+        skill_manager=manager,
+        memory_backend=BrokenMemory(),
+    ).execute(
+        action="create",
+        name="order-coffee",
+        description="Order coffee after confirmation.",
+        steps=[{"tool_name": "http_request", "arguments_template": "{}"}],
+        intent="order coffee",
+    )
+
+    assert result.success is True
+    assert manager.resolve("order-coffee").name == "order-coffee"
 
 
 @pytest.mark.parametrize("action", ["create", "load", "delete"])

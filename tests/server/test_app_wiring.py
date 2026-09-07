@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 
 
@@ -28,6 +29,95 @@ def test_native_agent_runtime_wraps_the_serving_agent():
     source = inspect.getsource(app_module)
     assert "NativeAgentRuntime(" in source
     assert "app.state.native_agent_runtime" in source
+
+
+def test_server_runtime_records_to_the_app_shared_trace_store(tmp_path):
+    """Server construction must inject, not recreate, the trace dependencies."""
+    from openjarvis.agents._stubs import AgentContext, AgentResult, BaseAgent
+    from openjarvis.core.config import JarvisConfig
+    from openjarvis.core.events import EventBus, EventType
+    from openjarvis.server.app import create_app
+
+    class _LocalAgent(BaseAgent):
+        agent_id = "local"
+
+        def __init__(self) -> None:
+            pass
+
+        def run(self, input, context=None, **kwargs):
+            return AgentResult(content="done")
+
+    config = JarvisConfig()
+    config.analytics.enabled = False
+    config.traces.enabled = True
+    config.traces.db_path = str(tmp_path / "traces.db")
+    bus = EventBus(record_history=True)
+    app = create_app(
+        object(), "test-model", agent=_LocalAgent(), bus=bus, config=config
+    )
+    store = app.state.trace_store
+
+    try:
+        result = asyncio.run(
+            app.state.native_agent_runtime.bind(model="test-model").run(
+                "hello", AgentContext()
+            )
+        )
+
+        assert result.content == "done"
+        assert store.count() == 1
+        assert [event.event_type for event in bus.history].count(
+            EventType.TRACE_COMPLETE
+        ) == 1
+    finally:
+        store.close()
+
+
+def test_server_runtime_uses_the_borrowed_trace_store(tmp_path):
+    """A composition root must not open a second trace database connection."""
+    from openjarvis.agents._stubs import AgentContext, AgentResult, BaseAgent
+    from openjarvis.core.config import JarvisConfig
+    from openjarvis.core.events import EventBus
+    from openjarvis.server.app import create_app
+    from openjarvis.traces.store import TraceStore
+
+    class _LocalAgent(BaseAgent):
+        agent_id = "local"
+
+        def __init__(self) -> None:
+            pass
+
+        def run(self, input, context=None, **kwargs):
+            return AgentResult(content="done")
+
+    borrowed_store = TraceStore(tmp_path / "borrowed.db")
+    config = JarvisConfig()
+    config.analytics.enabled = False
+    config.traces.enabled = True
+    config.traces.db_path = str(tmp_path / "unused.db")
+    app = create_app(
+        object(),
+        "test-model",
+        agent=_LocalAgent(),
+        bus=EventBus(),
+        config=config,
+        trace_store=borrowed_store,
+    )
+
+    try:
+        assert app.state.trace_store is borrowed_store
+        result = asyncio.run(
+            app.state.native_agent_runtime.bind(model="test-model").run(
+                "hello", AgentContext()
+            )
+        )
+        assert result.content == "done"
+        assert borrowed_store.count() == 1
+        for shutdown_handler in app.router.on_shutdown:
+            asyncio.run(shutdown_handler())
+        assert borrowed_store.count() == 1
+    finally:
+        borrowed_store.close()
 
 
 def test_voice_session_service_is_exposed():

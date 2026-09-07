@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voice Mode Interruption & Tool Execution Architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: rgba(18, 26, 44, 0.85);
+      --card-border: #233554;
+      --cyan: #00f2fe;
+      --cyan-glow: rgba(0, 242, 254, 0.25);
+      --amber: #f6ad55;
+      --amber-glow: rgba(246, 173, 85, 0.25);
+      --red: #ff4b72;
+      --red-glow: rgba(255, 75, 114, 0.25);
+      --green: #10b981;
+      --purple: #a855f7;
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: radial-gradient(circle at 50% 0%, #172554 0%, var(--bg) 75%);
+      color: var(--text);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      padding: 32px 24px 60px;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    .container { max-width: 1200px; margin: 0 auto; }
+    
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--card-border);
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #ffffff 0%, var(--cyan) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 10px;
+      letter-spacing: -0.5px;
+    }
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 15px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 12px;
+    }
+    .badge-primary { background: rgba(0, 242, 254, 0.15); color: var(--cyan); border: 1px solid var(--cyan); }
+
+    /* Grid Layout */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin-bottom: 36px;
+    }
+    @media (max-width: 900px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 24px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.37);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card.error-card {
+      border-color: rgba(255, 75, 114, 0.4);
+      background: linear-gradient(180deg, rgba(255, 75, 114, 0.05) 0%, var(--card-bg) 100%);
+    }
+    .card.solution-card {
+      border-color: rgba(16, 185, 129, 0.4);
+      background: linear-gradient(180deg, rgba(16, 185, 129, 0.05) 0%, var(--card-bg) 100%);
+    }
+
+    .card-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+    .card-title.red { color: var(--red); }
+    .card-title.green { color: var(--green); }
+
+    /* Flow Stages */
+    .stage-box {
+      background: rgba(10, 16, 30, 0.6);
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: relative;
+    }
+    .stage-box::after {
+      content: '↓';
+      position: absolute;
+      bottom: -14px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+    .stage-box:last-child::after { display: none; }
+    .stage-box.active {
+      border-color: var(--cyan);
+      box-shadow: 0 0 15px var(--cyan-glow);
+    }
+    .stage-box.stalled {
+      border-color: var(--red);
+      background: rgba(255, 75, 114, 0.1);
+      box-shadow: 0 0 15px var(--red-glow);
+    }
+    .stage-box.interrupted {
+      border-color: var(--amber);
+      background: rgba(246, 173, 85, 0.1);
+    }
+
+    .tag {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .tag-cyan { background: var(--cyan); color: #000; }
+    .tag-red { background: var(--red); color: #fff; }
+    .tag-amber { background: var(--amber); color: #000; }
+    .tag-green { background: var(--green); color: #000; }
+
+    /* Full Architecture Diagram */
+    .arch-diagram {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 30px;
+      margin-bottom: 36px;
+    }
+
+    .pipeline-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 24px;
+      position: relative;
+      flex-wrap: wrap;
+    }
+
+    .pipe-node {
+      flex: 1;
+      min-width: 170px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 16px;
+      text-align: center;
+      transition: all 0.3s ease;
+      position: relative;
+    }
+    .pipe-node:hover {
+      border-color: var(--cyan);
+      transform: translateY(-2px);
+    }
+    .pipe-node h4 { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+    .pipe-node p { font-size: 12px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
+
+    .node-mic { border-color: #0284c7; }
+    .node-vad { border-color: var(--purple); }
+    .node-llm { border-color: var(--amber); }
+    .node-tool { border-color: var(--cyan); }
+    .node-tts { border-color: var(--green); }
+
+    .arrow-right {
+      color: var(--text-muted);
+      font-weight: bold;
+      font-size: 18px;
+    }
+
+    /* Key Answers Callout */
+    .callout {
+      background: rgba(30, 41, 59, 0.6);
+      border-left: 4px solid var(--cyan);
+      padding: 16px 20px;
+      border-radius: 0 12px 12px 0;
+      margin-bottom: 16px;
+    }
+    .callout h4 {
+      color: var(--cyan);
+      font-size: 15px;
+      margin-bottom: 6px;
+      font-weight: 700;
+    }
+    .callout p {
+      font-size: 13.5px;
+      color: #cbd5e1;
+    }
+
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      background: rgba(0, 0, 0, 0.35);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--cyan);
+      font-size: 0.9em;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <span class="badge badge-primary">Pipecat + OpenJarvis Architecture</span>
+      <h1>Xử lý Barge-in & Interruption khi LLM Reasoning & Tool Calls</h1>
+      <p class="subtitle">
+        Phân tích nguyên nhân đơ/treo 41 giây tại sao xảy ra, mô hình giải quyết chuẩn của Big Tech và kiến trúc không phong tỏa (Non-blocking Async Lock) cho Pipecat AI.
+      </p>
+    </header>
+
+    <!-- Architecture Overview -->
+    <div class="arch-diagram">
+      <h3 style="margin-bottom: 18px; font-size: 17px; color: #fff;">1. Luồng Dữ Liệu Toàn Cục (Full-Duplex Speech-to-Speech)</h3>
+      <div class="pipeline-row">
+        <div class="pipe-node node-mic">
+          <h4>Microphone</h4>
+          <span class="tag tag-cyan">ALWAYS ON</span>
+          <p style="margin-top: 6px;">WebRTC PCM Audio</p>
+        </div>
+        <div class="arrow-right">→</div>
+        <div class="pipe-node node-vad">
+          <h4>Silero VAD / STT</h4>
+          <span class="tag tag-amber">Continuous</span>
+          <p style="margin-top: 6px;">Gemini Live STT</p>
+        </div>
+        <div class="arrow-right">→</div>
+        <div class="pipe-node node-llm">
+          <h4>Agent Runtime</h4>
+          <span class="tag tag-red">Lock / Task</span>
+          <p style="margin-top: 6px;">DeepSeek / Cloud</p>
+        </div>
+        <div class="arrow-right">→</div>
+        <div class="pipe-node node-tool">
+          <h4>Tool Execution</h4>
+          <span class="tag tag-cyan">Async HTTP</span>
+          <p style="margin-top: 6px;">Trend Coffee API</p>
+        </div>
+        <div class="arrow-right">→</div>
+        <div class="pipe-node node-tts">
+          <h4>VieNeu TTS</h4>
+          <span class="tag tag-green">Flushable</span>
+          <p style="margin-top: 6px;">Speaker Audio</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Side-by-Side Comparison -->
+    <div class="grid-2">
+      <!-- Problem Side -->
+      <div class="card error-card">
+        <div class="card-title red">
+          <span>⚠️</span> Hiện trạng: Vì sao bị treo 41 giây?
+        </div>
+        <div class="stage-box">
+          <div>1. Khách nói: "thanh toán đơn giúp mình"</div>
+          <span class="tag tag-cyan">STT OK</span>
+        </div>
+        <div class="stage-box stalled">
+          <div>2. Runtime chiếm <code>self._lock</code> (41.1s)</div>
+          <span class="tag tag-red">MONOLITHIC LOCK</span>
+        </div>
+        <div class="stage-box interrupted">
+          <div>3. Khách chen ngang nói tiếp câu mới</div>
+          <span class="tag tag-amber">VAD TRIGGERED</span>
+        </div>
+        <div class="stage-box stalled">
+          <div>4. Turn mới bị BLOCK vì không lấy được lock</div>
+          <span class="tag tag-red">STARVATION</span>
+        </div>
+        <div class="stage-box" style="border-color: #475569;">
+          <div>5. UI đóng băng ở trạng thái "Processing..."</div>
+          <span class="tag tag-red">FROZEN UX</span>
+        </div>
+        <p style="margin-top: 14px; font-size: 13px; color: #fca5a5;">
+          <strong>Root Cause:</strong> Khóa <code>asyncio.Lock</code> bao trọn cả chuỗi Reasoning + HTTP network calls không có cơ chế nhả sớm khi nhận <code>InterruptionFrame</code>.
+        </p>
+      </div>
+
+      <!-- Solution Side -->
+      <div class="card solution-card">
+        <div class="card-title green">
+          <span>✅</span> Kiến trúc Chuẩn: Pipecat Async Cancellation
+        </div>
+        <div class="stage-box">
+          <div>1. Micro luôn MỞ (Không bao giờ tắt)</div>
+          <span class="tag tag-green">FULL DUPLEX</span>
+        </div>
+        <div class="stage-box active">
+          <div>2. Task reasoning bọc trong <code>asyncio.Task</code></div>
+          <span class="tag tag-cyan">CANCELLABLE</span>
+        </div>
+        <div class="stage-box interrupted">
+          <div>3. VAD phát hiện tiếng ngắt nhịp mới</div>
+          <span class="tag tag-amber">INTERRUPT</span>
+        </div>
+        <div class="stage-box active">
+          <div>4. <code>task.cancel()</code> nhả khóa ngay trong 5ms</div>
+          <span class="tag tag-green">INSTANT RELEASE</span>
+        </div>
+        <div class="stage-box">
+          <div>5. Bắt đầu xử lý câu nói mới ngay lập tức</div>
+          <span class="tag tag-green">TTFT < 1.5s</span>
+        </div>
+        <p style="margin-top: 14px; font-size: 13px; color: #86efac;">
+          <strong>Giải pháp:</strong> Bọc vòng lặp LLM trong tác vụ có thể hủy (cancellable task) và giải phóng lock tức thì qua khối <code>try...finally</code>.
+        </p>
+      </div>
+    </div>
+
+    <!-- Core Questions Answered -->
+    <div class="card">
+      <h3 style="margin-bottom: 20px; font-size: 17px; color: #fff;">2. Trả Lời Trực Tiếp 3 Câu Hỏi Cốt Lõi</h3>
+
+      <div class="callout">
+        <h4>1. Micro lúc LLM Reasoning & Tool Calls được xử lý như thế nào?</h4>
+        <p>
+          Microphone <strong>luôn luôn thu âm 100% thời gian</strong> (không bao giờ tắt). Thuật toán khử vọng (AEC) và bộ nhận diện tiếng nói (VAD) liên tục phân tích âm thanh. Nếu người dùng im lặng, dữ liệu được bỏ qua. Nếu người dùng cất tiếng, VAD lập tức kích hoạt sự kiện ngắt <code>VADUserStartedSpeakingFrame</code>.
+        </p>
+      </div>
+
+      <div class="callout" style="border-left-color: var(--amber);">
+        <h4 style="color: var(--amber);">2. Pipecat AI xử lý Interruption Frame như thế nào?</h4>
+        <p>
+          Khi phát hiện giọng nói người dùng chen ngang, Pipecat gọi <code>broadcast_interruption()</code> để đẩy <code>InterruptionFrame</code> theo cả hai chiều:
+          <br>• <strong>Downstream:</strong> Bắn tới VieNeu TTS để dừng phát âm thanh ngay lập tức và xóa sạch audio buffer ở loa.
+          <br>• <strong>Upstream:</strong> Bắn tới LLM Service để gửi tín hiệu hủy (cancel signal) đến tác vụ suy luận đang chạy dở.
+        </p>
+      </div>
+
+      <div class="callout" style="border-left-color: var(--green);">
+        <h4 style="color: var(--green);">3. Làm sao để Voice Mode không bị lag/treo khi có barge-in?</h4>
+        <p>
+          • Không dùng khóa đơn khối (monolithic lock) giữ nguyên suốt cả lượt gọi API mạng.<br>
+          • Sử dụng <strong>Cancellation Token</strong>: Khi có interrupt, hủy ngay lệnh gọi DeepSeek đang sinh dở.<br>
+          • Bổ sung <strong>Thinking Fillers (Âm thanh đệm phản hồi trong 500ms)</strong> khi phát hiện lệnh thanh toán để người dùng biết hệ thống đang xử lý, giảm tỷ lệ người dùng sốt ruột chen ngang.
+        </p>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

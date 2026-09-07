@@ -30,7 +30,8 @@ DISPLAYS = {"displays": True}
 _ITEM_FIELDS = ("id", "name", "price", "available", "image_url", "note")
 _LINE_FIELDS = ("name", "size", "note", "quantity", "line_total")
 _BILL_FIELDS = ("order_id", "status", "order_type", "branch", "lines", "total")
-_PAYMENT_QR_FIELDS = ("order_id", "payment_slug", "status", "qr_code")
+_PAYMENT_QR_FIELDS = ("order_id", "payment_slug", "status", "qr_code", "total")
+_REQUIRED_PAYMENT_QR_FIELDS = ("order_id", "payment_slug", "status", "qr_code")
 
 
 class _DisplayTool(BaseTool):
@@ -63,9 +64,54 @@ def _picked(row: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     return {key: row[key] for key in fields if key in row}
 
 
+def _menu_items_from_latest_http() -> list[dict[str, Any]]:
+    content = _evidence.last_result("http_request")
+    start = content.find("{")
+    if start < 0:
+        return []
+    try:
+        payload = json.loads(content[start:])
+    except (TypeError, json.JSONDecodeError):
+        return []
+
+    result = payload.get("result") if isinstance(payload, dict) else None
+    pages = result.get("items") if isinstance(result, dict) else None
+    if not isinstance(pages, list):
+        return []
+
+    items: list[dict[str, Any]] = []
+    for page in pages:
+        menu_items = page.get("menuItems") if isinstance(page, dict) else None
+        if not isinstance(menu_items, list):
+            continue
+        for menu_item in menu_items:
+            product = (
+                menu_item.get("product") if isinstance(menu_item, dict) else None
+            )
+            if not isinstance(product, dict) or not product.get("name"):
+                continue
+            variants = product.get("variants")
+            variant = variants[0] if isinstance(variants, list) and variants else {}
+            if not isinstance(variant, dict):
+                variant = {}
+            item = {
+                "id": variant.get("slug") or product.get("slug"),
+                "name": product["name"],
+                "price": variant.get("price"),
+                "available": product.get("isActive"),
+            }
+            description = product.get("description")
+            if isinstance(description, str) and description.strip():
+                item["note"] = description
+            items.append(
+                {key: value for key, value in item.items() if value is not None}
+            )
+    return items
+
+
 @ToolRegistry.register("display_menu")
 class DisplayMenuTool(_DisplayTool):
-    """Put a shortlist of items on the customer's screen."""
+    """Put freshly retrieved menu items on the customer's screen."""
 
     tool_id = "display_menu"
 
@@ -74,9 +120,11 @@ class DisplayMenuTool(_DisplayTool):
         return ToolSpec(
             name="display_menu",
             description=(
-                "Show items on the customer's screen. Pass the few you are "
-                "actually recommending, not everything menu_search returned "
-                "-- choosing what to show is part of the recommendation. "
+                "Show one or more freshly retrieved items on the customer's "
+                "screen. For a category browse, omit items and set "
+                "all_from_latest_http=true to show every product directly from "
+                "the latest successful HTTP menu response. For a filtered search "
+                "or recommendation, pass only the matching items. "
                 "Each item: id, name, price, available, and optionally "
                 "image_url and note."
             ),
@@ -86,10 +134,18 @@ class DisplayMenuTool(_DisplayTool):
                     "items": {
                         "type": "array",
                         "description": "Items to show, in the order to show them.",
+                        "minItems": 1,
                         "items": {"type": "object"},
-                    }
+                    },
+                    "all_from_latest_http": {
+                        "type": "boolean",
+                        "description": (
+                            "Use every product from the latest successful "
+                            "http_request menu response."
+                        ),
+                    },
                 },
-                "required": ["items"],
+                "required": [],
             },
             category="display",
             metadata=dict(DISPLAYS),
@@ -97,8 +153,23 @@ class DisplayMenuTool(_DisplayTool):
 
     def execute(self, **params: Any) -> ToolResult:
         rows = params.get("items") or []
+        from_http = bool(params.get("all_from_latest_http")) and not rows
+        if from_http:
+            rows = _menu_items_from_latest_http()
         items = [_picked(row, _ITEM_FIELDS) for row in rows]
-        return self._publish({"view": "menu", "items": [i for i in items if i]})
+        picked = [i for i in items if i]
+        if not picked:
+            # An empty screen published as success reads to the model (and
+            # then to the customer, in its own voice) as "the menu is shown"
+            # when nothing is. Refuse instead, so a model with no real items
+            # to hand it -- no fresh read, nothing left in context -- gets a
+            # signal to go fetch some rather than a false success to narrate.
+            return ToolResult(
+                tool_name="display_menu",
+                content=("menu_evidence_missing" if from_http else "items_required"),
+                success=False,
+            )
+        return self._publish({"view": "menu", "items": picked})
 
 
 @ToolRegistry.register("display_cart")
@@ -205,9 +276,9 @@ class DisplayPaymentQrTool(_DisplayTool):
         return ToolSpec(
             name="display_payment_qr",
             description=(
-                "Show the QR value from a payment response. The exact string "
-                "must have come back from an http_request call to the "
-                "merchant in this conversation; anything else is refused."
+                "Show the QR value from a payment response. Omit qr_code to "
+                "reuse it directly from the latest trusted http_request JSON "
+                "in this conversation instead of copying a large base64 value."
             ),
             parameters={
                 "type": "object",
@@ -216,8 +287,9 @@ class DisplayPaymentQrTool(_DisplayTool):
                     "payment_slug": {"type": "string"},
                     "status": {"type": "string"},
                     "qr_code": {"type": "string"},
+                    "total": {"type": "integer", "description": "Payment amount in VND."},
                 },
-                "required": list(_PAYMENT_QR_FIELDS),
+                "required": ["order_id", "payment_slug", "status"],
             },
             category="display",
             metadata=dict(DISPLAYS),
@@ -225,16 +297,44 @@ class DisplayPaymentQrTool(_DisplayTool):
 
     def execute(self, **params: Any) -> ToolResult:
         qr_code = params.get("qr_code")
-        if not isinstance(qr_code, str) or not qr_code.strip():
+        if qr_code is None:
+            qr_code = _evidence.latest_json_string(
+                "qrCode",
+                from_tool="http_request",
+                require_ok=True,
+                trusted_origins=self._payment_trusted_origins,
+            )
+            params = {**params, "qr_code": qr_code}
+        elif not isinstance(qr_code, str) or not qr_code.strip():
             return ToolResult(
                 tool_name="display_payment_qr",
                 content="qr_code_required",
                 success=False,
             )
+
+        total = params.get("total")
+        if total is None:
+            total = _evidence.latest_json_number(
+                "amount",
+                from_tool="http_request",
+                require_ok=True,
+                trusted_origins=self._payment_trusted_origins,
+            ) or _evidence.latest_json_number(
+                "total",
+                from_tool="http_request",
+                require_ok=True,
+                trusted_origins=self._payment_trusted_origins,
+            )
+        if total is not None:
+            try:
+                params = {**params, "total": int(total)}
+            except (TypeError, ValueError):
+                pass
+
         payment = _picked(params, _PAYMENT_QR_FIELDS)
         complete = all(
             isinstance(payment.get(field), str) and payment[field].strip()
-            for field in _PAYMENT_QR_FIELDS
+            for field in _REQUIRED_PAYMENT_QR_FIELDS
         )
         # Four conditions: this exact string, from http_request, with a 2xx,
         # from a trusted origin, in this conversation. observed_in_tool_output

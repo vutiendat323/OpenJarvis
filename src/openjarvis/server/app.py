@@ -244,6 +244,7 @@ def create_app(
     mcp_tools=None,
     mcp_clients=None,
     presentation_session_manager=None,
+    trace_store=None,
     api_key: str = "",
     bind_host: str | None = None,
     webhook_config: dict | None = None,
@@ -304,6 +305,23 @@ def create_app(
     app.state.engine = engine
     app.state.model = model
     app.state.agent = agent
+    app.state.bus = bus
+
+    # The collector is the single trace writer: it saves directly and also
+    # publishes TRACE_COMPLETE. The store must therefore not subscribe to the
+    # same bus, or completed traces would be saved twice.
+    app.state.trace_store = trace_store
+    if trace_store is None:
+        try:
+            from openjarvis.core.config import load_config
+            from openjarvis.traces.store import TraceStore
+
+            cfg = config if config is not None else load_config()
+            if cfg.traces.enabled:
+                app.state.trace_store = TraceStore(db_path=cfg.traces.db_path)
+        except Exception:
+            pass  # traces are optional; don't block server startup
+
     from openjarvis.agents.runtime import (
         DataSourceConfigurationSnapshot,
         NativeAgentRuntime,
@@ -321,11 +339,15 @@ def create_app(
         max_context_tokens=int(getattr(memory, "context_max_tokens", 0)),
     )
     app.state.native_agent_runtime = (
-        NativeAgentRuntime(agent, data_source_configuration=data_sources)
+        NativeAgentRuntime(
+            agent,
+            data_source_configuration=data_sources,
+            trace_store=app.state.trace_store,
+            bus=bus,
+        )
         if agent is not None
         else None
     )
-    app.state.bus = bus
     app.state.engine_name = engine_name
     app.state.agent_name = agent_name or (
         getattr(agent, "agent_id", None) if agent else None
@@ -470,27 +492,6 @@ def create_app(
                 close_memory()
             except Exception:
                 logger.debug("Memory backend shutdown failed", exc_info=True)
-
-    # Wire up trace store if traces are enabled.
-    #
-    # We deliberately do NOT subscribe the trace store to the bus. The chat
-    # endpoints persist through a TraceCollector that calls store.save()
-    # directly (mirroring system/orchestrator.py), and the collector ALSO
-    # publishes TRACE_COMPLETE. A store subscribed to that same bus would
-    # therefore save every agent trace twice — the second INSERT hitting the
-    # UNIQUE constraint on trace_id (a 500 on every completion). Keeping the
-    # collector the single writer is what makes the dual code path safe; only
-    # the telemetry store is bus-subscribed (see system/builder.py).
-    app.state.trace_store = None
-    try:
-        from openjarvis.core.config import load_config
-        from openjarvis.traces.store import TraceStore
-
-        cfg = config if config is not None else load_config()
-        if cfg.traces.enabled:
-            app.state.trace_store = TraceStore(db_path=cfg.traces.db_path)
-    except Exception:
-        pass  # traces are optional; don't block server startup
 
     # Wire up external analytics if enabled (PostHog) — never block startup.
     # Note: we do NOT fire app_opened here. The frontend owns that event

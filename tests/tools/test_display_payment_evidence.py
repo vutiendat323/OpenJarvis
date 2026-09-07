@@ -82,6 +82,33 @@ def test_a_qr_a_trusted_call_returned_is_published():
     assert result.success is True
 
 
+def test_a_trusted_payment_response_can_supply_qr_without_copying_it_through_llm():
+    """Large base64 QR values stay in evidence instead of tool-call arguments."""
+    executor = ToolExecutor([_Http()])
+    tool = _display_tool()
+
+    with conversation_scope("a"):
+        _observe(
+            executor,
+            '{"result":{"qrCode":"QR_REAL_789"}}',
+            200,
+            "https://trendcoffee.net/api/latest/payment/initiate/public",
+        )
+        result = tool.execute(
+            order_id="ORD-1",
+            payment_slug="PAY-1",
+            status="pending",
+        )
+
+    assert result.success is True
+
+
+def test_qr_code_is_optional_in_the_agent_tool_schema():
+    required = DisplayPaymentQrTool().spec.parameters["required"]
+
+    assert required == ["order_id", "payment_slug", "status"]
+
+
 def test_a_qr_fetched_by_a_different_executor_is_still_accepted():
     """A saved skill runs its steps on its own executor.
 
@@ -236,3 +263,30 @@ def test_no_trusted_origins_configured_refuses_everything():
         result = tool.execute(**_PAYMENT)
 
     assert result.success is False
+
+
+def test_payment_qr_includes_total_when_provided_or_extracted():
+    from openjarvis.core.events import EventType
+
+    executor = ToolExecutor([_Http()])
+    tool = _display_tool()
+    published = []
+    tool._bus.subscribe(EventType.DISPLAY_UPDATE, lambda event: published.append(event.data))
+
+    with conversation_scope("a"):
+        _observe(
+            executor,
+            '{"result":{"qrCode":"QR_REAL_789","amount":40000}}',
+            201,
+            "https://trendcoffee.net/api/latest/payment/initiate/public",
+        )
+        result = tool.execute(
+            order_id="ORD-1",
+            payment_slug="PAY-1",
+            status="pending",
+        )
+
+    assert result.success is True
+    assert len(published) == 1
+    assert published[0]["total"] == 40000
+

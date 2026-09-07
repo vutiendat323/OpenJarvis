@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   clampPosition,
+  computeCornerResize,
   computeResizeDimensions,
   getInitialPosition,
   type Dimensions,
@@ -115,6 +116,58 @@ describe('floatingGeometry', () => {
       expect(result.width).toBe(Math.round(335.7));
       expect(Number.isInteger(result.width)).toBe(true);
       expect(Number.isInteger(result.height)).toBe(true);
+    });
+  });
+
+  describe('computeCornerResize', () => {
+    const startPos = { x: 300, y: 200 };
+    const startSize = { width: 320, height: 180 };
+
+    it('resizes from SE corner keeping top-left fixed', () => {
+      const { position, size } = computeCornerResize(
+        { startPos, startSize, corner: 'se' },
+        80,
+        45,
+        16 / 9,
+      );
+      expect(size).toEqual({ width: 400, height: 225 });
+      expect(position).toEqual({ x: 300, y: 200 });
+    });
+
+    it('resizes from SW corner moving X left and keeping top fixed', () => {
+      // Dragging left (-80px) expands width by +80
+      const { position, size } = computeCornerResize(
+        { startPos, startSize, corner: 'sw' },
+        -80,
+        45,
+        16 / 9,
+      );
+      expect(size).toEqual({ width: 400, height: 225 });
+      expect(position).toEqual({ x: 220, y: 200 }); // 300 + (320 - 400) = 220
+    });
+
+    it('resizes from NE corner moving Y up and keeping left fixed', () => {
+      // Dragging right (+80px) expands width by +80
+      const { position, size } = computeCornerResize(
+        { startPos, startSize, corner: 'ne' },
+        80,
+        -45,
+        16 / 9,
+      );
+      expect(size).toEqual({ width: 400, height: 225 });
+      expect(position).toEqual({ x: 300, y: 155 }); // 200 + (180 - 225) = 155
+    });
+
+    it('resizes from NW corner moving both X left and Y up', () => {
+      // Dragging up-left (-80px) expands width by +80
+      const { position, size } = computeCornerResize(
+        { startPos, startSize, corner: 'nw' },
+        -80,
+        -45,
+        16 / 9,
+      );
+      expect(size).toEqual({ width: 400, height: 225 });
+      expect(position).toEqual({ x: 220, y: 155 }); // x: 220, y: 155
     });
   });
 

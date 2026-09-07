@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional
@@ -53,6 +54,7 @@ class LoopGuard:
         self._per_tool_counts: dict[str, int] = {}
         # Track cycle keys that have already been warned (for warn-before-block)
         self._warned_cycles: set[str] = set()
+        self._failed_sync_sources: set[str] = set()
 
         try:
             from openjarvis._rust_bridge import get_rust_module
@@ -76,6 +78,15 @@ class LoopGuard:
         polling: bool = False,
     ) -> LoopVerdict:
         """Check whether a tool call should proceed or be blocked."""
+        sync_source = self._source_sync_key(tool_name, arguments)
+        if sync_source is not None and sync_source in self._failed_sync_sources:
+            return LoopVerdict(
+                blocked=True,
+                reason=(
+                    f"source_sync for '{sync_source}' already failed in this turn; "
+                    "do not retry it without a new source id or explicit recovery."
+                ),
+            )
         if self._rust_impl is not None:
             try:
                 rust_result = self._rust_impl.check(tool_name, arguments, polling)
@@ -108,6 +119,27 @@ class LoopGuard:
                 self._warned_cycles.add(cycle_key)
                 return LoopVerdict(blocked=False, warned=True, reason=verdict.reason)
         return verdict
+
+    def note_result(self, tool_name: str, arguments: str, *, success: bool) -> None:
+        """Remember failed sync sources so a model cannot hammer them this turn."""
+        if success:
+            return
+        sync_source = self._source_sync_key(tool_name, arguments)
+        if sync_source is not None:
+            self._failed_sync_sources.add(sync_source)
+
+    @staticmethod
+    def _source_sync_key(tool_name: str, arguments: str) -> str | None:
+        if tool_name != "source_sync":
+            return None
+        try:
+            params = json.loads(arguments) if arguments else {}
+        except json.JSONDecodeError:
+            return "<invalid>"
+        source_id = params.get("source_id") if isinstance(params, dict) else None
+        if isinstance(source_id, str) and source_id.strip():
+            return source_id.strip()
+        return "<missing>"
 
     def _python_check(
         self,
@@ -242,6 +274,7 @@ class LoopGuard:
         self._tool_sequence.clear()
         self._per_tool_counts.clear()
         self._warned_cycles.clear()
+        self._failed_sync_sources.clear()
         if self._rust_impl is not None:
             self._rust_impl.reset()
 

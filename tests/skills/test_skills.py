@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolResult
 from openjarvis.skills.executor import SkillExecutor
@@ -131,6 +133,80 @@ class TestSkillExecutor:
         result = executor.run(manifest, initial_context={"greeting": "hi"})
         assert result.success
         assert result.context.get("result") == "hi"
+
+    def test_dotted_json_output_placeholder_propagates_order_id(self):
+        """A later step can read a scalar from an earlier JSON tool result."""
+        executor = self._make_executor()
+        manifest = SkillManifest(
+            name="order_pipeline",
+            steps=[
+                SkillStep(
+                    tool_name="echo",
+                    arguments_template=(
+                        '{"text": "{\\"order\\": {\\"id\\": \\"ord-123\\"}}"}'
+                    ),
+                    output_key="step_0",
+                ),
+                SkillStep(
+                    tool_name="echo",
+                    arguments_template='{"text": "{step_0.order.id}"}',
+                    output_key="step_1",
+                ),
+            ],
+        )
+
+        result = executor.run(manifest)
+
+        assert result.success
+        assert result.context["step_1"] == "ord-123"
+
+    def test_embedded_dotted_placeholder_escapes_url_value_once(self):
+        """A JSON URL string accepts a dotted value that itself has quotes."""
+        rendered = SkillExecutor._render_template(
+            '{"url": "https://shop/orders/{step_0.result.id}"}',
+            {"step_0": '{"result": {"id": "ord-\\\"123\\\""}}'},
+        )
+
+        assert json.loads(rendered) == {
+            "url": 'https://shop/orders/ord-"123"',
+        }
+
+    def test_template_escapes_quoted_flat_placeholder_values(self):
+        """A normal input string containing quotes remains valid JSON for a step."""
+        executor = self._make_executor()
+        manifest = SkillManifest(
+            name="quoted_input",
+            steps=[
+                SkillStep(
+                    tool_name="echo",
+                    arguments_template='{"text": "{message}"}',
+                    output_key="result",
+                )
+            ],
+        )
+
+        result = executor.run(manifest, initial_context={"message": 'say "yes"'})
+
+        assert result.success
+        assert result.context["result"] == 'say "yes"'
+
+    def test_unresolved_placeholder_stops_before_the_tool_runs(self):
+        executor = self._make_executor()
+        manifest = SkillManifest(
+            name="stale-learned-read",
+            steps=[
+                SkillStep(
+                    tool_name="echo",
+                    arguments_template='{"text": "{step_0.items.0.name}"}',
+                )
+            ],
+        )
+
+        result = executor.run(manifest)
+
+        assert result.success is False
+        assert len(result.step_results) == 1
+        assert "Unresolved placeholder" in result.step_results[0].content
 
     def test_events_emitted(self):
         bus = EventBus(record_history=True)

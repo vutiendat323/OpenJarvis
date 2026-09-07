@@ -35,6 +35,7 @@ from openjarvis.core.registry import AgentRegistry
 from openjarvis.core.types import Message, Role, ToolCall, ToolResult
 from openjarvis.engine._stubs import InferenceEngine, merge_tool_call_fragments
 from openjarvis.tools._stubs import BaseTool
+from openjarvis.tools.result_projection import project_tool_content
 
 
 @AgentRegistry.register("orchestrator")
@@ -170,7 +171,7 @@ class OrchestratorAgent(ToolUsingAgent):
                     model=model,
                     temperature=self._temperature,
                     max_tokens=self._max_tokens,
-                    **(gen_kwargs if continuations == 0 else {}),
+                    **gen_kwargs,
                 )
                 async with aclosing(stream):
                     async for chunk in stream:
@@ -260,6 +261,25 @@ class OrchestratorAgent(ToolUsingAgent):
                         AgentResult(
                             content="",
                             metadata={"pending_approval": True},
+                        )
+                    )
+                    return
+                content = "".join(visible_parts)
+                if content.strip() and self._completed_display_batch(
+                    tool_calls, new_tool_results
+                ):
+                    metadata = {
+                        "prompt_tokens": total_prompt_tokens,
+                        "completion_tokens": total_completion_tokens,
+                        "total_tokens": total_prompt_tokens + total_completion_tokens,
+                    }
+                    self._emit_turn_end(turns=turns, content_length=len(content))
+                    yield AgentRunCompleted(
+                        AgentResult(
+                            content=content,
+                            tool_results=all_tool_results,
+                            turns=turns,
+                            metadata=metadata,
                         )
                     )
                     return
@@ -539,12 +559,30 @@ class OrchestratorAgent(ToolUsingAgent):
                 )
             )
 
+            previous_tool_results = len(all_tool_results)
             self._execute_function_tool_calls(
                 messages,
                 tool_calls,
                 all_tool_results,
                 loop_guard,
             )
+            new_tool_results = all_tool_results[previous_tool_results:]
+            final_content = self._strip_think_tags(content)
+            if final_content and self._completed_display_batch(
+                tool_calls, new_tool_results
+            ):
+                metadata = {
+                    "prompt_tokens": total_prompt_tokens,
+                    "completion_tokens": total_completion_tokens,
+                    "total_tokens": total_prompt_tokens + total_completion_tokens,
+                }
+                self._emit_turn_end(turns=turns, content_length=len(final_content))
+                return AgentResult(
+                    content=final_content,
+                    tool_results=all_tool_results,
+                    turns=turns,
+                    metadata=metadata,
+                )
         # Max turns exceeded
         final_content = self._strip_think_tags(content) if content else ""
         metadata = {
@@ -611,7 +649,10 @@ class OrchestratorAgent(ToolUsingAgent):
                         content=f"Loop guard: {verdict.reason}",
                         success=False,
                     )
-            return self._executor.execute(tc)
+            result = self._executor.execute(tc)
+            if loop_guard:
+                loop_guard.note_result(tc.name, tc.arguments, success=result.success)
+            return result
 
         if self._parallel_tools and len(tool_calls) > 1:
             with concurrent.futures.ThreadPoolExecutor(
@@ -625,6 +666,25 @@ class OrchestratorAgent(ToolUsingAgent):
             return [(tc, results[id(tc)]) for tc in tool_calls]
         return [(tc, execute(tc)) for tc in tool_calls]
 
+    def _completed_display_batch(
+        self,
+        tool_calls: list[ToolCall],
+        tool_results: list[ToolResult],
+    ) -> bool:
+        """Whether a successful display-only batch can finish this turn."""
+        if len(tool_calls) != len(tool_results) or not tool_results:
+            return False
+        display_tools = {
+            tool.spec.name
+            for tool in self._tools
+            if tool.spec.metadata.get("displays", False)
+        }
+        return all(result.success for result in tool_results) and all(
+            call.name in display_tools
+            or result.metadata.get("completed_display") is True
+            for call, result in zip(tool_calls, tool_results)
+        )
+
     @staticmethod
     def _append_function_tool_results(
         messages: list[Message],
@@ -633,12 +693,17 @@ class OrchestratorAgent(ToolUsingAgent):
     ) -> None:
         for tc, tool_result in ordered_results:
             all_tool_results.append(tool_result)
+            model_content = (
+                project_tool_content(tool_result.content)
+                if tc.name == "http_request"
+                else tool_result.content
+            )
             messages.append(
                 Message(
                     role=Role.TOOL,
                     content=(
                         f"Tool execution success={str(tool_result.success).lower()}\n"
-                        f"{tool_result.content}"
+                        f"{model_content}"
                     ),
                     tool_call_id=tc.id,
                     name=tc.name,

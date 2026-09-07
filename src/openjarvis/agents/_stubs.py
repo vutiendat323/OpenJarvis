@@ -14,7 +14,8 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from openjarvis.core.config import load_config
@@ -401,6 +402,42 @@ class BaseAgent(ABC):
                         and message.metadata.get("memory_context")
                     )
                 ]
+        current_date_context = (
+            f"Current local date: {datetime.now().astimezone().date().isoformat()}. "
+            "Use this date directly for date-sensitive requests; do not call "
+            "external time services to discover today's date."
+        )
+        if effective_system_prompt:
+            effective_system_prompt = (
+                f"{effective_system_prompt}\n\n{current_date_context}"
+            )
+        else:
+            for index, message in enumerate(context_messages):
+                if message.role == Role.SYSTEM:
+                    context_messages[index] = replace(
+                        message,
+                        content=f"{message.text}\n\n{current_date_context}",
+                    )
+                    break
+            else:
+                effective_system_prompt = current_date_context
+        try:
+            from openjarvis.tools import evidence
+
+            tool_evidence_context = evidence.model_context()
+        except ImportError:
+            tool_evidence_context = ""
+        if tool_evidence_context:
+            evidence_section = (
+                "Recent tool evidence from this conversation:\n"
+                f"{tool_evidence_context}"
+            )
+            effective_system_prompt = (
+                f"{effective_system_prompt}\n\n{evidence_section}"
+                if effective_system_prompt
+                else evidence_section
+            )
+        if effective_system_prompt:
             messages.append(Message(role=Role.SYSTEM, content=effective_system_prompt))
         if context_messages:
             messages.extend(context_messages)
@@ -488,6 +525,7 @@ class BaseAgent(ABC):
         messages: list,
         *,
         max_continuations: int = 2,
+        generation_kwargs: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Re-prompt on ``finish_reason == "length"`` to get complete output.
 
@@ -496,6 +534,7 @@ class BaseAgent(ABC):
         """
         content = result.get("content", "")
         finish_reason = result.get("finish_reason", "")
+        continuation_kwargs = dict(generation_kwargs or {})
 
         for _ in range(max_continuations):
             if finish_reason != "length":
@@ -510,7 +549,7 @@ class BaseAgent(ABC):
                     content="Continue from where you left off.",
                 ),
             )
-            cont = self._generate(messages)
+            cont = self._generate(messages, **continuation_kwargs)
             continuation = cont.get("content", "")
             content += continuation
             finish_reason = cont.get("finish_reason", "")

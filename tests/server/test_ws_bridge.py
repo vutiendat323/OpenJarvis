@@ -52,6 +52,38 @@ class _FakePresentationManager:
         self.disconnected.append(session_id)
 
 
+class _SendOnceWebSocket:
+    """Fake socket that disconnects after the handler sends one payload.
+
+    Keeps the assertions bounded: without a payload the handler parks on the
+    disconnect event and ``asyncio.wait_for`` fails fast instead of hanging.
+    """
+
+    def __init__(self, query_params=None, on_first_receive=None):
+        self.app = SimpleNamespace(state=SimpleNamespace(api_key=""))
+        self.query_params = query_params or {}
+        self.headers = {}
+        self.sent: list[dict] = []
+        self.receive_count = 0
+        self.disconnect = asyncio.Event()
+        self._on_first_receive = on_first_receive
+
+    async def accept(self):
+        pass
+
+    async def receive(self):
+        self.receive_count += 1
+        if self.receive_count == 1 and self._on_first_receive is not None:
+            self._on_first_receive()
+            return {"type": "websocket.receive", "text": "client message"}
+        await self.disconnect.wait()
+        return {"type": "websocket.disconnect"}
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+        self.disconnect.set()
+
+
 class TestWSBridge:
     def test_websocket_receives_events(self, app, event_bus):
         client = TestClient(app)
@@ -175,6 +207,61 @@ class TestWSBridge:
             assert manager.connected == ["customer-A"]
 
         assert manager.disconnected == ["customer-A"]
+
+    def test_websocket_replays_kiosk_state_after_connecting(self, event_bus):
+        async def exercise():
+            from openjarvis.server.ws_bridge import create_ws_router
+
+            endpoint = create_ws_router(event_bus).routes[0].endpoint
+
+            # Both transitions happen while nobody is listening. A page opened
+            # afterwards must still learn a person is already being prompted,
+            # and must see the latest state rather than the first one.
+            event_bus.publish(
+                EventType.KIOSK_STATE_CHANGED,
+                {"state": "prompting", "mic_enabled": False},
+            )
+            event_bus.publish(
+                EventType.KIOSK_STATE_CHANGED,
+                {"state": "active", "mic_enabled": True},
+            )
+
+            websocket = _SendOnceWebSocket()
+
+            await asyncio.wait_for(endpoint(websocket), timeout=1)
+
+            assert websocket.sent[0]["type"] == "kiosk_state_changed"
+            assert websocket.sent[0]["data"] == {"state": "active", "mic_enabled": True}
+
+        asyncio.run(exercise())
+
+    def test_agent_filtered_socket_does_not_receive_kiosk_replay(self, event_bus):
+        async def exercise():
+            from openjarvis.server.ws_bridge import create_ws_router
+
+            endpoint = create_ws_router(event_bus).routes[0].endpoint
+            event_bus.publish(
+                EventType.KIOSK_STATE_CHANGED,
+                {"state": "prompting", "mic_enabled": False},
+            )
+
+            def publish_agent_event():
+                event_bus.publish(
+                    EventType.AGENT_TICK_START,
+                    {"agent_id": "agent-1", "agent_name": "test"},
+                )
+
+            websocket = _SendOnceWebSocket(
+                query_params={"agent_id": "agent-1"},
+                on_first_receive=publish_agent_event,
+            )
+
+            await asyncio.wait_for(endpoint(websocket), timeout=1)
+
+            # The kiosk snapshot must not jump the agent filter.
+            assert websocket.sent[0]["type"] == "agent_tick_start"
+
+        asyncio.run(exercise())
 
     def test_agent_filter_does_not_receive_unscoped_display_updates(
         self, app, event_bus

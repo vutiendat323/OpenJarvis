@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import AsyncIterator
 from typing import Any, Dict, List, Optional
 
-from openjarvis.agents._stubs import AgentContext, AgentResult, BaseAgent
+from openjarvis.agents._stubs import (
+    AgentContext,
+    AgentResult,
+    AgentRunCompleted,
+    AgentStreamEvent,
+    BaseAgent,
+)
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import StepType, Trace, TraceStep
 from openjarvis.traces.store import TraceStore
@@ -66,7 +73,43 @@ class TraceCollector:
         finally:
             self._unsubscribe(unsubs)
 
-        ended_at = time.time()
+        self._record_completed(input, result, started_at, time.time())
+
+        return result
+
+    async def run_stream(
+        self,
+        input: str,
+        context: Optional[AgentContext] = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[AgentStreamEvent]:
+        """Forward a fully drained agent stream and record its completed trace."""
+        self._current_steps = []
+        self._current_model = ""
+        self._current_engine = ""
+
+        unsubs = self._subscribe()
+        started_at = time.time()
+        completed: AgentResult | None = None
+        try:
+            async for event in self._agent.run_stream(input, context=context, **kwargs):
+                if isinstance(event, AgentRunCompleted):
+                    completed = event.result
+                yield event
+        finally:
+            self._unsubscribe(unsubs)
+
+        if completed is not None:
+            self._record_completed(input, completed, started_at, time.time())
+
+    def _record_completed(
+        self,
+        input: str,
+        result: AgentResult,
+        started_at: float,
+        ended_at: float,
+    ) -> None:
+        """Build, persist, and publish the trace for one completed result."""
 
         # Add final respond step
         self._current_steps.append(
@@ -117,8 +160,6 @@ class TraceCollector:
 
         if self._bus is not None:
             self._bus.publish(EventType.TRACE_COMPLETE, {"trace": trace})
-
-        return result
 
     @property
     def last_trace(self) -> Optional[Trace]:
@@ -204,6 +245,9 @@ class TraceCollector:
         # (e.g. SkillTool's skill/skill_source/skill_kind tags) so the
         # SkillOptimizer can bucket traces by skill name.
         result_metadata = event.data.get("metadata") or {}
+        arguments = result_metadata.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = start_data.get("arguments", {})
         self._current_steps.append(
             TraceStep(
                 step_type=StepType.TOOL_CALL,
@@ -214,7 +258,7 @@ class TraceCollector:
                 ),
                 input={
                     "tool": event.data.get("tool", ""),
-                    "arguments": start_data.get("arguments", {}),
+                    "arguments": arguments,
                 },
                 output={
                     "success": event.data.get("success", False),

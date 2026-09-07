@@ -10,7 +10,7 @@ from openjarvis.skills.executor import SkillExecutor
 from openjarvis.skills.types import SkillManifest
 from openjarvis.tools._stubs import BaseTool, ToolSpec
 
-_PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
+_PLACEHOLDER_RE = re.compile(r"\{(\w+(?:\.\w+)*)\}")
 
 
 class SkillTool(BaseTool):
@@ -78,9 +78,10 @@ class SkillTool(BaseTool):
             # Find all {placeholder} tokens in this step's template
             placeholders = _PLACEHOLDER_RE.findall(step.arguments_template)
             for ph in placeholders:
-                if ph not in produced and ph not in seen:
-                    input_params.append(ph)
-                    seen.add(ph)
+                root = ph.split(".", 1)[0]
+                if root not in produced and root not in seen:
+                    input_params.append(root)
+                    seen.add(root)
 
             # After processing this step, its output_key becomes available
             # for subsequent steps and should NOT be surfaced as an input

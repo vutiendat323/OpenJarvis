@@ -9,6 +9,7 @@ No email, no name, no hardware fingerprint — just an opaque UUID.
 
 from __future__ import annotations
 
+import os
 import uuid
 from pathlib import Path
 
@@ -45,5 +46,12 @@ def reset_anon_id(path: Path | str) -> str:
 
 
 def is_analytics_enabled(cfg: AnalyticsConfig) -> bool:
-    """Return True if analytics is enabled in config."""
+    """Return True if analytics is enabled in config.
+
+    ``POSTHOG_DISABLED`` overrides the config so test runs never construct
+    the real SDK — it registers an ``atexit`` join on its consumer threads
+    that hangs the interpreter after the suite has already finished.
+    """
+    if os.environ.get("POSTHOG_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
+        return False
     return cfg.enabled

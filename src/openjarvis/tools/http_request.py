@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+import json
 import os
 import time
 import urllib.parse
@@ -13,9 +13,8 @@ import httpx
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
 from openjarvis.security.ssrf import check_ssrf
+from openjarvis.tools import evidence
 from openjarvis.tools._stubs import BaseTool, ToolSpec
-
-logger = logging.getLogger(__name__)
 
 # Maximum response body size: 1 MB
 _MAX_RESPONSE_BYTES = 1_048_576
@@ -138,42 +137,44 @@ class HttpRequestTool(BaseTool):
             for k, v in (params.get("headers") or {}).items()
         }
         body = params.get("body")
+        if isinstance(body, str) and not any(
+            str(name).lower() == "content-type" for name in headers
+        ):
+            try:
+                json.loads(body)
+            except (TypeError, json.JSONDecodeError):
+                pass
+            else:
+                headers["Content-Type"] = "application/json"
         timeout = params.get("timeout", 30)
 
-        _rust = None
-        # Reads only. A POST that fails inside the Rust path may already have
-        # reached the server, and falling through to httpx would send it twice
-        # -- a second order, a second email, a second charge.
-        if method in {"GET", "HEAD"}:
-            try:
-                from openjarvis._rust_bridge import get_rust_module
-
-                _rust = get_rust_module()
-            except ImportError:
-                pass
-        if _rust is not None and not headers:
-            try:
-                content = _rust.HttpRequestTool().execute(url, method, body)
+        # One exact mutation, one dispatch. The kiosk has no cart: the order is
+        # rebuilt as a body every turn, so a model that re-sends a confirmed
+        # order would otherwise buy a second coffee. Reads are exempt -- they
+        # change nothing and the agent legitimately re-reads.
+        claim = None
+        if method in _STATE_CHANGING_METHODS:
+            claim = evidence.claim_mutation(method, url, body)
+            if not claim.allowed:
                 return ToolResult(
                     tool_name="http_request",
+                    # Never echo the body back: it carries what the customer
+                    # ordered and, on other providers, who they are.
                     content=(
-                        content[:_MAX_RESPONSE_BYTES]
-                        if len(content) > _MAX_RESPONSE_BYTES
-                        else content
+                        f"No network call was made. This conversation already sent"
+                        f" this exact {method} to this URL; its outcome was"
+                        f" {claim.prior_outcome}. Do not resend it. Read the"
+                        " result back instead, or send a genuinely different"
+                        " request."
                     ),
-                    success=True,
-                    metadata={
-                        # The Rust API returns no status. Reporting 200 would be
-                        # a guess, and evidence checks that require a 2xx would
-                        # then trust a number nobody observed.
-                        "status_code": None,
-                        "truncated": len(content) > _MAX_RESPONSE_BYTES,
-                    },
+                    success=False,
+                    metadata={"duplicate_of_outcome": claim.prior_outcome},
                 )
-            except Exception as exc:
-                logger.debug("Rust HTTP request fallback to httpx: %s", exc)
 
         progress = _RequestProgress()
+        # Safest default: anything that leaves this block without classifying
+        # itself is treated as possibly-applied, never as safe to retry.
+        outcome = "ambiguous"
         try:
             t0 = time.time()
             # Follow redirects manually so each hop is re-checked for SSRF — an
@@ -187,6 +188,7 @@ class HttpRequestTool(BaseTool):
                 timeout=float(timeout),
                 progress=progress,
             )
+            outcome = "response_seen"
             elapsed_ms = (time.time() - t0) * 1000
 
             content_type = response.headers.get("content-type", "")
@@ -206,7 +208,7 @@ class HttpRequestTool(BaseTool):
             return ToolResult(
                 tool_name="http_request",
                 content=content,
-                success=True,
+                success=200 <= response.status_code < 300,
                 metadata={
                     "status_code": response.status_code,
                     "headers": response_headers,
@@ -218,9 +220,11 @@ class HttpRequestTool(BaseTool):
             )
         except httpx.TimeoutException as exc:
             content = f"Request timed out after {timeout}s: {exc}"
-            if method in _STATE_CHANGING_METHODS and (
-                progress.mutation_response_seen or not _never_reached_server(exc)
-            ):
+            unresolved = progress.mutation_response_seen or not _never_reached_server(
+                exc
+            )
+            outcome = "ambiguous" if unresolved else "not_sent"
+            if method in _STATE_CHANGING_METHODS and unresolved:
                 content += _AMBIGUOUS_OUTCOME
             return ToolResult(
                 tool_name="http_request",
@@ -238,9 +242,11 @@ class HttpRequestTool(BaseTool):
             )
         except httpx.RequestError as exc:
             content = f"Request error: {exc}"
-            if method in _STATE_CHANGING_METHODS and (
-                progress.mutation_response_seen or not _never_reached_server(exc)
-            ):
+            unresolved = progress.mutation_response_seen or not _never_reached_server(
+                exc
+            )
+            outcome = "ambiguous" if unresolved else "not_sent"
+            if method in _STATE_CHANGING_METHODS and unresolved:
                 content += _AMBIGUOUS_OUTCOME
             return ToolResult(
                 tool_name="http_request",
@@ -256,6 +262,9 @@ class HttpRequestTool(BaseTool):
                 content=content,
                 success=False,
             )
+        finally:
+            if claim is not None:
+                evidence.finish_mutation(claim, outcome)
 
     @staticmethod
     def _request_following_redirects(

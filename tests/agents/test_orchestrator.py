@@ -17,6 +17,7 @@ from openjarvis.agents._stubs import (
     AgentTextDelta,
 )
 from openjarvis.agents.orchestrator import OrchestratorAgent
+from openjarvis.core.conversation import conversation_scope
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import Conversation, Message, Role, ToolCall, ToolResult
 from openjarvis.engine._stubs import StreamChunk
@@ -25,6 +26,7 @@ from openjarvis.kiosk.presentation import (
     presentation_generation,
 )
 from openjarvis.telemetry.instrumented_engine import InstrumentedEngine
+from openjarvis.tools import evidence
 from openjarvis.tools._stubs import BaseTool, ToolSpec
 
 # ---------------------------------------------------------------------------
@@ -75,6 +77,26 @@ class _ThinkStub(BaseTool):
             tool_name="think",
             content=params.get("thought", ""),
             success=True,
+        )
+
+
+class _DisplayStub(BaseTool):
+    tool_id = "display_menu"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="display_menu",
+            description="Show a menu.",
+            parameters={"type": "object", "properties": {}},
+            metadata={"displays": True},
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        return ToolResult(
+            tool_name="display_menu",
+            content="shown",
+            success=not params.get("fail", False),
         )
 
 
@@ -389,6 +411,122 @@ def _make_engine_multi_tool() -> MagicMock:
 
 
 class TestOrchestratorAgent:
+    def test_display_call_with_customer_text_finishes_without_another_inference(
+        self,
+    ) -> None:
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.return_value = {
+            "content": "Dạ menu đang ở trên màn hình. Bạn chọn món nào ạ?",
+            "tool_calls": [
+                {
+                    "id": "display-1",
+                    "name": "display_menu",
+                    "arguments": '{"items": [{"name": "Latte"}]}',
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 8},
+            "finish_reason": "tool_calls",
+        }
+        agent = OrchestratorAgent(engine, "test-model", tools=[_DisplayStub()])
+
+        result = agent.run("show menu")
+
+        assert engine.generate.call_count == 1
+        assert result.turns == 1
+        assert result.content == "Dạ menu đang ở trên màn hình. Bạn chọn món nào ạ?"
+        assert result.tool_results[0].success is True
+
+    def test_failed_display_call_still_allows_the_model_to_recover(self) -> None:
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.side_effect = [
+            {
+                "content": "I will show it.",
+                "tool_calls": [
+                    {
+                        "id": "display-1",
+                        "name": "display_menu",
+                        "arguments": '{"fail": true}',
+                    }
+                ],
+                "finish_reason": "tool_calls",
+            },
+            {"content": "The display is unavailable.", "finish_reason": "stop"},
+        ]
+        agent = OrchestratorAgent(engine, "test-model", tools=[_DisplayStub()])
+
+        result = agent.run("show menu")
+
+        assert engine.generate.call_count == 2
+        assert result.content == "The display is unavailable."
+
+    def test_skill_that_completed_display_finishes_without_another_inference(
+        self,
+    ) -> None:
+        class DisplayingSkill(BaseTool):
+            @property
+            def spec(self) -> ToolSpec:
+                return ToolSpec(name="skill_manage", description="Run a skill")
+
+            def execute(self, **params: Any) -> ToolResult:
+                return ToolResult(
+                    tool_name="skill_manage",
+                    content="shown",
+                    metadata={"completed_display": True},
+                )
+
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.return_value = {
+            "content": "Dạ menu mới nhất đang ở trên màn hình.",
+            "tool_calls": [
+                {
+                    "id": "skill-1",
+                    "name": "skill_manage",
+                    "arguments": '{"action":"run","name":"read-menu"}',
+                }
+            ],
+            "finish_reason": "tool_calls",
+        }
+        agent = OrchestratorAgent(engine, "test-model", tools=[DisplayingSkill()])
+
+        result = agent.run("show menu")
+
+        assert engine.generate.call_count == 1
+        assert result.content == "Dạ menu mới nhất đang ở trên màn hình."
+
+    @pytest.mark.asyncio
+    async def test_streaming_display_text_finishes_after_the_display_call(self) -> None:
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(content="Dạ menu đang ở trên màn hình."),
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "display-1",
+                                "function": {
+                                    "name": "display_menu",
+                                    "arguments": '{"items": [{"name": "Latte"}]}',
+                                },
+                            }
+                        ]
+                    ),
+                    StreamChunk(finish_reason="tool_calls"),
+                ]
+            ]
+        )
+        agent = OrchestratorAgent(engine, "deepseek-v4-flash", tools=[_DisplayStub()])
+
+        events = [event async for event in agent.run_stream("show menu")]
+
+        assert len(engine.calls) == 1
+        assert events[0] == AgentTextDelta("Dạ menu đang ở trên màn hình.")
+        assert isinstance(events[-1], AgentRunCompleted)
+        assert events[-1].result.content == "Dạ menu đang ở trên màn hình."
+
     @pytest.mark.asyncio
     async def test_loop_guard_state_is_fresh_for_each_sequential_run(self) -> None:
         tool = _CountingClickStub()
@@ -616,6 +754,30 @@ class TestOrchestratorAgent:
         )
 
     @pytest.mark.asyncio
+    async def test_orchestrator_stream_continuation_keeps_tool_schemas(self) -> None:
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(content="", finish_reason="length"),
+                ],
+                _stream_tool_round("calculator", 1),
+                _stream_final_round("Đã gọi tool."),
+            ]
+        )
+        agent = OrchestratorAgent(
+            engine,
+            "deepseek-v4-flash",
+            tools=[_CalculatorStub()],
+        )
+
+        events = [event async for event in agent.run_stream("Tính tiếp")]
+
+        assert len(engine.calls) == 3
+        assert engine.calls[1][1]["tools"] == engine.calls[0][1]["tools"]
+        assert events[-1].result.tool_results[0].content == "0"
+        assert events[-1].result.content == "Đã gọi tool."
+
+    @pytest.mark.asyncio
     async def test_orchestrator_stream_executes_fragmented_tool_call_before_answer(
         self,
     ) -> None:
@@ -693,6 +855,63 @@ class TestOrchestratorAgent:
             "completion_tokens": 8,
             "total_tokens": 28,
         }
+
+    @pytest.mark.asyncio
+    async def test_http_result_is_projected_only_in_the_model_transcript(self) -> None:
+        raw_body = "{\"products\":[" + ",".join(
+            f'{{"id":"item-{index:03d}","description":"{"x" * 600}"}}'
+            for index in range(121)
+        ) + "]}"
+
+        class LargeHttpResult(BaseTool):
+            tool_id = "http_request"
+
+            @property
+            def spec(self) -> ToolSpec:
+                return ToolSpec(
+                    name="http_request",
+                    description="Fake HTTP boundary.",
+                    parameters={"type": "object", "properties": {}},
+                )
+
+            def execute(self, **params: Any) -> ToolResult:
+                del params
+                return ToolResult(
+                    tool_name="http_request",
+                    content=raw_body,
+                    success=True,
+                    metadata={
+                        "status_code": 200,
+                        "final_url": "https://example.test/products",
+                    },
+                )
+
+        engine = StreamingEngine(
+            [
+                _stream_tool_round("http_request", 1),
+                _stream_final_round("Đã đọc dữ liệu."),
+            ]
+        )
+        evidence.reset()
+        with conversation_scope("projection-test"):
+            events = [
+                event
+                async for event in OrchestratorAgent(
+                    engine,
+                    "deepseek-v4-flash",
+                    tools=[LargeHttpResult()],
+                ).run_stream("Read products")
+            ]
+            transcript_result = engine.calls[1][0][-1].text
+
+            assert len(raw_body) > 70_000
+            assert len(transcript_result) < 20_000
+            assert "item-000" in transcript_result
+            assert "item-060" in transcript_result
+            assert "item-120" in transcript_result
+            assert evidence.last_result("http_request") == raw_body
+            assert events[-1].result.tool_results[0].content == raw_body
+        evidence.reset()
 
     @pytest.mark.asyncio
     async def test_orchestrator_stream_keeps_event_loop_live_during_tool_execution(
@@ -1664,17 +1883,23 @@ class TestBrowserSystemPromptPlumbing:
         engine = _RecordingFunctionCallingEngine()
         agent = OrchestratorAgent(engine, "model", system_prompt=self.BROWSER_PROMPT)
         agent.run("mở trang nhân sự", self._voice_context())
-        assert engine.requests[0][:2] == [
-            Message(role=Role.SYSTEM, content=self.BROWSER_PROMPT),
-            Message(role=Role.SYSTEM, content=self.VOICE_SYSTEM_PROMPT),
-        ]
+        assert engine.requests[0][0].role == Role.SYSTEM
+        assert engine.requests[0][0].content.startswith(
+            f"{self.BROWSER_PROMPT}\n\nCurrent local date:"
+        )
+        assert engine.requests[0][1] == Message(
+            role=Role.SYSTEM, content=self.VOICE_SYSTEM_PROMPT
+        )
 
     def test_sync_run_without_voice_context_has_one_system_message(self) -> None:
         engine = _RecordingFunctionCallingEngine()
         agent = OrchestratorAgent(engine, "model", system_prompt=self.BROWSER_PROMPT)
         agent.run("mở trang nhân sự")
         systems = [m for m in engine.requests[0] if m.role == Role.SYSTEM]
-        assert systems == [Message(role=Role.SYSTEM, content=self.BROWSER_PROMPT)]
+        assert len(systems) == 1
+        assert systems[0].content.startswith(
+            f"{self.BROWSER_PROMPT}\n\nCurrent local date:"
+        )
 
     @pytest.mark.asyncio
     async def test_streaming_run_prepends_the_agent_system_prompt(self) -> None:
@@ -1683,10 +1908,13 @@ class TestBrowserSystemPromptPlumbing:
         async for _ in agent.run_stream("mở trang nhân sự", self._voice_context()):
             pass
         messages = engine.calls[0][0]
-        assert list(messages)[:2] == [
-            Message(role=Role.SYSTEM, content=self.BROWSER_PROMPT),
-            Message(role=Role.SYSTEM, content=self.VOICE_SYSTEM_PROMPT),
-        ]
+        assert messages[0].role == Role.SYSTEM
+        assert messages[0].content.startswith(
+            f"{self.BROWSER_PROMPT}\n\nCurrent local date:"
+        )
+        assert messages[1] == Message(
+            role=Role.SYSTEM, content=self.VOICE_SYSTEM_PROMPT
+        )
 
     @pytest.mark.asyncio
     async def test_streaming_run_without_prompt_keeps_voice_context_first(
@@ -1697,6 +1925,7 @@ class TestBrowserSystemPromptPlumbing:
         async for _ in agent.run_stream("mở trang nhân sự", self._voice_context()):
             pass
         messages = list(engine.calls[0][0])
-        assert messages[0] == Message(
-            role=Role.SYSTEM, content=self.VOICE_SYSTEM_PROMPT
+        assert messages[0].role == Role.SYSTEM
+        assert messages[0].content.startswith(
+            f"{self.VOICE_SYSTEM_PROMPT}\n\nCurrent local date:"
         )
