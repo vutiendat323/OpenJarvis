@@ -95,6 +95,103 @@ class TestJarvisAsk:
             assert result == "Agent response"
             j.close()
 
+    def test_morning_digest_receives_configured_kwargs_and_required_tools(self):
+        from openjarvis.agents._stubs import AgentResult
+        from openjarvis.core.registry import AgentRegistry, ToolRegistry
+        from openjarvis.core.types import ToolResult
+        from openjarvis.tools._stubs import BaseTool, ToolSpec
+        from openjarvis.tools.digest_collect import DigestCollectTool
+        from openjarvis.tools.text_to_speech import TextToSpeechTool
+
+        received = []
+
+        class RecordingAgent:
+            accepts_tools = True
+
+            def __init__(self, engine, model, **kwargs):
+                received.append(kwargs)
+
+            def run(self, input, context=None, **kwargs):
+                return AgentResult(content="recorded", turns=1)
+
+        class CallerTool(BaseTool):
+            tool_id = "caller_tool"
+
+            @property
+            def spec(self):
+                return ToolSpec(name=self.tool_id, description="Caller tool")
+
+            def execute(self, **params):
+                return ToolResult(tool_name=self.tool_id, content="", success=True)
+
+        AgentRegistry.register_value("morning_digest", RecordingAgent)
+        AgentRegistry.register_value("recording", RecordingAgent)
+        ToolRegistry.register_value("caller_tool", CallerTool)
+
+        config = JarvisConfig()
+        config.digest.persona = "custom-persona"
+        config.digest.sections = ["messages", "persona"]
+        config.digest.messages.sources = ["custom-mail"]
+        config.digest.timezone = "Asia/Ho_Chi_Minh"
+        config.digest.voice_id = "voice-42"
+        config.digest.voice_speed = 1.25
+        config.digest.tts_backend = "local"
+        config.digest.honorific = "boss"
+
+        engine = _make_engine()
+        with patch("openjarvis.sdk.get_engine", return_value=("mock", engine)):
+            j = Jarvis(config=config, model="test-model")
+            try:
+                assert (
+                    j.ask(
+                        "make my digest",
+                        agent="morning_digest",
+                        tools=["caller_tool"],
+                        context=False,
+                    )
+                    == "recorded"
+                )
+                assert j.ask("plain", agent="recording", context=False) == "recorded"
+            finally:
+                j.close()
+
+        digest_kwargs, plain_kwargs = received
+        assert {
+            key: digest_kwargs[key]
+            for key in (
+                "persona",
+                "sections",
+                "section_sources",
+                "timezone",
+                "voice_id",
+                "voice_speed",
+                "tts_backend",
+                "honorific",
+            )
+        } == {
+            "persona": "custom-persona",
+            "sections": ["messages", "persona"],
+            "section_sources": {"messages": ["custom-mail"]},
+            "timezone": "Asia/Ho_Chi_Minh",
+            "voice_id": "voice-42",
+            "voice_speed": 1.25,
+            "tts_backend": "local",
+            "honorific": "boss",
+        }
+        assert isinstance(digest_kwargs["tools"][0], DigestCollectTool)
+        assert isinstance(digest_kwargs["tools"][1], TextToSpeechTool)
+        assert isinstance(digest_kwargs["tools"][2], CallerTool)
+        assert not {
+            "persona",
+            "sections",
+            "section_sources",
+            "timezone",
+            "voice_id",
+            "voice_speed",
+            "tts_backend",
+            "honorific",
+        }.intersection(plain_kwargs)
+
     def test_ask_no_engine_raises(self):
         with patch("openjarvis.sdk.get_engine", return_value=None):
             j = Jarvis(config=JarvisConfig())
