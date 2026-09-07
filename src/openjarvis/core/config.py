@@ -1590,37 +1590,6 @@ class DigestConfig:
     )
 
 
-@dataclass(slots=True)
-class MerchantsConfig:
-    """Which merchant the ordering tools talk to.
-
-    ``none`` leaves ordering tools without a merchant, so they fail with
-    ``merchant_unavailable`` rather than guessing. ``fake`` is retained only
-    for deterministic tests; production uses a Data Plane-backed provider.
-    """
-
-    backend: str = "none"
-    source_id: str = "trend-coffee"
-    snapshot_max_age_seconds: int = 60
-
-
-@dataclass(slots=True)
-class DataPlaneConfig:
-    """Structured source discovery and snapshot settings."""
-
-    enabled: bool = False
-    db_path: str = ""
-    discovery_budget_seconds: int = 60
-    browser_fallback: bool = False
-    source_url: str = ""
-    trusted_write_operations: str = ""
-    # Off by default: a mutation waits for an operator to approve it in the
-    # approval queue. A voice kiosk has no operator -- the customer who just
-    # said yes is the only human present -- so waiting strands every order.
-    # Turning this on skips the wait, never the exact request-hash binding.
-    conversational_approval: bool = False
-
-
 @dataclass
 class JarvisConfig:
     """Top-level configuration for OpenJarvis."""
@@ -1655,8 +1624,6 @@ class JarvisConfig:
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     digest: DigestConfig = field(default_factory=DigestConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
-    merchants: MerchantsConfig = field(default_factory=MerchantsConfig)
-    data_plane: DataPlaneConfig = field(default_factory=DataPlaneConfig)
     mining: Optional["MiningConfig"] = None
 
     @property
@@ -1946,8 +1913,6 @@ def load_config(path: Optional[Path] = None) -> JarvisConfig:
             "system_prompt",
             "compression",
             "skills",
-            "merchants",
-            "data_plane",
         )
         for section_name in top_sections:
             if section_name in data:

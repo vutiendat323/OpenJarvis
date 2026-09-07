@@ -48,54 +48,6 @@ def test_preset_loads(preset_path: Path) -> None:
     assert cfg.agent.default_agent, f"{preset_path.stem}: agent.default_agent is empty"
 
 
-# One turn of the ordering kiosk was measured at 13-36s. A snapshot age gate
-# below that expires mid-conversation, so the ordering reads fail closed on the
-# customer's next sentence and the Agent reports the menu as unavailable.
-_MIN_SNAPSHOT_MAX_AGE_SECONDS = 600
-
-
-@pytest.mark.parametrize(
-    "preset_path",
-    _preset_paths(),
-    ids=lambda p: p.stem,
-)
-def test_merchant_preset_snapshot_age_outlives_a_conversation(
-    preset_path: Path,
-) -> None:
-    cfg = load_config(path=preset_path)
-    if cfg.merchants.backend == "none":
-        pytest.skip("preset configures no merchant")
-    assert cfg.merchants.snapshot_max_age_seconds >= _MIN_SNAPSHOT_MAX_AGE_SECONDS, (
-        f"{preset_path.stem}: snapshot_max_age_seconds="
-        f"{cfg.merchants.snapshot_max_age_seconds} expires mid-conversation"
-    )
-
-
-def test_unattended_kiosk_preset_grants_no_standing_write() -> None:
-    """The two kiosk presets differ only here, and it is the dangerous place.
-
-    `ordering-kiosk-mcp.toml` is the attended demo preset and may carry an
-    authorized write grant. `ordering-kiosk.toml` is the public terminal
-    nobody is watching: a grant copied into it would let an injected page
-    place real orders.
-    """
-    cfg = load_config(path=PRESETS_DIR / "ordering-kiosk.toml")
-
-    assert cfg.data_plane.trusted_write_operations == ""
-    # Nobody is standing at an unattended terminal to be the approver.
-    assert cfg.data_plane.conversational_approval is False
-
-
-def test_preset_write_grants_are_exact_identities() -> None:
-    """A malformed grant must fail here, not at the first live mutation."""
-    from openjarvis.data_plane.approval import parse_trusted_write_operations
-
-    for preset_path in _preset_paths():
-        configured = load_config(path=preset_path).data_plane.trusted_write_operations
-        # Raises on a wildcard, a missing fingerprint, or stray whitespace.
-        parse_trusted_write_operations(configured)
-
-
 def test_kiosk_mcp_preset_runs_on_generic_tools_only() -> None:
     """The kiosk transacts through http_request, not through ordering tools."""
     preset_path = PRESETS_DIR / "ordering-kiosk-mcp.toml"

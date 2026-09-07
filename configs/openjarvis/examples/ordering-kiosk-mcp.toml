@@ -1,16 +1,9 @@
-# ordering-kiosk-mcp.toml -- ordering kiosk PLUS live browser interaction.
+# ordering-kiosk-mcp.toml -- ordering kiosk with live browser interaction.
 #
-# This is `ordering-kiosk.toml` with Playwright MCP added for explicit,
-# attended browser tasks. The Data Plane remains direct-first;
-# `browser_fallback = false`, and nothing the browser observes becomes a
-# trusted capability or snapshot.
-#
-# SECURITY: this preset deliberately breaks the hardening `ordering-kiosk.toml`
-# ships with. It grants 21 browser click/type/navigate tools to an agent whose
-# threat model treats page text and provider JSON as prompt-injection-bearing,
-# and it declares no capability policy. Use it for attended development and
-# demos. `ordering-kiosk.toml` remains the preset for an unattended public
-# terminal.
+# Playwright remains connected so PresentationSessionManager can own the
+# customer-display tab. A bounded subset is also exposed for cold discovery on
+# an unknown website; once an API recipe is learned, warm turns use
+# http_request and display_* without rediscovering it.
 
 # Ordering Kiosk — Trend Coffee-backed voice ordering, Phase 1.
 #

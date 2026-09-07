@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -10,11 +10,6 @@ if TYPE_CHECKING:
     from openjarvis.agents.executor import AgentExecutor
     from openjarvis.agents.manager import AgentManager
     from openjarvis.agents.scheduler import AgentScheduler
-    from openjarvis.data_plane.approval import ExecutionApprovalGate
-    from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
-    from openjarvis.data_plane.discovery import DiscoveryEngine
-    from openjarvis.data_plane.execution import DirectExecutionEngine
-    from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
     from openjarvis.scheduler.scheduler import TaskScheduler
     from openjarvis.scheduler.store import SchedulerStore
     from openjarvis.security.audit import AuditLogger
@@ -62,38 +57,3 @@ class Scheduling:
 
     store: Optional[SchedulerStore] = None
     runner: Optional[TaskScheduler] = None
-
-
-@dataclass
-class DataPlaneRuntime:
-    """One owned composition of the three Data Plane modules."""
-
-    capabilities: SQLiteCapabilityStore
-    snapshots: StructuredSnapshotStore
-    discovery: DiscoveryEngine
-    direct: DirectExecutionEngine
-    approval_gate: ExecutionApprovalGate | None = None
-    _closed: bool = field(default=False, init=False, repr=False)
-
-    def close(self) -> None:
-        """Release Data Plane-owned resources exactly once."""
-        if self._closed:
-            return
-        self._closed = True
-        first_error: Exception | None = None
-        for owner in (
-            self.discovery,
-            self.direct,
-            self.approval_gate,
-            self.snapshots,
-            self.capabilities,
-        ):
-            if owner is None:
-                continue
-            try:
-                owner.close()
-            except Exception as exc:
-                if first_error is None:
-                    first_error = exc
-        if first_error is not None:
-            raise first_error

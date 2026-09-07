@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from openjarvis.core.config import JarvisConfig, load_config
 from openjarvis.core.events import EventBus, get_event_bus
-from openjarvis.core.paths import get_config_dir, get_data_dir
+from openjarvis.core.paths import get_config_dir
 from openjarvis.engine._stubs import InferenceEngine
 from openjarvis.system.core import JarvisSystem
 from openjarvis.tools._stubs import BaseTool, ToolExecutor
@@ -51,7 +51,6 @@ class SystemBuilder:
         self._speech: Optional[bool] = None
         self._mcp_clients: List = []
         self._mcp_tools: List[BaseTool] = []
-        self._unowned_data_plane = None
 
     def engine(self, key: str) -> SystemBuilder:
         self._engine_key = key
@@ -126,41 +125,16 @@ class SystemBuilder:
         # returned, that system owns the clients and adapters captured below;
         # retaining them here would make a reused builder hand closed clients
         # from an earlier system to the next one.
-        self._close_unowned_data_plane()
         self._clear_mcp_discovery_state(close_clients=True)
         try:
             system = self._build()
         except BaseException:
             # No system took ownership, so release any clients opened before
             # the build failed.
-            self._close_unowned_data_plane()
             self._clear_mcp_discovery_state(close_clients=True)
             raise
-        self._unowned_data_plane = None
         self._clear_mcp_discovery_state(close_clients=False)
         return system
-
-    def _close_unowned_data_plane(self) -> None:
-        runtime = self._unowned_data_plane
-        self._unowned_data_plane = None
-        if runtime is not None:
-            try:
-                runtime.close()
-            except Exception:
-                logger.debug("Error closing unowned Data Plane runtime", exc_info=True)
-
-    @staticmethod
-    def _close_partial_data_plane_owners(*owners) -> None:
-        for owner in reversed(owners):
-            if owner is None:
-                continue
-            try:
-                owner.close()
-            except Exception:
-                logger.debug(
-                    "Error closing partially constructed Data Plane owner",
-                    exc_info=True,
-                )
 
     def _clear_mcp_discovery_state(self, *, close_clients: bool) -> None:
         if close_clients:
@@ -236,7 +210,6 @@ class SystemBuilder:
 
         memory_backend = self._resolve_memory(config)
         channel_backend = self._resolve_channel(config, bus)
-        data_plane = self._build_data_plane(config, bus)
         tool_list = self._resolve_tools(
             config,
             engine,
@@ -244,7 +217,6 @@ class SystemBuilder:
             memory_backend,
             channel_backend,
             bus,
-            data_plane,
         )
         from openjarvis.kiosk.presentation import (
             PresentationSessionManager,
@@ -257,8 +229,6 @@ class SystemBuilder:
         )
         for tool in tool_list:
             self._inject_display_presentation(tool, presentation)
-        if data_plane is not None:
-            data_plane.direct.set_mcp_tools(self._mcp_tools)
         # The policy has to travel with the executor: ToolExecutor.execute()
         # consults it before dispatch, and a None policy silently disables the
         # capability check for every tool routed through this executor.
@@ -426,7 +396,6 @@ class SystemBuilder:
             agent_executor=agent_executor,
             speech_backend=speech_backend,
             skill_manager=skill_manager,
-            data_plane=data_plane,
             presentation_session_manager=presentation,
         )
         system._learning_orchestrator = learning_orchestrator
@@ -545,52 +514,13 @@ class SystemBuilder:
         memory_backend,
         channel_backend=None,
         bus=None,
-        data_plane=None,
     ):
         """Resolve tool instances via MCPServer (primary) + external MCP servers."""
-        import openjarvis.tools.data_plane  # noqa: F401 -- trigger registration
         from openjarvis.mcp.server import MCPServer
 
         internal_server = MCPServer()
         for tool in internal_server.get_tools():
             self._inject_tool_deps(tool, engine, model, memory_backend, channel_backend)
-
-        merchant = None
-        if getattr(config, "merchants", None) is not None:
-            if config.merchants.backend == "fake":
-                from openjarvis.merchants.fake import FakeMerchant
-
-                merchant = FakeMerchant()
-            elif config.merchants.backend == "trendcoffee" and data_plane is not None:
-                from openjarvis.merchants.trendcoffee import TrendCoffeeMerchant
-
-                merchant = TrendCoffeeMerchant(
-                    data_plane,
-                    source_id=config.merchants.source_id,
-                )
-        for tool in internal_server.get_tools():
-            if merchant is not None:
-                self._inject_ordering_merchant(tool, merchant)
-            self._inject_data_plane_runtime(tool, data_plane, config)
-        display_menu = next(
-            (
-                tool
-                for tool in internal_server.get_tools()
-                if tool.spec.name == "display_menu"
-            ),
-            None,
-        )
-        display_bill = next(
-            (
-                tool
-                for tool in internal_server.get_tools()
-                if tool.spec.name == "display_bill"
-            ),
-            None,
-        )
-        for tool in internal_server.get_tools():
-            self._inject_menu_display(tool, display_menu)
-            self._inject_bill_display(tool, display_bill)
 
         tool_names = self._tool_names
         if tool_names is None:
@@ -671,41 +601,10 @@ class SystemBuilder:
             pass  # scheduler injection handled post-build
 
     @staticmethod
-    def _inject_ordering_merchant(tool, merchant) -> None:
-        """Hand the merchant to every ordering tool.
-
-        Keyed on category rather than on each tool name, so adding an eighth
-        ordering tool does not mean remembering to edit this method.
-        """
-        if tool.spec.category == "ordering" and hasattr(tool, "_merchant"):
-            tool._merchant = merchant
-
-    @staticmethod
     def _inject_display_presentation(tool, presentation) -> None:
         """Hand the session-scoped presentation manager to every display tool."""
         if tool.spec.category == "display" and hasattr(tool, "_presentation"):
             tool._presentation = presentation
-        display_bill = getattr(tool, "_display_bill", None)
-        if display_bill is not None:
-            SystemBuilder._inject_display_presentation(display_bill, presentation)
-
-    @staticmethod
-    def _inject_menu_display(tool, display_menu) -> None:
-        if tool.spec.name == "menu_search" and hasattr(tool, "_display_menu"):
-            tool._display_menu = display_menu
-
-    @staticmethod
-    def _inject_bill_display(tool, display_bill) -> None:
-        if tool.spec.name == "order_verify" and hasattr(tool, "_display_bill"):
-            tool._display_bill = display_bill
-
-    @staticmethod
-    def _inject_data_plane_runtime(tool, runtime, config) -> None:
-        if tool.spec.category != "data_plane" or not hasattr(tool, "_runtime"):
-            return
-        tool._runtime = runtime
-        tool._discovery_budget_seconds = config.data_plane.discovery_budget_seconds
-        tool._browser_fallback = config.data_plane.browser_fallback
 
     @staticmethod
     def _parse_trusted_origins(raw: str) -> tuple:
@@ -746,73 +645,6 @@ class SystemBuilder:
         ):
             return
         tool._payment_trusted_origins = trusted_origins
-
-    def _build_data_plane(self, config, bus):
-        if not config.data_plane.enabled:
-            return None
-        import importlib
-        from pathlib import Path
-
-        from openjarvis.core.registry import SourceAdapterRegistry
-        from openjarvis.data_plane.adapters import generic, trendcoffee
-        from openjarvis.data_plane.approval import ExecutionApprovalGate
-        from openjarvis.data_plane.capability_store import SQLiteCapabilityStore
-        from openjarvis.data_plane.discovery import DiscoveryEngine
-        from openjarvis.data_plane.execution import DirectExecutionEngine
-        from openjarvis.data_plane.snapshot_store import StructuredSnapshotStore
-        from openjarvis.system.bundles import DataPlaneRuntime
-        from openjarvis.tools.proactive_tools import get_store
-
-        for key, module in (("generic", generic), ("trendcoffee", trendcoffee)):
-            if not SourceAdapterRegistry.contains(key):
-                importlib.reload(module)
-            if not SourceAdapterRegistry.contains(key):
-                raise RuntimeError(f"Data Plane adapter is not registered: {key}")
-
-        data_dir = get_data_dir()
-        db_path = Path(config.data_plane.db_path).expanduser()
-        if not config.data_plane.db_path:
-            db_path = data_dir / "structured.db"
-            config.data_plane.db_path = str(db_path)
-        capabilities = None
-        snapshots = None
-        discovery = None
-        direct = None
-        approval_gate = None
-        try:
-            capabilities = SQLiteCapabilityStore(db_path)
-            snapshots = StructuredSnapshotStore(db_path)
-            discovery = DiscoveryEngine(
-                capabilities,
-                event_bus=bus,
-                trusted_write_operations=config.data_plane.trusted_write_operations,
-            )
-            direct = DirectExecutionEngine(capabilities, snapshots, bus=bus)
-            # One store per process: the approval UI, the proactive agent and
-            # the Data Plane gate must address the same database, and a second
-            # `ApprovalStore()` only coincidentally resolves the same file.
-            approval_gate = ExecutionApprovalGate(
-                get_store(),
-                owns_store=False,
-            )
-            runtime = DataPlaneRuntime(
-                capabilities,
-                snapshots,
-                discovery,
-                direct,
-                approval_gate,
-            )
-        except Exception:
-            self._close_partial_data_plane_owners(
-                capabilities,
-                snapshots,
-                discovery,
-                direct,
-                approval_gate,
-            )
-            raise
-        self._unowned_data_plane = runtime
-        return runtime
 
     def _setup_sandbox(self, config):
         sandbox_enabled = (

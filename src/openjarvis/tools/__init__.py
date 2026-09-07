@@ -153,11 +153,6 @@ except ImportError:
     pass
 
 try:
-    import openjarvis.tools.ordering  # noqa: F401
-except ImportError:
-    pass
-
-try:
     import openjarvis.tools.display  # noqa: F401
 except ImportError:
     pass

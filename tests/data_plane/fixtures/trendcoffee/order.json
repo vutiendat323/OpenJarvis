@@ -1,9 +1,0 @@
-{
-  "_fixture_provenance": "Schema example reconstructed from first-party bundle contracts; not a captured mutation response and cannot establish write trust.",
-  "statusCode": 200,
-  "result": {
-    "slug": "example-order",
-    "status": "pending",
-    "items": []
-  }
-}
