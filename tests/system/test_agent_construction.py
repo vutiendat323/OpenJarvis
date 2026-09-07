@@ -27,9 +27,10 @@ import pytest
 from openjarvis.agents._stubs import BaseAgent
 from openjarvis.agents.orchestrator import OrchestratorAgent
 from openjarvis.agents.simple import SimpleAgent
-from openjarvis.core.config import AgentConfig
+from openjarvis.core.config import AgentConfig, JarvisConfig
 from openjarvis.core.registry import AgentRegistry
 from openjarvis.system.agent_construction import (
+    build_morning_digest_kwargs,
     construct_registered_agent,
     resolve_agent_system_prompt,
 )
@@ -74,6 +75,65 @@ class _FakeTool:
 
     def execute(self, **params):
         raise NotImplementedError
+
+
+@pytest.mark.parametrize(
+    ("agent_name", "config"),
+    [
+        pytest.param("simple", JarvisConfig(), id="other-agent"),
+        pytest.param("morning_digest", object(), id="missing-digest-config"),
+    ],
+)
+def test_morning_digest_kwargs_are_empty_outside_digest_path(agent_name, config):
+    assert build_morning_digest_kwargs(agent_name, config, [_FakeTool()]) == {}
+
+
+def test_morning_digest_kwargs_map_config_and_prepend_required_tools():
+    from openjarvis.tools.digest_collect import DigestCollectTool
+    from openjarvis.tools.text_to_speech import TextToSpeechTool
+
+    config = JarvisConfig()
+    config.digest.persona = "custom-persona"
+    config.digest.sections = ["messages", "persona"]
+    config.digest.messages.sources = ["custom-mail"]
+    config.digest.timezone = "Asia/Ho_Chi_Minh"
+    config.digest.voice_id = "voice-42"
+    config.digest.voice_speed = 1.25
+    config.digest.tts_backend = "local"
+    config.digest.honorific = "boss"
+    caller_tool = _FakeTool()
+
+    kwargs = build_morning_digest_kwargs(
+        "morning_digest",
+        config,
+        [caller_tool],
+    )
+
+    assert {
+        key: kwargs[key]
+        for key in (
+            "persona",
+            "sections",
+            "section_sources",
+            "timezone",
+            "voice_id",
+            "voice_speed",
+            "tts_backend",
+            "honorific",
+        )
+    } == {
+        "persona": "custom-persona",
+        "sections": ["messages", "persona"],
+        "section_sources": {"messages": ["custom-mail"]},
+        "timezone": "Asia/Ho_Chi_Minh",
+        "voice_id": "voice-42",
+        "voice_speed": 1.25,
+        "tts_backend": "local",
+        "honorific": "boss",
+    }
+    assert isinstance(kwargs["tools"][0], DigestCollectTool)
+    assert isinstance(kwargs["tools"][1], TextToSpeechTool)
+    assert kwargs["tools"][2] is caller_tool
 
 
 def _build(**extra):

@@ -42,6 +42,38 @@ def resolve_agent_system_prompt(agent_config: Any) -> str | None:
         ) from exc
 
 
+def build_morning_digest_kwargs(
+    agent_name: str,
+    config: Any,
+    tools: list[Any],
+) -> dict[str, Any]:
+    """Build the config and required tools for ``morning_digest``."""
+    if agent_name != "morning_digest" or not hasattr(config, "digest"):
+        return {}
+
+    digest_config = config.digest
+    section_sources: dict[str, Any] = {}
+    for section in digest_config.sections:
+        section_config = getattr(digest_config, section, None)
+        if section_config and hasattr(section_config, "sources"):
+            section_sources[section] = section_config.sources
+
+    from openjarvis.tools.digest_collect import DigestCollectTool
+    from openjarvis.tools.text_to_speech import TextToSpeechTool
+
+    return {
+        "persona": digest_config.persona,
+        "sections": digest_config.sections,
+        "section_sources": section_sources,
+        "timezone": digest_config.timezone,
+        "voice_id": digest_config.voice_id,
+        "voice_speed": digest_config.voice_speed,
+        "tts_backend": digest_config.tts_backend,
+        "honorific": digest_config.honorific,
+        "tools": [DigestCollectTool(), TextToSpeechTool(), *tools],
+    }
+
+
 def construct_registered_agent(
     *,
     agent_name: str,
@@ -107,4 +139,8 @@ def construct_registered_agent(
     return agent_cls(engine, model, **kwargs)
 
 
-__all__ = ["construct_registered_agent", "resolve_agent_system_prompt"]
+__all__ = [
+    "build_morning_digest_kwargs",
+    "construct_registered_agent",
+    "resolve_agent_system_prompt",
+]
