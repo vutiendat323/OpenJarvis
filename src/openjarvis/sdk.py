@@ -13,6 +13,7 @@ from openjarvis.core.events import EventBus
 from openjarvis.core.types import Message, Role
 from openjarvis.engine._discovery import get_engine
 from openjarvis.system import JarvisSystem, SystemBuilder
+from openjarvis.system.agent_construction import build_morning_digest_kwargs
 from openjarvis.telemetry.instrumented_engine import InstrumentedEngine
 from openjarvis.telemetry.store import TelemetryStore
 
@@ -488,33 +489,9 @@ class Jarvis:
         if self._capability_policy is not None:
             agent_kwargs["capability_policy"] = self._capability_policy
 
-        # Inject DigestConfig for morning_digest agent
-        if agent_name == "morning_digest" and hasattr(self._config, "digest"):
-            dc = self._config.digest
-            section_sources: Dict[str, Any] = {}
-            for s in dc.sections:
-                sc = getattr(dc, s, None)
-                if sc and hasattr(sc, "sources"):
-                    section_sources[s] = sc.sources
-            agent_kwargs.update(
-                {
-                    "persona": dc.persona,
-                    "sections": dc.sections,
-                    "section_sources": section_sources,
-                    "timezone": dc.timezone,
-                    "voice_id": dc.voice_id,
-                    "voice_speed": dc.voice_speed,
-                    "tts_backend": dc.tts_backend,
-                    "honorific": dc.honorific,
-                }
-            )
-            # Ensure digest agent always has its required tools
-            from openjarvis.tools.digest_collect import DigestCollectTool
-            from openjarvis.tools.text_to_speech import TextToSpeechTool
-
-            digest_tools = [DigestCollectTool(), TextToSpeechTool()]
-            existing = agent_kwargs.get("tools", [])
-            agent_kwargs["tools"] = digest_tools + list(existing)
+        agent_kwargs.update(
+            build_morning_digest_kwargs(agent_name, self._config, tool_objects)
+        )
 
         agent_obj = agent_cls(self._engine, model_name, **agent_kwargs)
         ctx = AgentContext()
