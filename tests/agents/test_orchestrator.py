@@ -625,6 +625,92 @@ class TestOrchestratorAgent:
         assert result.turns == 2
         assert result.content == "Đơn đã được tạo và QR đã hiển thị."
 
+    def test_cart_mutation_with_preamble_continues_to_compound_checkout(
+        self,
+    ) -> None:
+        class CheckoutProbe(BaseTool):
+            tool_id = "skill_trendcoffee-checkout"
+
+            @property
+            def spec(self) -> ToolSpec:
+                return ToolSpec(
+                    name=self.tool_id,
+                    description="Complete the guarded checkout.",
+                )
+
+            def execute(self, **params: Any) -> ToolResult:
+                return ToolResult(
+                    tool_name=self.tool_id,
+                    content="presentation_published",
+                    metadata={
+                        "completed_display": True,
+                        "customer_message": "QR thanh toán đã sẵn sàng.",
+                    },
+                )
+
+        cart = DisplayCartTool()
+        cart._bus = EventBus()
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.side_effect = [
+            {
+                "content": "Dạ, tôi cập nhật đơn mang về rồi thanh toán ngay.",
+                "tool_calls": [
+                    {
+                        "id": "set-type",
+                        "name": "display_cart",
+                        "arguments": (
+                            '{"action":"set_order_type",'
+                            '"order_type":"take-out"}'
+                        ),
+                    }
+                ],
+                "finish_reason": "tool_calls",
+            },
+            {
+                "content": "Dạ, tôi xử lý thanh toán ngay.",
+                "tool_calls": [
+                    {
+                        "id": "checkout",
+                        "name": "skill_trendcoffee-checkout",
+                        "arguments": "{}",
+                    }
+                ],
+                "finish_reason": "tool_calls",
+            },
+        ]
+        agent = OrchestratorAgent(
+            engine,
+            "test-model",
+            tools=[cart, CheckoutProbe()],
+        )
+
+        with conversation_scope("compound-take-out-checkout"):
+            cart.execute(
+                action="add",
+                item={
+                    "variant_id": "coffee-standard",
+                    "name": "Coffee",
+                    "unit_price": 35_000,
+                    "quantity": 1,
+                },
+            )
+            result = agent.run(
+                "Ok, mình muốn mua mang về, thanh toán hiện hóa đơn giúp mình."
+            )
+            snapshot = cart.current_snapshot()
+
+        assert result.turns == 2
+        assert [item.tool_name for item in result.tool_results] == [
+            "display_cart",
+            "skill_trendcoffee-checkout",
+        ]
+        assert result.content == (
+            "Dạ, tôi xử lý thanh toán ngay.\nQR thanh toán đã sẵn sàng."
+        )
+        assert snapshot is not None
+        assert snapshot["order_type"] == "take-out"
+
     def test_failed_display_call_still_allows_the_model_to_recover(self) -> None:
         engine = MagicMock()
         engine.engine_id = "mock"

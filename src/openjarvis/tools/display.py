@@ -33,7 +33,17 @@ _CHECKOUT_REVISION: ContextVar[int] = ContextVar("checkout_revision", default=0)
 
 # Only these reach the page. A model that invents an "html" or "onclick" field
 # gets it dropped here rather than at render time.
-_ITEM_FIELDS = ("id", "name", "price", "available", "image_url", "note")
+_ITEM_FIELDS = (
+    "id",
+    "name",
+    "price",
+    "available",
+    "image_url",
+    "note",
+    "category",
+    "is_top_sell",
+    "is_new",
+)
 _LINE_FIELDS = (
     "line_id",
     "name",
@@ -192,7 +202,9 @@ class DisplayMenuTool(_DisplayTool):
                 "the latest successful HTTP menu response. For a filtered search "
                 "or recommendation, pass only the matching items. "
                 "Each item: id, name, price, available, and optionally "
-                "image_url and note."
+                "image_url, note, category, is_top_sell, and is_new. "
+                "menu_items carries the complete live catalog while "
+                "display_mode selects browse recommendations or exact filters."
             ),
             parameters={
                 "type": "object",
@@ -203,6 +215,15 @@ class DisplayMenuTool(_DisplayTool):
                         "items": {"type": "object"},
                     },
                     "result_complete": {"type": "boolean"},
+                    "menu_items": {
+                        "type": "array",
+                        "description": "Complete freshly retrieved live menu.",
+                        "items": {"type": "object"},
+                    },
+                    "display_mode": {
+                        "type": "string",
+                        "enum": ["browse", "filtered"],
+                    },
                     "all_from_latest_http": {
                         "type": "boolean",
                         "description": (
@@ -225,7 +246,25 @@ class DisplayMenuTool(_DisplayTool):
             rows = _menu_items_from_latest_http()
         items = [_picked(row, _ITEM_FIELDS) for row in rows]
         picked = [i for i in items if i]
+        menu_rows = params.get("menu_items")
+        if menu_rows is None:
+            menu_rows = rows
+        menu_items = [_picked(row, _ITEM_FIELDS) for row in menu_rows]
+        picked_menu = [item for item in menu_items if item]
+        display_mode = params.get("display_mode", "filtered")
+        if display_mode not in {"browse", "filtered"}:
+            return ToolResult(
+                tool_name="display_menu",
+                content="menu_display_mode_invalid",
+                success=False,
+            )
         if result_complete and len(rows) != len(picked):
+            return ToolResult(
+                tool_name="display_menu",
+                content="menu_projection_invalid",
+                success=False,
+            )
+        if result_complete and len(menu_rows) != len(picked_menu):
             return ToolResult(
                 tool_name="display_menu",
                 content="menu_projection_invalid",
@@ -242,7 +281,12 @@ class DisplayMenuTool(_DisplayTool):
                 content=("menu_evidence_missing" if from_http else "items_required"),
                 success=False,
             )
-        payload = {"view": "menu", "items": picked}
+        payload = {
+            "view": "menu",
+            "items": picked,
+            "menu_items": picked_menu,
+            "display_mode": display_mode,
+        }
         if result_complete:
             payload.update(
                 {
@@ -681,8 +725,7 @@ class DisplayCartTool(_DisplayTool):
             }
             metadata = dict(published.metadata or {})
             metadata["cart_revision"] = revision
-            if action == "view":
-                metadata["continue_agent"] = True
+            metadata["continue_agent"] = True
             return ToolResult(
                 tool_name=self.spec.name,
                 content=json.dumps({"cart": cart, "shown": "cart"}, ensure_ascii=False),

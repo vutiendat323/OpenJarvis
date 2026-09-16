@@ -10,28 +10,142 @@ import {
   PaymentQrView,
 } from './CustomerDisplayPage';
 
-function renderMenu(count: number, preview = false): string {
-  const items = Array.from({ length: count }, (_, index) => ({
-    id: `item-${index}`,
-    name: `Item ${index}`,
-    price: index,
-  }));
+function renderMenu({
+  items,
+  menuItems = items,
+  displayMode = 'filtered',
+  preview = false,
+}: {
+  items: { id: string; name: string; price: number; category?: string; is_top_sell?: boolean; is_new?: boolean }[];
+  menuItems?: { id: string; name: string; price: number; category?: string; is_top_sell?: boolean; is_new?: boolean }[];
+  displayMode?: 'browse' | 'filtered';
+  preview?: boolean;
+}): string {
   return renderToStaticMarkup(
     <MenuView
       items={items}
+      menuItems={menuItems}
+      displayMode={displayMode}
       resultComplete={!preview}
-      projectedCount={count}
-      publishedCount={count}
+      projectedCount={items.length}
+      publishedCount={items.length}
       preview={preview}
     />,
   );
 }
 
 describe('MenuView', () => {
-  it('renders every one of 100 verified menu items', () => {
-    const markup = renderMenu(100);
+  it('renders every filtered result without a recommendation limit', () => {
+    const items = Array.from({ length: 100 }, (_, index) => ({
+      id: `item-${index}`,
+      name: `Item ${index}`,
+      price: index,
+      category: 'món ăn',
+    }));
+    const markup = renderMenu({ items });
 
     expect(markup.match(/data-menu-item=/g)).toHaveLength(100);
+  });
+
+  it('renders only live top-sell and new items as browse recommendations', () => {
+    const menuItems = [
+      { id: 'top', name: 'Top Seller', price: 60000, category: 'cà phê', is_top_sell: true },
+      { id: 'new', name: 'New Drink', price: 55000, category: 'món trà', is_new: true },
+      { id: 'regular', name: 'Regular Dish', price: 65000, category: 'món ăn' },
+    ];
+    const markup = renderMenu({ items: menuItems, menuItems, displayMode: 'browse' });
+
+    expect(markup.match(/data-menu-item=/g)).toHaveLength(2);
+    expect(markup).toContain('Top Seller');
+    expect(markup).toContain('New Drink');
+    expect(markup).toContain('Regular Dish');
+    expect(markup.indexOf('Regular Dish')).toBeLessThan(markup.indexOf('RECOMMENDATIONS'));
+  });
+
+  it('groups the complete live catalog by category in a dedicated scroll area', () => {
+    const markup = renderMenu({
+      items: [{ id: 'coffee', name: 'Coffee Trend', price: 60000, category: 'cà phê' }],
+      menuItems: [
+        { id: 'coffee', name: 'Coffee Trend', price: 60000, category: 'cà phê' },
+        { id: 'tea', name: 'Matcha Trend', price: 60000, category: 'món trà' },
+      ],
+    });
+
+    expect(markup).toContain('CÀ PHÊ');
+    expect(markup).toContain('MÓN TRÀ');
+    expect(markup.match(/data-catalog-item=/g)).toHaveLength(2);
+    expect(markup).toContain('data-menu-scroll="true"');
+    expect(markup).toContain('overflow-y-auto');
+  });
+
+  it('keeps recommendations compact while widening the menu to 70/30', () => {
+    const menuItems = [
+      { id: 'coffee', name: 'Coffee Trend', price: 60000, category: 'cà phê', is_top_sell: true },
+      { id: 'tea', name: 'Matcha Trend', price: 60000, category: 'món trà', is_top_sell: true },
+      { id: 'smoothie', name: 'Đậu đỏ đá xay', price: 55000, category: 'sinh tố', is_new: true },
+      { id: 'food', name: 'Taco gà', price: 86000, category: 'món ăn', is_top_sell: true },
+      { id: 'cake', name: 'Bánh tiramisu', price: 39000, category: 'món bánh', is_new: true },
+      { id: 'wine', name: 'Corona Extra', price: 89000, category: 'bia/ rượu vang' },
+    ];
+    const markup = renderMenu({ items: menuItems, menuItems, displayMode: 'browse' });
+
+    expect(markup).toContain('data-menu-layout="asymmetric"');
+    expect(markup).toContain('md:grid-cols-[minmax(0,7fr)_minmax(18rem,3fr)]');
+    expect(markup).toContain('lg:grid-cols-3');
+    expect(markup).toContain('data-recommendations-layout="compact"');
+    expect(markup).toMatch(
+      /data-catalog-item="true" class="[^"]*text-\[15px\][^"]*sm:text-\[16px\]/,
+    );
+  });
+
+  it('keeps categories unbroken in the aligned three-column grid', () => {
+    const foodItems = Array.from({ length: 40 }, (_, index) => ({
+      id: `food-${index}`,
+      name: `Món ăn ${index + 1}`,
+      price: 60000,
+      category: 'món ăn',
+    }));
+    const markup = renderMenu({ items: foodItems, menuItems: foodItems });
+
+    expect(markup.match(/data-catalog-item=/g)).toHaveLength(40);
+    expect(markup).not.toContain('MÓN ĂN (TIẾP)');
+  });
+
+  it('places similarly sized categories together and leaves the longest category for the final row', () => {
+    const menuItems = [
+      ...Array.from({ length: 15 }, (_, index) => ({
+        id: `food-${index}`,
+        name: `Món ăn ${index + 1}`,
+        price: 60000,
+        category: 'món ăn',
+      })),
+      ...Array.from({ length: 2 }, (_, index) => ({
+        id: `water-${index}`,
+        name: `Nước ${index + 1}`,
+        price: 30000,
+        category: 'nước giải khát',
+      })),
+      ...Array.from({ length: 3 }, (_, index) => ({
+        id: `cake-${index}`,
+        name: `Bánh ${index + 1}`,
+        price: 40000,
+        category: 'món bánh',
+      })),
+      ...Array.from({ length: 4 }, (_, index) => ({
+        id: `coffee-${index}`,
+        name: `Cà phê ${index + 1}`,
+        price: 50000,
+        category: 'cà phê',
+      })),
+    ];
+    const markup = renderMenu({ items: menuItems, menuItems });
+    const rows = markup.split('data-menu-row="true"').slice(1);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toContain('NƯỚC GIẢI KHÁT');
+    expect(rows[0]).toContain('MÓN BÁNH');
+    expect(rows[0]).toContain('CÀ PHÊ');
+    expect(rows[1]).toContain('MÓN ĂN');
   });
 
   it('gives the customer display route its own viewport scroll container', () => {
@@ -48,18 +162,61 @@ describe('MenuView', () => {
   });
 
   it('renders verified zero as no results, never demo content', () => {
-    const markup = renderMenu(0);
+    const markup = renderMenu({
+      items: [],
+      menuItems: [
+        { id: 'coffee', name: 'Coffee Trend', price: 60000, category: 'cà phê' },
+      ],
+    });
 
     expect(markup).not.toContain('data-menu-item=');
-    expect(markup).toContain('Không có kết quả phù hợp');
-    expect(markup).not.toContain('MÌ Ý BÒ BẰM');
+    expect(markup).toContain('No matching items found.');
+    expect(markup).toContain('data-catalog-item=');
+    expect(markup).toContain('Coffee Trend');
+    expect(markup).not.toContain('MINCED BEEF SPAGHETTI');
     expect(markup).not.toContain('CATEGORIES');
   });
 
-  it('keeps intentional menu preview demo content', () => {
-    const markup = renderMenu(0, true);
+  it('uses English UI copy for empty and waiting customer-display states', () => {
+    const menuMarkup = renderMenu({
+      items: [],
+      menuItems: [{ id: 'coffee', name: 'Coffee Trend', price: 60000, category: 'cà phê' }],
+    });
+    const billMarkup = renderToStaticMarkup(
+      <BillView
+        order_id="TC-1"
+        branch="Trend Coffee"
+        status="pending"
+        lines={[]}
+        total={0}
+      />,
+    );
+    const disconnectedMarkup = renderToStaticMarkup(
+      <MemoryRouter initialEntries={['/customer-display']}>
+        <CustomerDisplayPage />
+      </MemoryRouter>,
+    );
+    const waitingMarkup = renderToStaticMarkup(
+      <MemoryRouter initialEntries={['/customer-display?preview=waiting']}>
+        <CustomerDisplayPage />
+      </MemoryRouter>,
+    );
 
-    expect(markup).toContain('MÌ Ý BÒ BẰM');
+    expect(menuMarkup).toContain('No matching items found.');
+    expect(menuMarkup).not.toContain('Không có kết quả phù hợp');
+    expect(menuMarkup).not.toContain('Cormorant_Garamond');
+    expect(billMarkup).toContain('Provider returned no line items.');
+    expect(billMarkup).not.toContain('Provider không trả về dòng món nào.');
+    expect(disconnectedMarkup).toContain('Ready to serve');
+    expect(disconnectedMarkup).not.toContain('Sẵn sàng phục vụ');
+    expect(waitingMarkup).toContain('Start your day with fresh coffee and a crisp French croissant.');
+    expect(waitingMarkup).not.toContain('Khởi đầu ngày mới');
+  });
+
+  it('keeps intentional menu preview demo content', () => {
+    const markup = renderMenu({ items: [], preview: true });
+
+    expect(markup).toContain('MINCED BEEF SPAGHETTI');
     expect(markup).toContain('data-menu-item=');
   });
 });

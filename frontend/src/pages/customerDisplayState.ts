@@ -8,7 +8,11 @@ export interface CustomerMenuItem {
   note?: string;
   image_url?: string;
   category?: string;
+  is_top_sell?: boolean;
+  is_new?: boolean;
 }
+
+export type CustomerMenuDisplayMode = 'browse' | 'filtered';
 
 export interface CustomerDisplayLine {
   line_id?: string;
@@ -25,6 +29,8 @@ export type CustomerDisplayState =
   | {
       view: 'menu';
       items: CustomerMenuItem[];
+      menuItems: CustomerMenuItem[];
+      displayMode: CustomerMenuDisplayMode;
       resultComplete: boolean;
       projectedCount: number;
       publishedCount: number;
@@ -99,6 +105,8 @@ function pickMenuItem(value: unknown): CustomerMenuItem | null {
     ...(optionalString(value, 'note') !== undefined ? { note: optionalString(value, 'note') } : {}),
     ...(optionalString(value, 'image_url') !== undefined ? { image_url: optionalString(value, 'image_url') } : {}),
     ...(optionalString(value, 'category') !== undefined ? { category: optionalString(value, 'category') } : {}),
+    ...(optionalBoolean(value, 'is_top_sell') !== undefined ? { is_top_sell: optionalBoolean(value, 'is_top_sell') } : {}),
+    ...(optionalBoolean(value, 'is_new') !== undefined ? { is_new: optionalBoolean(value, 'is_new') } : {}),
   };
 }
 
@@ -148,10 +156,14 @@ export function reduceCustomerDisplay(
 
   if (data.view === 'menu') {
     const items = pickRows(data.items, pickMenuItem);
+    const menuItems = pickRows(data.menu_items, pickMenuItem);
+    const displayMode = data.display_mode;
     const projectedCount = optionalNumber(data, 'projected_count');
     const publishedCount = optionalNumber(data, 'published_count');
     return (
       items === null
+      || menuItems === null
+      || (displayMode !== 'browse' && displayMode !== 'filtered')
       || data.result_complete !== true
       || projectedCount !== items.length
       || publishedCount !== items.length
@@ -160,6 +172,8 @@ export function reduceCustomerDisplay(
       : {
           view: 'menu',
           items,
+          menuItems,
+          displayMode,
           resultComplete: true,
           projectedCount,
           publishedCount,

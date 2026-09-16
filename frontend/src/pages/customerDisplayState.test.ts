@@ -19,10 +19,16 @@ function displayEvent(
   };
 }
 
-function verifiedMenu(items: Record<string, unknown>[]) {
+function verifiedMenu(
+  items: Record<string, unknown>[],
+  menuItems: Record<string, unknown>[] = items,
+  displayMode: 'browse' | 'filtered' = 'filtered',
+) {
   return {
     view: 'menu',
     items,
+    menu_items: menuItems,
+    display_mode: displayMode,
     result_complete: true,
     projected_count: items.length,
     published_count: items.length,
@@ -38,6 +44,8 @@ describe('reduceCustomerDisplay', () => {
     expect(state).toEqual({
       view: 'menu',
       items: [{ id: 'latte', name: 'Latte', price: 45000 }],
+      menuItems: [{ id: 'latte', name: 'Latte', price: 45000 }],
+      displayMode: 'filtered',
       resultComplete: true,
       projectedCount: 1,
       publishedCount: 1,
@@ -63,11 +71,55 @@ describe('reduceCustomerDisplay', () => {
     )).toEqual({
       view: 'menu',
       items,
+      menuItems: items,
+      displayMode: 'filtered',
       resultComplete: true,
       projectedCount: count,
       publishedCount: count,
       preview: false,
     });
+  });
+
+  it('keeps the complete live catalog separate from filtered results', () => {
+    const catalog = [
+      {
+        id: 'trend-coffee',
+        name: 'Coffee Trend',
+        price: 60000,
+        category: 'cà phê',
+        is_top_sell: true,
+        is_new: false,
+      },
+      {
+        id: 'matcha',
+        name: 'Matcha Trend',
+        price: 60000,
+        category: 'món trà',
+        is_top_sell: false,
+        is_new: true,
+      },
+    ];
+
+    expect(reduceCustomerDisplay(
+      waitingState,
+      displayEvent('A', verifiedMenu([catalog[1]], catalog, 'browse')),
+      'A',
+    )).toMatchObject({
+      view: 'menu',
+      items: [catalog[1]],
+      menuItems: catalog,
+      displayMode: 'browse',
+    });
+  });
+
+  it('retains prior state for an invalid menu display mode', () => {
+    const data = verifiedMenu([{ id: 'one', name: 'One' }]);
+
+    expect(reduceCustomerDisplay(
+      waitingState,
+      displayEvent('A', { ...data, display_mode: 'invented' }),
+      'A',
+    )).toBe(waitingState);
   });
 
   it('retains previous state when complete menu counts do not match', () => {
@@ -87,6 +139,8 @@ describe('reduceCustomerDisplay', () => {
     const menuState: CustomerDisplayState = {
       view: 'menu',
       items: [{ id: 'latte', name: 'Latte', price: 45000 }],
+      menuItems: [{ id: 'latte', name: 'Latte', price: 45000 }],
+      displayMode: 'filtered',
       resultComplete: true,
       projectedCount: 1,
       publishedCount: 1,
@@ -111,6 +165,8 @@ describe('reduceCustomerDisplay', () => {
     ])), 'A')).toEqual({
       view: 'menu',
       items: [{ id: 'latte', name: 'Latte', price: 45000 }],
+      menuItems: [{ id: 'latte', name: 'Latte', price: 45000 }],
+      displayMode: 'filtered',
       resultComplete: true,
       projectedCount: 1,
       publishedCount: 1,
@@ -122,6 +178,8 @@ describe('reduceCustomerDisplay', () => {
     const state: CustomerDisplayState = {
       view: 'menu',
       items: [{ id: 'latte', name: 'Latte', price: 45000 }],
+      menuItems: [{ id: 'latte', name: 'Latte', price: 45000 }],
+      displayMode: 'filtered',
       resultComplete: true,
       projectedCount: 1,
       publishedCount: 1,

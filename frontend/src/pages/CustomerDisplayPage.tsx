@@ -11,10 +11,10 @@ import {
   type CustomerMenuItem,
 } from './customerDisplayState';
 
-const vnd = new Intl.NumberFormat('vi-VN');
+const vnd = new Intl.NumberFormat('en-US');
 
 function money(value: number | undefined): string {
-  return `${vnd.format(value ?? 0)}đ`;
+  return `${vnd.format(value ?? 0)} VND`;
 }
 
 // Striped Band Components
@@ -117,7 +117,7 @@ function EditorialFooter() {
         <div>@trendcoffee.vn</div>
         <div>Trend Coffee Vietnam</div>
         <div>trendcoffee.net</div>
-        <div>Số 03 Nguyễn Công Trứ, TP. Thủ Đức</div>
+        <div>03 NGUYEN CONG TRU STREET, THU DUC CITY</div>
       </div>
       <StripedBand />
     </footer>
@@ -149,96 +149,56 @@ function ReceiptFooter() {
 
 interface MenuCategorySection {
   title: string;
-  items: {
-    name: string;
-    price: string | number;
-  }[];
+  items: CustomerMenuItem[];
 }
 
-const vintageMenuSections: MenuCategorySection[] = [
-  {
-    title: 'CÀ PHÊ',
-    items: [
-      { name: 'Espresso', price: 45 },
-      { name: 'Bạc xỉu', price: 55 },
-      { name: 'Cold Brew', price: 60 },
-      { name: 'Cappuccino', price: 65 },
-    ],
-  },
-  {
-    title: 'MÓN TRÀ',
-    items: [
-      { name: 'Trà đen', price: 40 },
-      { name: 'Trà nhài', price: 45 },
-      { name: 'Trà sữa', price: 55 },
-      { name: 'Trà ô long', price: 50 },
-    ],
-  },
-  {
-    title: 'SINH TỐ',
-    items: [
-      { name: 'Sinh tố bơ', price: 55 },
-      { name: 'Sinh tố dâu', price: 55 },
-      { name: 'Sinh tố xoài', price: 55 },
-      { name: 'Nước dừa tươi', price: 45 },
-    ],
-  },
-  {
-    title: 'NƯỚC GIẢI KHÁT',
-    items: [
-      { name: 'Coca Cola', price: 25 },
-      { name: 'Soda chanh', price: 35 },
-      { name: 'Nước cam', price: 40 },
-      { name: 'Nước ép dứa', price: 45 },
-    ],
-  },
-  {
-    title: 'MÓN BÁNH',
-    items: [
-      { name: 'Croissant', price: 35 },
-      { name: 'Cheesecake', price: 55 },
-      { name: 'Tiramisu', price: 60 },
-      { name: 'Panna Cotta', price: 50 },
-    ],
-  },
-  {
-    title: 'MÓN ĂN',
-    items: [
-      { name: 'Súp', price: 45 },
-      { name: 'Khoai tây chiên', price: 50 },
-      { name: 'Burger', price: 85 },
-      { name: 'Pasta', price: 95 },
-    ],
-  },
-  {
-    title: 'BIA/ RƯỢU VANG',
-    items: [
-      { name: 'Corona Extra', price: 55 },
-      { name: 'Bia Hà', price: 35 },
-      { name: 'Vang đỏ ly', price: 90 },
-      { name: 'Vang trắng ly', price: 90 },
-    ],
-  },
-  {
-    title: 'GIÁ TÙY CHỈNH',
-    items: [
-      { name: 'Combo nhỏ', price: 79 },
-      { name: 'Combo vừa', price: 99 },
-      { name: 'Combo lớn', price: 129 },
-      { name: 'Theo yêu cầu', price: '-' },
-    ],
-  },
-];
+function menuPrice(value: number | undefined): string | number {
+  if (value === undefined) return '-';
+  return value >= 1000 ? Math.round(value / 1000) : value;
+}
+
+function groupMenuItems(items: CustomerMenuItem[]): MenuCategorySection[] {
+  const sections = new Map<string, CustomerMenuItem[]>();
+  for (const item of items) {
+    const title = item.category?.trim().toLocaleUpperCase('vi-VN') || 'OTHER';
+    const section = sections.get(title) ?? [];
+    section.push(item);
+    sections.set(title, section);
+  }
+  return Array.from(sections, ([title, sectionItems]) => ({
+    title,
+    items: sectionItems,
+  }));
+}
+
+function arrangeMenuSections(sections: MenuCategorySection[]): MenuCategorySection[][] {
+  const orderedSections = sections
+    .map((section, index) => ({ section, index }))
+    .sort(
+      (left, right) =>
+        left.section.items.length - right.section.items.length || left.index - right.index,
+    )
+    .map(({ section }) => section);
+
+  return Array.from(
+    { length: Math.ceil(orderedSections.length / 3) },
+    (_, index) => orderedSections.slice(index * 3, (index + 1) * 3),
+  );
+}
 
 // VIEW 1: APPROVED MENU
 export function MenuView({
   items,
+  menuItems,
+  displayMode,
   resultComplete,
   projectedCount,
   publishedCount,
   preview,
 }: {
   items: CustomerMenuItem[];
+  menuItems: CustomerMenuItem[];
+  displayMode: 'browse' | 'filtered';
   resultComplete: boolean;
   projectedCount: number;
   publishedCount: number;
@@ -246,32 +206,28 @@ export function MenuView({
 }) {
   const demoMenuItems: CustomerMenuItem[] = [
     {
-      name: 'MÌ Ý BÒ BẰM',
+      name: 'MINCED BEEF SPAGHETTI',
       price: 107000,
       note: 'Special gourmet recipe prepared fresh daily with premium ingredients.',
     },
     {
-      name: 'MÌ Ý CARBONARA',
+      name: 'SPAGHETTI CARBONARA',
       price: 150000,
       note: 'Special gourmet recipe prepared fresh daily with premium ingredients.',
     },
     {
-      name: 'MÌ Ý TÔM',
+      name: 'SHRIMP SPAGHETTI',
       price: 172000,
       note: 'Special gourmet recipe prepared fresh daily with premium ingredients.',
     },
   ];
-  const mainDishes = preview ? demoMenuItems : items;
-
-  if (resultComplete && !preview && items.length === 0) {
-    return (
-      <div className="flex flex-1 items-center justify-center px-8 py-16 text-center text-[#8c6239]">
-        <p className="font-['Cormorant_Garamond',serif] text-2xl">
-          Không có kết quả phù hợp.
-        </p>
-      </div>
-    );
-  }
+  const menuSections = groupMenuItems(menuItems);
+  const menuRows = arrangeMenuSections(menuSections);
+  const mainDishes = preview
+    ? demoMenuItems
+    : displayMode === 'browse'
+      ? menuItems.filter((item) => item.is_top_sell === true || item.is_new === true)
+      : items;
 
   return (
     <div
@@ -279,36 +235,59 @@ export function MenuView({
       data-projected-count={projectedCount}
       data-published-count={publishedCount}
     >
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 lg:gap-x-12 gap-y-8 w-full min-w-0">
+      <div
+        className="grid w-full min-w-0 grid-cols-1 gap-y-8 md:grid-cols-[minmax(0,7fr)_minmax(18rem,3fr)] md:gap-x-8 lg:gap-x-12"
+        data-menu-layout="asymmetric"
+      >
         {/* LEFT COLUMN: MENU */}
-        <div className="flex flex-col min-w-0 w-full">
+        <div className="flex min-h-0 w-full min-w-0 flex-col">
           <ColumnRibbon title="MENU" dotsLeft={true} dotsRight={true} />
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2 gap-x-4 sm:gap-x-6 lg:gap-x-8 gap-y-6 sm:gap-y-8 w-full min-w-0">
-            {vintageMenuSections.map((section) => (
-              <div key={section.title} className="flex flex-col min-w-0">
-                <h3 className="mb-2 text-center font-bold text-[14.5px] sm:text-[15.5px] tracking-[0.1em] uppercase text-[#8c6239]">
-                  {section.title}
-                </h3>
-                <div className="flex flex-col space-y-2 min-w-0">
-                  {section.items.map((it) => (
-                    <div
-                      key={it.name}
-                      className="flex items-baseline justify-between text-[15px] sm:text-[16px] font-semibold tracking-[0.03em] text-[#8c6239] min-w-0"
-                    >
-                      <span className="truncate pr-1">{it.name}</span>
-                      <span className="tabular-nums font-bold shrink-0">{it.price}</span>
+          <div
+            className="flex max-h-[calc(100vh-16rem)] flex-1 flex-col gap-y-6 overflow-y-auto pr-2 sm:gap-y-8"
+            data-menu-scroll="true"
+          >
+            {menuRows.map((row) => (
+              <div
+                key={row.map((section) => section.title).join('-')}
+                className="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2 sm:gap-x-6 lg:grid-cols-3 lg:gap-x-8"
+                data-menu-row
+              >
+                {row.map((section) => (
+                  <div key={section.title} className="flex min-w-0 flex-col">
+                    <h3 className="mb-2 text-center text-[14.5px] font-bold tracking-[0.1em] uppercase text-[#8c6239] sm:text-[15.5px]">
+                      {section.title}
+                    </h3>
+                    <div className="flex min-w-0 flex-col space-y-2">
+                      {section.items.map((it) => (
+                        <div
+                          key={it.id ?? it.name}
+                          data-catalog-item
+                          className="flex min-w-0 items-baseline justify-between text-[15px] font-semibold leading-tight tracking-[0.03em] text-[#8c6239] sm:text-[16px]"
+                        >
+                          <span className="truncate pr-1">{it.name}</span>
+                          <span className="shrink-0 tabular-nums font-bold">{menuPrice(it.price)}</span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </div>
+                ))}
               </div>
             ))}
           </div>
         </div>
 
         {/* RIGHT COLUMN: RECOMMENDATIONS */}
-        <div className="flex flex-col min-w-0 w-full">
+        <div className="flex min-h-0 w-full min-w-0 flex-col">
           <ColumnRibbon title="RECOMMENDATIONS" dotsLeft={true} dotsRight={true} />
-          <div className="flex flex-col space-y-4 w-full min-w-0">
+          <div
+            className="flex w-full min-w-0 flex-col space-y-4"
+            data-recommendations-layout="compact"
+          >
+            {resultComplete && !preview && displayMode === 'filtered' && items.length === 0 && (
+              <p className="py-12 text-center font-['Josefin_Sans',sans-serif] text-[15px] font-semibold leading-tight tracking-[0.03em] sm:text-[16px]">
+                No matching items found.
+              </p>
+            )}
             {mainDishes.map((item, index) => {
               const displayPrice =
                 item.price !== undefined
@@ -319,7 +298,7 @@ export function MenuView({
               return (
                 <div
                   key={item.id ?? `${item.name}-${index}`}
-                  className="flex flex-col min-w-0"
+                  className="flex min-w-0 flex-col"
                   data-menu-item
                 >
                   <div className="flex items-center justify-between font-bold text-[15px] sm:text-[16px] tracking-[0.12em] uppercase text-[#8c6239] min-w-0">
@@ -340,9 +319,9 @@ export function MenuView({
 }
 
 function orderTypeLabel(orderType: string): string {
-  if (orderType === 'at-table') return 'TẠI BÀN';
-  if (orderType === 'take-out') return 'MANG ĐI';
-  return 'CHƯA CHỌN';
+  if (orderType === 'at-table') return 'AT TABLE';
+  if (orderType === 'take-out') return 'TAKE OUT';
+  return 'NOT SELECTED';
 }
 
 function englishOrderTypeLabel(orderType: string): string {
@@ -522,7 +501,7 @@ export function BillView({
                   <div>{line.name}{line.size ? ` (${line.size})` : ''}</div>
                   {line.note && (
                     <div className="mt-1 text-[10px] font-normal normal-case tracking-normal text-[#9b7352]">
-                      Ghi chú: {line.note}
+                    Note: {line.note}
                     </div>
                   )}
                 </div>
@@ -534,7 +513,7 @@ export function BillView({
           })
         ) : (
           <div className="py-4 text-center text-sm normal-case tracking-normal text-[#9b7352]">
-            Provider không trả về dòng món nào.
+            Provider returned no line items.
           </div>
         )}
       </div>
@@ -761,7 +740,7 @@ function WaitingView() {
 
             <div className="space-y-3 pl-3 text-left font-['Josefin_Sans',sans-serif]">
               <p className="text-[11.5px] font-medium leading-[1.4] text-[#9b7352]">
-                Khởi đầu ngày mới tràn đầy năng lượng cùng hương vị cà phê phin mộc thơm nồng nàn và bánh sừng bò giòn tan chuẩn vị Pháp.
+                Start your day with fresh coffee and a crisp French croissant.
               </p>
 
               <div className="flex items-center gap-2 pt-1 text-[#8c6239]">
@@ -785,6 +764,8 @@ export function CustomerDisplayPage() {
     if (preview === 'menu') return {
       view: 'menu',
       items: [],
+      menuItems: [],
+      displayMode: 'filtered',
       resultComplete: false,
       projectedCount: 0,
       publishedCount: 0,
@@ -799,6 +780,8 @@ export function CustomerDisplayPage() {
       setState({
         view: 'menu',
         items: [],
+        menuItems: [],
+        displayMode: 'filtered',
         resultComplete: false,
         projectedCount: 0,
         publishedCount: 0,
@@ -827,7 +810,7 @@ export function CustomerDisplayPage() {
           <div className="my-auto flex flex-col items-center justify-center p-8 text-center">
             <h2 className="font-['Alex_Brush',cursive] text-5xl text-[#8c6239] mb-2">Trend Coffee</h2>
             <p className="text-sm font-semibold tracking-widest uppercase text-[#9b7352]">
-              Sẵn sàng phục vụ &bull; Đang chờ kết nối phiên hiển thị
+              Ready to serve &bull; Waiting for display-session connection
             </p>
           </div>
         ) : (
@@ -837,6 +820,8 @@ export function CustomerDisplayPage() {
                 <RestaurantHeader />
                 <MenuView
                   items={state.items}
+                  menuItems={state.menuItems}
+                  displayMode={state.displayMode}
                   resultComplete={state.resultComplete}
                   projectedCount={state.projectedCount}
                   publishedCount={state.publishedCount}

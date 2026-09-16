@@ -297,6 +297,11 @@ def _run_checkout(
     requested_type: str = "at-table",
     requested_table: str = "table-73",
     requested_order_note: str = "Làm nhanh giúp mình",
+    fresh_price: int = 100_000,
+    fresh_available: bool = True,
+    fresh_table_status: str = "available",
+    provider_name: str | None = "Merchant Coffee",
+    provider_promotion: dict | None = None,
 ):
     cart_line = {
         "variant_id": "coffee-standard",
@@ -317,6 +322,54 @@ def _run_checkout(
         if response_table is not None
         else None
     )
+    menu = ToolResult(
+        tool_name="http_request",
+        content=json.dumps(
+            {
+                "result": {
+                    "hasNext": False,
+                    "items": [
+                        {
+                            "menuItems": [
+                                {
+                                    "product": {
+                                        "name": "Fresh Coffee",
+                                        "isActive": fresh_available,
+                                        "variants": [
+                                            {
+                                                "slug": "coffee-standard",
+                                                "price": fresh_price,
+                                                "size": {"name": "fresh-standard"},
+                                            }
+                                        ],
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                }
+            }
+        ),
+        success=True,
+    )
+    tables = ToolResult(
+        tool_name="http_request",
+        content=json.dumps(
+            {
+                "result": [
+                    {
+                        "name": "73",
+                        "slug": "table-73",
+                        "status": fresh_table_status,
+                    }
+                ]
+            }
+        ),
+        success=True,
+    )
+    provider_product = {}
+    if provider_name is not None:
+        provider_product["name"] = provider_name
     created = ToolResult(
         tool_name="http_request",
         content=json.dumps(
@@ -330,9 +383,15 @@ def _run_checkout(
                     "table": returned_table,
                     "orderItems": [
                         {
-                            "variant": {"slug": "coffee-standard"},
+                            "variant": {
+                                "slug": "coffee-standard",
+                                "price": 100_000,
+                                "size": {"name": "merchant-standard"},
+                                "product": provider_product,
+                            },
                             "quantity": 2,
                             "note": "",
+                            "promotion": provider_promotion,
                         }
                     ],
                 }
@@ -354,7 +413,7 @@ def _run_checkout(
         ),
         success=True,
     )
-    http = _SequenceRecording("http_request", [created, payment])
+    http = _SequenceRecording("http_request", [menu, tables, created, payment])
     bill = _SequenceRecording(
         "display_bill",
         [ToolResult(tool_name="display_bill", content="bill", success=True)],
@@ -421,8 +480,9 @@ def test_workspace_checkout_sends_selected_at_table_type_and_slug() -> None:
     _tool, result, http, bill, display = _run_checkout(response_type="at-table")
 
     assert result.success is True
-    assert len(http.calls) == 2
-    create_body = json.loads(http.calls[0]["body"])
+    assert len(http.calls) == 4
+    assert [call["method"] for call in http.calls] == ["GET", "GET", "POST", "POST"]
+    create_body = json.loads(http.calls[2]["body"])
     assert create_body["type"] == "at-table"
     assert create_body["table"] == "table-73"
     assert create_body["description"] == "Làm nhanh giúp mình"
@@ -442,9 +502,9 @@ def test_workspace_checkout_sends_selected_at_table_type_and_slug() -> None:
             "branch": "ba9355f797",
             "lines": [
                 {
-                    "line_id": bill.calls[0]["lines"][0]["line_id"],
-                    "name": "Coffee",
-                    "size": "standard",
+                    "line_id": "coffee-standard",
+                    "name": "Merchant Coffee",
+                    "size": "merchant-standard",
                     "note": "",
                     "quantity": 2,
                     "unit_price": 100_000,
@@ -473,7 +533,7 @@ def test_workspace_checkout_stops_before_payment_on_order_type_mismatch() -> Non
     _tool, result, http, bill, display = _run_checkout(response_type="take-out")
 
     assert result.success is False
-    assert len(http.calls) == 1
+    assert len(http.calls) == 3
     assert bill.calls == []
     assert display.calls == []
 
@@ -485,7 +545,7 @@ def test_workspace_checkout_stops_before_payment_on_table_slug_mismatch() -> Non
     )
 
     assert result.success is False
-    assert len(http.calls) == 1
+    assert len(http.calls) == 3
     assert bill.calls == []
     assert display.calls == []
 
@@ -499,9 +559,66 @@ def test_workspace_take_out_checkout_accepts_null_returned_table() -> None:
     )
 
     assert result.success is True
-    assert len(http.calls) == 2
+    assert len(http.calls) == 4
     assert len(bill.calls) == 1
     assert len(display.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("fresh_price", "fresh_available"),
+    [(101_000, True), (100_000, False)],
+)
+def test_workspace_checkout_rejects_stale_or_unavailable_menu_before_order_write(
+    fresh_price: int, fresh_available: bool
+) -> None:
+    _tool, result, http, bill, display = _run_checkout(
+        response_type="at-table",
+        fresh_price=fresh_price,
+        fresh_available=fresh_available,
+    )
+
+    assert result.success is False
+    assert len(http.calls) == 1
+    assert http.calls[0]["method"] == "GET"
+    assert bill.calls == []
+    assert display.calls == []
+
+
+def test_workspace_checkout_rejects_unavailable_table_before_order_write() -> None:
+    _tool, result, http, bill, display = _run_checkout(
+        response_type="at-table",
+        fresh_table_status="reserved",
+    )
+
+    assert result.success is False
+    assert len(http.calls) == 2
+    assert [call["method"] for call in http.calls] == ["GET", "GET"]
+    assert bill.calls == []
+    assert display.calls == []
+
+
+def test_workspace_checkout_fails_closed_when_provider_receipt_is_incomplete() -> None:
+    _tool, result, http, bill, display = _run_checkout(
+        response_type="at-table",
+        provider_name=None,
+    )
+
+    assert result.success is False
+    assert len(http.calls) == 3
+    assert bill.calls == []
+    assert display.calls == []
+
+
+def test_workspace_checkout_rejects_unrequested_provider_promotion() -> None:
+    _tool, result, http, bill, display = _run_checkout(
+        response_type="at-table",
+        provider_promotion={"value": 10},
+    )
+
+    assert result.success is False
+    assert len(http.calls) == 3
+    assert bill.calls == []
+    assert display.calls == []
 
 
 def test_workspace_checkout_rejects_draft_type_mismatch_before_provider_write() -> None:
@@ -596,6 +713,8 @@ _MENU_ENTRIES = [
             "description": "",
             "catalog": {"name": "món trà"},
             "isActive": True,
+            "isTopSell": True,
+            "isNew": False,
             "variants": [{"slug": "v-taro", "price": 45000}],
         }
     },
@@ -605,6 +724,8 @@ _MENU_ENTRIES = [
             "description": "Nhân KHOAI lang",
             "catalog": {"name": "món bánh"},
             "isActive": True,
+            "isTopSell": False,
+            "isNew": True,
             "variants": [{"slug": "v-bread", "price": 30000}],
         }
     },
@@ -613,6 +734,8 @@ _MENU_ENTRIES = [
             "name": "Cà phê sữa",
             "catalog": {"name": "cà phê"},
             "isActive": False,
+            "isTopSell": False,
+            "isNew": False,
             "variants": [{"slug": "v-coffee", "price": 29000}],
         }
     },
@@ -625,6 +748,8 @@ _CATEGORY_MENU_ENTRIES = [
             "description": "",
             "catalog": {"name": "món bánh"},
             "isActive": True,
+            "isTopSell": False,
+            "isNew": False,
             "variants": [{"slug": "v-bread", "price": 30_000}],
         }
     },
@@ -634,6 +759,8 @@ _CATEGORY_MENU_ENTRIES = [
             "description": "",
             "catalog": {"name": "cà phê"},
             "isActive": True,
+            "isTopSell": False,
+            "isNew": False,
             "variants": [{"slug": "v-americano", "price": 35_000}],
         }
     },
@@ -643,6 +770,8 @@ _CATEGORY_MENU_ENTRIES = [
             "description": "",
             "catalog": {"name": "sinh tố"},
             "isActive": True,
+            "isTopSell": False,
+            "isNew": False,
             "variants": [{"slug": "v-avocado", "price": 45_000}],
         }
     },
@@ -652,6 +781,8 @@ _CATEGORY_MENU_ENTRIES = [
             "description": "",
             "catalog": {"name": "món ăn"},
             "isActive": True,
+            "isTopSell": False,
+            "isNew": False,
             "variants": [{"slug": "v-rice", "price": 65_000}],
         }
     },
@@ -718,12 +849,26 @@ def test_menu_recipe_exposes_only_native_inputs_and_fixed_request_contract() -> 
     recipe = manifest.metadata["openjarvis"]["request_recipe"]
 
     assert parameters["type"] == "object"
-    assert set(parameters["properties"]) == {"contains", "minPrice", "maxPrice"}
-    assert set(parameters["required"]) == {"contains", "minPrice", "maxPrice"}
+    assert set(parameters["properties"]) == {
+        "contains",
+        "minPrice",
+        "maxPrice",
+        "displayMode",
+    }
+    assert set(parameters["required"]) == {
+        "contains",
+        "minPrice",
+        "maxPrice",
+        "displayMode",
+    }
     assert parameters["additionalProperties"] is False
     assert parameters["properties"]["contains"] == {"type": "string"}
     assert parameters["properties"]["minPrice"] == {"type": "integer", "minimum": 0}
     assert parameters["properties"]["maxPrice"] == {"type": "integer", "minimum": 0}
+    assert parameters["properties"]["displayMode"] == {
+        "type": "string",
+        "enum": ["browse", "filtered"],
+    }
     assert recipe["origin"] == "https://trendcoffee.net"
     assert recipe["method"] == "GET"
     assert recipe["read_only"] is True
@@ -741,7 +886,12 @@ def test_menu_recipe_exposes_only_native_inputs_and_fixed_request_contract() -> 
 
 def test_menu_recipe_binds_native_price_and_filters_text_locally() -> None:
     _, result, http, display, body = _run_menu(
-        {"contains": "khoai", "minPrice": 20000, "maxPrice": 50000}
+        {
+            "contains": "khoai",
+            "minPrice": 20000,
+            "maxPrice": 50000,
+            "displayMode": "filtered",
+        }
     )
 
     assert result.success is True
@@ -755,8 +905,8 @@ def test_menu_recipe_binds_native_price_and_filters_text_locally() -> None:
         "trendcoffee.net",
         "/api/latest/menu/specific/public",
     )
-    assert query["minPrice"] == ["20000"]
-    assert query["maxPrice"] == ["50000"]
+    assert query["minPrice"] == ["0"]
+    assert query["maxPrice"] == ["1000000000"]
     assert query["catalog"] == [""]
     assert not {"q", "query", "search", "keyword", "contains"} & set(query)
     assert "khoai" not in request["url"]
@@ -772,6 +922,36 @@ def test_menu_recipe_binds_native_price_and_filters_text_locally() -> None:
             },
             {"id": "v-bread", "name": "Bánh mì", "price": 30000, "available": True},
         ],
+        "menu_items": [
+            {
+                "id": "v-taro",
+                "name": "Trà sữa khoai môn",
+                "price": 45000,
+                "available": True,
+                "category": "món trà",
+                "is_top_sell": True,
+                "is_new": False,
+            },
+            {
+                "id": "v-bread",
+                "name": "Bánh mì",
+                "price": 30000,
+                "available": True,
+                "category": "món bánh",
+                "is_top_sell": False,
+                "is_new": True,
+            },
+            {
+                "id": "v-coffee",
+                "name": "Cà phê sữa",
+                "price": 29000,
+                "available": False,
+                "category": "cà phê",
+                "is_top_sell": False,
+                "is_new": False,
+            },
+        ],
+        "display_mode": "filtered",
         "result_complete": True,
     }
     assert result.metadata["completed_display"] is True
@@ -792,7 +972,12 @@ def test_menu_recipe_filters_categories_using_catalog_name(
     contains: str, expected_id: str
 ) -> None:
     _, result, _, display, _ = _run_menu(
-        {"contains": contains, "minPrice": 0, "maxPrice": 300000},
+        {
+            "contains": contains,
+            "minPrice": 0,
+            "maxPrice": 300000,
+            "displayMode": "filtered",
+        },
         entries=_CATEGORY_MENU_ENTRIES,
     )
 
@@ -802,7 +987,12 @@ def test_menu_recipe_filters_categories_using_catalog_name(
 
 def test_menu_recipe_empty_contains_publishes_every_row_in_provider_order() -> None:
     _, result, _, display, _ = _run_menu(
-        {"contains": "", "minPrice": 0, "maxPrice": 300000}
+        {
+            "contains": "",
+            "minPrice": 0,
+            "maxPrice": 300000,
+            "displayMode": "browse",
+        }
     )
 
     assert result.success is True
@@ -811,11 +1001,22 @@ def test_menu_recipe_empty_contains_publishes_every_row_in_provider_order() -> N
         "v-bread",
         "v-coffee",
     ]
+    assert display.calls[0]["display_mode"] == "browse"
+    assert [item["id"] for item in display.calls[0]["menu_items"]] == [
+        "v-taro",
+        "v-bread",
+        "v-coffee",
+    ]
 
 
 def test_menu_recipe_rejects_array_contains_before_io() -> None:
     _, result, http, display, _ = _run_menu(
-        {"contains": ["món bánh", "MÓN TRÀ"], "minPrice": 0, "maxPrice": 300000}
+        {
+            "contains": ["món bánh", "MÓN TRÀ"],
+            "minPrice": 0,
+            "maxPrice": 300000,
+            "displayMode": "filtered",
+        }
     )
 
     assert result.success is False
@@ -836,7 +1037,12 @@ def test_menu_recipe_asserts_completeness_and_identity_before_display(
     has_next, entries
 ) -> None:
     _, result, http, display, _ = _run_menu(
-        {"contains": "", "minPrice": 0, "maxPrice": 300000},
+        {
+            "contains": "",
+            "minPrice": 0,
+            "maxPrice": 300000,
+            "displayMode": "browse",
+        },
         has_next=has_next,
         entries=entries,
     )
@@ -852,6 +1058,7 @@ def test_menu_recipe_rejects_model_authored_message_before_io() -> None:
             "contains": "",
             "minPrice": 0,
             "maxPrice": 300000,
+            "displayMode": "browse",
             "customer_message": "đang tìm",
         }
     )

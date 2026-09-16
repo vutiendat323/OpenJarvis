@@ -464,6 +464,32 @@ class TestSkillExecutor:
 
         assert rendered == [rows[0]]
 
+    def test_filter_equals_matches_typed_values(self):
+        rows = [
+            {"value": "available"},
+            {"value": True},
+            {"value": 1},
+        ]
+        expression = {
+            "$filter": "{rows}",
+            "as": "row",
+            "where": {"equals": ["{row.value}", "{expected}"]},
+        }
+
+        assert SkillExecutor._render_json_value(
+            expression, {"rows": rows, "expected": True}
+        ) == [rows[1]]
+
+    def test_multiply_requires_two_numbers_and_preserves_integer_result(self):
+        assert SkillExecutor._render_json_value(
+            {"$multiply": ["{unit_price}", "{quantity}"]},
+            {"unit_price": 35_000, "quantity": 2},
+        ) == 70_000
+
+        for operands in ([1], [True, 2], ["2", 2]):
+            with pytest.raises(ValueError, match="multiply"):
+                SkillExecutor._render_json_value({"$multiply": operands}, {})
+
     @pytest.mark.parametrize(
         "expression, error",
         [

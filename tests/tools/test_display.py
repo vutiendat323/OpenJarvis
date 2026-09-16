@@ -83,6 +83,9 @@ def test_display_menu_keeps_only_the_fields_the_page_renders():
                 "name": "Latte",
                 "price": 45000,
                 "available": True,
+                "category": "cà phê",
+                "is_top_sell": True,
+                "is_new": False,
                 "html": "<script>alert(1)</script>",
                 "onclick": "steal()",
             }
@@ -90,7 +93,69 @@ def test_display_menu_keeps_only_the_fields_the_page_renders():
     )
 
     item = recorder.events[0].data["items"][0]
-    assert set(item) <= {"id", "name", "price", "available", "image_url", "note"}
+    assert item == {
+        "id": "latte",
+        "name": "Latte",
+        "price": 45000,
+        "available": True,
+        "category": "cà phê",
+        "is_top_sell": True,
+        "is_new": False,
+    }
+
+
+def test_display_menu_publishes_complete_catalog_and_explicit_mode():
+    tool, recorder = _wired(DisplayMenuTool)
+
+    result = tool.execute(
+        items=[{"id": "matcha", "name": "Matcha Trend", "price": 60000}],
+        menu_items=[
+            {
+                "id": "coffee",
+                "name": "Coffee Trend",
+                "price": 60000,
+                "category": "cà phê",
+                "is_top_sell": True,
+                "is_new": False,
+            },
+            {
+                "id": "matcha",
+                "name": "Matcha Trend",
+                "price": 60000,
+                "category": "món trà",
+                "is_top_sell": False,
+                "is_new": True,
+            },
+        ],
+        display_mode="filtered",
+        result_complete=True,
+    )
+
+    assert result.success is True
+    assert recorder.events[0].data["menu_items"][0]["category"] == "cà phê"
+    assert recorder.events[0].data["menu_items"][1]["is_new"] is True
+    assert recorder.events[0].data["display_mode"] == "filtered"
+
+
+def test_display_menu_rejects_invalid_catalog_rows_or_mode_before_publication():
+    tool, recorder = _wired(DisplayMenuTool)
+
+    invalid_catalog = tool.execute(
+        items=[{"id": "one", "name": "One"}],
+        menu_items=[{"unknown": "invalid"}],
+        display_mode="browse",
+        result_complete=True,
+    )
+    invalid_mode = tool.execute(
+        items=[{"id": "one", "name": "One"}],
+        menu_items=[{"id": "one", "name": "One"}],
+        display_mode="invented",
+        result_complete=True,
+    )
+
+    assert invalid_catalog.content == "menu_projection_invalid"
+    assert invalid_mode.content == "menu_display_mode_invalid"
+    assert recorder.events == []
 
 
 def test_display_cart_publishes_lines_and_total():
@@ -1023,7 +1088,12 @@ def test_display_menu_publishes_through_the_presentation_manager():
     assert result.success is True
     assert result.tool_name == "display_menu"
     assert presentation.payloads == [
-        {"view": "menu", "items": [{"id": "latte", "name": "Latte"}]}
+        {
+            "view": "menu",
+            "items": [{"id": "latte", "name": "Latte"}],
+            "menu_items": [{"id": "latte", "name": "Latte"}],
+            "display_mode": "filtered",
+        }
     ]
 
 
@@ -1256,6 +1326,21 @@ def test_display_menu_can_publish_every_product_from_latest_http_evidence():
                 "available": False,
             },
         ],
+        "menu_items": [
+            {
+                "id": "variant-a",
+                "name": "Taco gà",
+                "price": 86_000,
+                "available": True,
+            },
+            {
+                "id": "variant-b",
+                "name": "Burger gà",
+                "price": 129_000,
+                "available": False,
+            },
+        ],
+        "display_mode": "filtered",
     }
 
 

@@ -487,6 +487,23 @@ class SkillExecutor:
                     SkillExecutor._render_json_value(value["$json"], ctx),
                     ensure_ascii=False,
                 )
+            if "$multiply" in value:
+                operands = value["$multiply"]
+                if set(value) != {"$multiply"} or not isinstance(
+                    operands, list
+                ) or len(operands) != 2:
+                    raise ValueError("invalid multiply expression")
+                resolved = [
+                    SkillExecutor._render_json_value(operand, ctx)
+                    for operand in operands
+                ]
+                if any(
+                    isinstance(operand, bool)
+                    or not isinstance(operand, (int, float))
+                    for operand in resolved
+                ):
+                    raise ValueError("multiply operands must be numbers")
+                return resolved[0] * resolved[1]
             if "$coalesce" in value:
                 operands = value["$coalesce"]
                 if set(value) != {"$coalesce"} or not isinstance(
@@ -593,7 +610,7 @@ class SkillExecutor:
                 SkillExecutor._evaluate_predicate(child, ctx) for child in operands
             ]
             return all(results) if operator == "all" else any(results)
-        if operator not in {"contains_folded", "gte", "lte"}:
+        if operator not in {"contains_folded", "equals", "gte", "lte"}:
             raise ValueError(f"unsupported predicate operator: {operator}")
         if not isinstance(operands, list) or len(operands) != 2:
             raise ValueError(f"{operator} predicate has invalid arity")
@@ -607,6 +624,10 @@ class SkillExecutor:
                     return False
                 raise
         left, right = resolved
+        if operator == "equals":
+            if isinstance(left, bool) or isinstance(right, bool):
+                return type(left) is type(right) and left == right
+            return left == right
         if operator == "contains_folded":
             if not isinstance(left, str) or not isinstance(right, str):
                 return False

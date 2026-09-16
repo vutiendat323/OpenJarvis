@@ -1,6 +1,6 @@
 [skill]
 name = "trendcoffee-menu"
-description = "Read the complete live menu and show items matching the requested text and native price range. Use contains='' for the complete menu."
+description = "Read the complete live menu. Use displayMode='browse' with contains='' and the full price range for the initial menu; use displayMode='filtered' for any customer search or filter."
 required_capabilities = ["network:fetch"]
 input_schema_json = '''
 {
@@ -8,9 +8,10 @@ input_schema_json = '''
   "properties":{
     "contains":{"type":"string"},
     "minPrice":{"type":"integer","minimum":0},
-    "maxPrice":{"type":"integer","minimum":0}
+    "maxPrice":{"type":"integer","minimum":0},
+    "displayMode":{"type":"string","enum":["browse","filtered"]}
   },
-  "required":["contains","minPrice","maxPrice"],
+  "required":["contains","minPrice","maxPrice","displayMode"],
   "additionalProperties":false
 }
 '''
@@ -24,17 +25,18 @@ allowed_content_types = ["application/json"]
 required_paths_json = '''[{"path":"result.items","type":"array"},{"path":"result.hasNext","type":"boolean"}]'''
 
 [skill.metadata.openjarvis.initial_display]
-inputs = { contains = "", minPrice = 0, maxPrice = 1000000000 }
+inputs = { contains = "", minPrice = 0, maxPrice = 1000000000, displayMode = "browse" }
 
-# The endpoint ignores q/query/search/keyword, so text filtering is local over
-# this complete read; minPrice/maxPrice are the website's own filters.
+# The endpoint ignores q/query/search/keyword, so all requested filters are
+# applied locally over one complete read. This preserves a full live catalog
+# for the left column while the right column receives exact filtered results.
 # A short timeout turns a stalled provider into source_unavailable quickly.
 [[skill.steps]]
 tool_name = "http_request"
 output_key = "menu"
-arguments_template = '''{"url":"https://trendcoffee.net/api/latest/menu/specific/public?date={today|urlencode}&branch=ba9355f797&catalog=&minPrice={minPrice|urlencode}&maxPrice={maxPrice|urlencode}&size=200&hasPaging=true&page=1","method":"GET","timeout":5}'''
+arguments_template = '''{"url":"https://trendcoffee.net/api/latest/menu/specific/public?date={today|urlencode}&branch=ba9355f797&catalog=&minPrice=0&maxPrice=1000000000&size=200&hasPaging=true&page=1","method":"GET","timeout":5}'''
 assertions_json = '''[{"actual":"{menu.result.hasNext}","equals":false},{"actual":{"$map":"{menu.result.items.0.menuItems}","as":"entry","value":"{entry.product.variants.0.slug}"},"all_unique_non_empty":true}]'''
 
 [[skill.steps]]
 tool_name = "display_menu"
-arguments_template = '''{"items":{"$map":{"$filter":"{menu.result.items.0.menuItems}","as":"entry","where":{"any":[{"contains_folded":["{entry.product.name}","{contains}"]},{"contains_folded":["{entry.product.description}","{contains}"]},{"contains_folded":["{entry.product.catalog.name}","{contains}"]}]}},"as":"entry","value":{"id":"{entry.product.variants.0.slug}","name":"{entry.product.name}","price":"{entry.product.variants.0.price}","available":"{entry.product.isActive}"}},"result_complete":true}'''
+arguments_template = '''{"items":{"$map":{"$filter":"{menu.result.items.0.menuItems}","as":"entry","where":{"all":[{"any":[{"contains_folded":["{entry.product.name}","{contains}"]},{"contains_folded":["{entry.product.description}","{contains}"]},{"contains_folded":["{entry.product.catalog.name}","{contains}"]}]},{"gte":["{entry.product.variants.0.price}","{minPrice}"]},{"lte":["{entry.product.variants.0.price}","{maxPrice}"]}]}},"as":"entry","value":{"id":"{entry.product.variants.0.slug}","name":"{entry.product.name}","price":"{entry.product.variants.0.price}","available":"{entry.product.isActive}"}},"menu_items":{"$map":"{menu.result.items.0.menuItems}","as":"entry","value":{"id":"{entry.product.variants.0.slug}","name":"{entry.product.name}","price":"{entry.product.variants.0.price}","available":"{entry.product.isActive}","category":"{entry.product.catalog.name}","is_top_sell":"{entry.product.isTopSell}","is_new":"{entry.product.isNew}"}},"display_mode":"{displayMode}","result_complete":true}'''
