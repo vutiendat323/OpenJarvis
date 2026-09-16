@@ -29,6 +29,31 @@ SkillResolver = Callable[[str, Dict[str, Any]], SkillResult]
 _MISSING = object()
 
 
+def _fold_search_text(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text).casefold()
+    without_marks = "".join(
+        character for character in decomposed if not unicodedata.combining(character)
+    ).replace("đ", "d")
+    return " ".join(re.sub(r"[^\w]+", " ", without_marks).split())
+
+
+def _search_matches(text: object, terms: object) -> bool:
+    if not isinstance(text, str) or not isinstance(terms, list) or not all(
+        isinstance(term, str) for term in terms
+    ):
+        return False
+
+    if not terms:
+        return False
+
+    text_tokens = set(_fold_search_text(text).split())
+    for term in terms:
+        term_tokens = _fold_search_text(term).split()
+        if term_tokens and all(token in text_tokens for token in term_tokens):
+            return True
+    return False
+
+
 def _url_origin(url: object) -> str:
     if not isinstance(url, str):
         return ""
@@ -610,7 +635,13 @@ class SkillExecutor:
                 SkillExecutor._evaluate_predicate(child, ctx) for child in operands
             ]
             return all(results) if operator == "all" else any(results)
-        if operator not in {"contains_folded", "equals", "gte", "lte"}:
+        if operator not in {
+            "contains_folded",
+            "search_matches",
+            "equals",
+            "gte",
+            "lte",
+        }:
             raise ValueError(f"unsupported predicate operator: {operator}")
         if not isinstance(operands, list) or len(operands) != 2:
             raise ValueError(f"{operator} predicate has invalid arity")
@@ -635,6 +666,8 @@ class SkillExecutor:
                 return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
 
             return normalize(right) in normalize(left)
+        if operator == "search_matches":
+            return _search_matches(left, right)
 
         if (
             not isinstance(left, (int, float))

@@ -141,11 +141,19 @@ def test_kiosk_mcp_prompt_routes_menu_reads_through_one_composite_skill() -> Non
 
     assert prompt is not None
     normalized = " ".join(prompt.split())
+    folded = normalized.casefold()
     assert "call skill_trendcoffee-menu exactly once" in normalized
-    assert 'contains="" only for an explicit complete-menu request' in normalized
-    assert "literal search text" in normalized
+    assert "classify the customer's intent semantically" in folded
+    assert "itemterms" in folded
+    assert "categoryterms" in folded
+    assert "only for an explicit complete-menu request" in folded
+    assert "do not make a second model or tool call for classification" in folded
+    assert "content words only, without conjunctions" in folded
+    assert "runtime_context.menu_categories" in folded
+    assert "exact live labels" in folded
+    assert "literal search text" not in folded
     assert "terminal display result is authoritative" in normalized
-    assert "only in minPrice/maxPrice, never in contains" in normalized
+    assert "only in minprice/maxprice, never in itemterms or categoryterms" in folded
     assert "menu is preloaded for visual browsing" in normalized
     assert "does not itself populate runtime_context.displayed_menu" in normalized
     for catalog_slug in (
@@ -348,5 +356,7 @@ def test_kiosk_mcp_prompt_separates_cold_discovery_from_warm_live_reads() -> Non
         flags=re.IGNORECASE | re.DOTALL,
     )
     assert re.search(
-        r'contains="".*only.*complete-menu', prompt, flags=re.IGNORECASE | re.DOTALL
+        r"itemTerms=\[\].*categoryTerms=\[\].*only.*complete-menu",
+        prompt,
+        flags=re.IGNORECASE | re.DOTALL,
     )

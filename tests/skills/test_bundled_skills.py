@@ -788,6 +788,75 @@ _CATEGORY_MENU_ENTRIES = [
     },
 ]
 
+_SEARCH_MENU_ENTRIES = [
+    {
+        "product": {
+            "name": "Nước Khoáng Có Gas",
+            "description": "",
+            "catalog": {"name": "nước giải khát"},
+            "isActive": True,
+            "isTopSell": False,
+            "isNew": False,
+            "variants": [{"slug": "v-sparkling-water", "price": 55_000}],
+        }
+    },
+    {
+        "product": {
+            "name": "Cà phê đen",
+            "description": "",
+            "catalog": {"name": "cà phê"},
+            "isActive": True,
+            "isTopSell": False,
+            "isNew": False,
+            "variants": [{"slug": "v-black-coffee", "price": 35_000}],
+        }
+    },
+    {
+        "product": {
+            "name": "Corona Extra 4.5%",
+            "description": "",
+            "catalog": {"name": "bia/ rượu vang"},
+            "isActive": True,
+            "isTopSell": False,
+            "isNew": False,
+            "variants": [{"slug": "v-beer", "price": 89_000}],
+        }
+    },
+    {
+        "product": {
+            "name": "Bánh Tiramisu",
+            "description": "",
+            "catalog": {"name": "món bánh"},
+            "isActive": True,
+            "isTopSell": False,
+            "isNew": False,
+            "variants": [{"slug": "v-cake", "price": 39_000}],
+        }
+    },
+    {
+        "product": {
+            "name": "Trà Bắc",
+            "description": "",
+            "catalog": {"name": "món trà"},
+            "isActive": True,
+            "isTopSell": False,
+            "isNew": False,
+            "variants": [{"slug": "v-tea", "price": 50_000}],
+        }
+    },
+    {
+        "product": {
+            "name": "Bánh mì Bruschetta",
+            "description": "",
+            "catalog": {"name": "món ăn"},
+            "isActive": True,
+            "isTopSell": False,
+            "isNew": False,
+            "variants": [{"slug": "v-savory", "price": 86_000}],
+        }
+    },
+]
+
 
 class _Recording(BaseTool):
     def __init__(self, name: str, result: ToolResult):
@@ -850,19 +919,28 @@ def test_menu_recipe_exposes_only_native_inputs_and_fixed_request_contract() -> 
 
     assert parameters["type"] == "object"
     assert set(parameters["properties"]) == {
-        "contains",
+        "itemTerms",
+        "categoryTerms",
         "minPrice",
         "maxPrice",
         "displayMode",
     }
     assert set(parameters["required"]) == {
-        "contains",
+        "itemTerms",
+        "categoryTerms",
         "minPrice",
         "maxPrice",
         "displayMode",
     }
     assert parameters["additionalProperties"] is False
-    assert parameters["properties"]["contains"] == {"type": "string"}
+    assert parameters["properties"]["itemTerms"] == {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1},
+    }
+    assert parameters["properties"]["categoryTerms"] == {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1},
+    }
     assert parameters["properties"]["minPrice"] == {"type": "integer", "minimum": 0}
     assert parameters["properties"]["maxPrice"] == {"type": "integer", "minimum": 0}
     assert parameters["properties"]["displayMode"] == {
@@ -887,7 +965,8 @@ def test_menu_recipe_exposes_only_native_inputs_and_fixed_request_contract() -> 
 def test_menu_recipe_binds_native_price_and_filters_text_locally() -> None:
     _, result, http, display, body = _run_menu(
         {
-            "contains": "khoai",
+            "itemTerms": ["khoai"],
+            "categoryTerms": [],
             "minPrice": 20000,
             "maxPrice": 50000,
             "displayMode": "filtered",
@@ -960,7 +1039,7 @@ def test_menu_recipe_binds_native_price_and_filters_text_locally() -> None:
 
 
 @pytest.mark.parametrize(
-    ("contains", "expected_id"),
+    ("semantic_terms", "expected_id"),
     [
         ("món bánh", "v-bread"),
         ("cà phê", "v-americano"),
@@ -969,11 +1048,12 @@ def test_menu_recipe_binds_native_price_and_filters_text_locally() -> None:
     ],
 )
 def test_menu_recipe_filters_categories_using_catalog_name(
-    contains: str, expected_id: str
+    semantic_terms: str, expected_id: str
 ) -> None:
     _, result, _, display, _ = _run_menu(
         {
-            "contains": contains,
+            "itemTerms": [],
+            "categoryTerms": [semantic_terms],
             "minPrice": 0,
             "maxPrice": 300000,
             "displayMode": "filtered",
@@ -985,10 +1065,38 @@ def test_menu_recipe_filters_categories_using_catalog_name(
     assert [item["id"] for item in display.calls[0]["items"]] == [expected_id]
 
 
-def test_menu_recipe_empty_contains_publishes_every_row_in_provider_order() -> None:
+@pytest.mark.parametrize(
+    ("item_terms", "category_terms", "expected_ids"),
+    [
+        (["nuoc khoang co gas"], [], ["v-sparkling-water"]),
+        (["cà phê đen"], [], ["v-black-coffee"]),
+        ([], ["cà phê"], ["v-black-coffee"]),
+        ([], ["bia", "rượu vang", "món bánh"], ["v-beer", "v-cake"]),
+    ],
+)
+def test_menu_recipe_applies_agent_classified_semantic_terms(
+    item_terms: list[str], category_terms: list[str], expected_ids: list[str]
+) -> None:
     _, result, _, display, _ = _run_menu(
         {
-            "contains": "",
+            "itemTerms": item_terms,
+            "categoryTerms": category_terms,
+            "minPrice": 0,
+            "maxPrice": 300_000,
+            "displayMode": "filtered",
+        },
+        entries=_SEARCH_MENU_ENTRIES,
+    )
+
+    assert result.success is True
+    assert [item["id"] for item in display.calls[0]["items"]] == expected_ids
+
+
+def test_menu_recipe_empty_semantic_terms_publish_every_row_in_provider_order() -> None:
+    _, result, _, display, _ = _run_menu(
+        {
+            "itemTerms": [],
+            "categoryTerms": [],
             "minPrice": 0,
             "maxPrice": 300000,
             "displayMode": "browse",
@@ -1009,10 +1117,26 @@ def test_menu_recipe_empty_contains_publishes_every_row_in_provider_order() -> N
     ]
 
 
-def test_menu_recipe_rejects_array_contains_before_io() -> None:
+def test_menu_recipe_empty_filtered_terms_do_not_publish_the_complete_menu() -> None:
+    _, result, _, display, _ = _run_menu(
+        {
+            "itemTerms": [],
+            "categoryTerms": [],
+            "minPrice": 0,
+            "maxPrice": 300000,
+            "displayMode": "filtered",
+        }
+    )
+
+    assert result.success is True
+    assert display.calls[0]["items"] == []
+
+
+def test_menu_recipe_rejects_string_item_terms_before_io() -> None:
     _, result, http, display, _ = _run_menu(
         {
-            "contains": ["món bánh", "MÓN TRÀ"],
+            "itemTerms": "món bánh",
+            "categoryTerms": [],
             "minPrice": 0,
             "maxPrice": 300000,
             "displayMode": "filtered",
@@ -1038,7 +1162,8 @@ def test_menu_recipe_asserts_completeness_and_identity_before_display(
 ) -> None:
     _, result, http, display, _ = _run_menu(
         {
-            "contains": "",
+            "itemTerms": [],
+            "categoryTerms": [],
             "minPrice": 0,
             "maxPrice": 300000,
             "displayMode": "browse",
@@ -1055,7 +1180,8 @@ def test_menu_recipe_asserts_completeness_and_identity_before_display(
 def test_menu_recipe_rejects_model_authored_message_before_io() -> None:
     _, result, http, display, _ = _run_menu(
         {
-            "contains": "",
+            "itemTerms": [],
+            "categoryTerms": [],
             "minPrice": 0,
             "maxPrice": 300000,
             "displayMode": "browse",

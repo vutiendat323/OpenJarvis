@@ -135,6 +135,7 @@ def test_display_menu_publishes_complete_catalog_and_explicit_mode():
     assert recorder.events[0].data["menu_items"][0]["category"] == "cà phê"
     assert recorder.events[0].data["menu_items"][1]["is_new"] is True
     assert recorder.events[0].data["display_mode"] == "filtered"
+    assert result.metadata["menu_categories"] == ["cà phê", "món trà"]
 
 
 def test_display_menu_rejects_invalid_catalog_rows_or_mode_before_publication():

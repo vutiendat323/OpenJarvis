@@ -109,7 +109,11 @@ def test_builder_wires_recipe_declared_initial_display_inputs() -> None:
             assert system.presentation_session_manager.preload_initial_display() is True
 
         execute.assert_called_once_with(
-            contains="", minPrice=0, maxPrice=1_000_000_000
+            itemTerms=[],
+            categoryTerms=[],
+            minPrice=0,
+            maxPrice=1_000_000_000,
+            displayMode="browse",
         )
     finally:
         system.close()

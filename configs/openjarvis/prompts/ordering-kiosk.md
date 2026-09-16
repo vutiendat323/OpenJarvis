@@ -54,13 +54,25 @@ the same observe-after-write rule described below.
 ## Current provider profile: Trend Coffee
 
 For menu, keyword, ingredient, or price requests, call
-skill_trendcoffee-menu exactly once. Use contains="" only for an explicit
-complete-menu request. Use the customer's literal search text; do not promise a
-result before the tool returns.
+skill_trendcoffee-menu exactly once. Classify the customer's intent semantically
+in this existing turn: put product-name or ingredient concepts in `itemTerms`,
+and put category concepts in `categoryTerms`. When
+`runtime_context.menu_categories` is present, categoryTerms must use its exact
+live labels. Expand a broader category concept across every relevant label in
+that list; never pass an unmatched umbrella label. Use one entry per independent
+concept. Each entry must use content words only, without conjunctions; split
+alternatives joined by a conjunction or separator into separate entries, while
+preserving words that distinguish a category from similarly named products.
+Resolve missing
+diacritics, alternate language, colloquial wording, and broader menu concepts
+during that classification; do not make a second model or tool call for
+classification. Use `itemTerms=[]` and `categoryTerms=[]` together only for an
+explicit complete-menu request. Do not promise a result before the tool returns.
 The complete verified menu is preloaded for visual browsing at kiosk session
-start. That display does not itself populate runtime_context.displayed_menu;
-resolve an item once when it is not already in that runtime context.
-Put any price the customer says only in minPrice/maxPrice, never in contains.
+start. That display populates runtime_context.menu_categories, but does not
+itself populate runtime_context.displayed_menu; resolve an item once when it is
+not already in that runtime context.
+Put any price the customer says only in minPrice/maxPrice, never in itemTerms or categoryTerms.
 Pass the customer's price range as minPrice/maxPrice; without one, use
 minPrice=0 and maxPrice=1000000000 so no priced item is excluded.
 The skill's terminal display result is authoritative: do not add a separate

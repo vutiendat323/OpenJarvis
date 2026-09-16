@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import re
 from datetime import datetime
+from threading import RLock
 from typing import Any, Dict, List, Optional, Set
 
 from openjarvis.core.types import ToolResult
@@ -97,6 +98,8 @@ class SkillTool(BaseTool):
         self._skill_manager = skill_manager
         self.tool_id = f"skill_{manifest.name}"
         self._parameters = self._build_parameters()
+        self._menu_context_lock = RLock()
+        self._menu_categories: List[str] = []
 
     # ------------------------------------------------------------------
     # Parameter extraction
@@ -209,7 +212,14 @@ class SkillTool(BaseTool):
             get_tool = getattr(self._executor._tool_executor, "get_tool", None)
             menu = get_tool("display_menu") if callable(get_tool) else None
             provider = getattr(menu, "agent_context", None)
-            return provider() if callable(provider) else {}
+            context = provider() if callable(provider) else {}
+            if not isinstance(context, dict):
+                context = {}
+            with self._menu_context_lock:
+                categories = list(self._menu_categories)
+            if categories:
+                context = {**context, "menu_categories": categories}
+            return context
         cart = self._executor._tool_executor.get_tool("display_cart")
         context = cart.agent_context() if cart is not None else {}
         if self._manifest.accepts_cart_lines and not context:
@@ -309,10 +319,18 @@ class SkillTool(BaseTool):
                             "result_complete",
                             "projected_count",
                             "published_count",
+                            "menu_categories",
                         )
                         if key in last_step.metadata
                     }
                     display_metadata["completed_display"] = True
+                    if "menu_categories" in display_metadata:
+                        categories = display_metadata["menu_categories"]
+                        if isinstance(categories, list) and all(
+                            isinstance(category, str) for category in categories
+                        ):
+                            with self._menu_context_lock:
+                                self._menu_categories = list(categories)
                     if (
                         "customer_message" not in display_metadata
                         and last_step.tool_name != "display_menu"

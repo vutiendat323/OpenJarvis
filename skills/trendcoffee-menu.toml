@@ -1,17 +1,18 @@
 [skill]
 name = "trendcoffee-menu"
-description = "Read the complete live menu. Use displayMode='browse' with contains='' and the full price range for the initial menu; use displayMode='filtered' for any customer search or filter."
+description = "Read the complete live menu. Classify each customer search semantically in the current turn: itemTerms match product names/descriptions and categoryTerms match category labels. Choose categoryTerms from runtime_context.menu_categories when present, expanding broad concepts to relevant exact live labels. Use content-word phrases without conjunctions and split independent concepts into separate terms. Use displayMode='browse' with both term arrays empty and the full price range only for the complete menu."
 required_capabilities = ["network:fetch"]
 input_schema_json = '''
 {
   "type":"object",
   "properties":{
-    "contains":{"type":"string"},
+    "itemTerms":{"type":"array","items":{"type":"string","minLength":1}},
+    "categoryTerms":{"type":"array","items":{"type":"string","minLength":1}},
     "minPrice":{"type":"integer","minimum":0},
     "maxPrice":{"type":"integer","minimum":0},
     "displayMode":{"type":"string","enum":["browse","filtered"]}
   },
-  "required":["contains","minPrice","maxPrice","displayMode"],
+  "required":["itemTerms","categoryTerms","minPrice","maxPrice","displayMode"],
   "additionalProperties":false
 }
 '''
@@ -25,7 +26,7 @@ allowed_content_types = ["application/json"]
 required_paths_json = '''[{"path":"result.items","type":"array"},{"path":"result.hasNext","type":"boolean"}]'''
 
 [skill.metadata.openjarvis.initial_display]
-inputs = { contains = "", minPrice = 0, maxPrice = 1000000000, displayMode = "browse" }
+inputs = { itemTerms = [], categoryTerms = [], minPrice = 0, maxPrice = 1000000000, displayMode = "browse" }
 
 # The endpoint ignores q/query/search/keyword, so all requested filters are
 # applied locally over one complete read. This preserves a full live catalog
@@ -39,4 +40,4 @@ assertions_json = '''[{"actual":"{menu.result.hasNext}","equals":false},{"actual
 
 [[skill.steps]]
 tool_name = "display_menu"
-arguments_template = '''{"items":{"$map":{"$filter":"{menu.result.items.0.menuItems}","as":"entry","where":{"all":[{"any":[{"contains_folded":["{entry.product.name}","{contains}"]},{"contains_folded":["{entry.product.description}","{contains}"]},{"contains_folded":["{entry.product.catalog.name}","{contains}"]}]},{"gte":["{entry.product.variants.0.price}","{minPrice}"]},{"lte":["{entry.product.variants.0.price}","{maxPrice}"]}]}},"as":"entry","value":{"id":"{entry.product.variants.0.slug}","name":"{entry.product.name}","price":"{entry.product.variants.0.price}","available":"{entry.product.isActive}"}},"menu_items":{"$map":"{menu.result.items.0.menuItems}","as":"entry","value":{"id":"{entry.product.variants.0.slug}","name":"{entry.product.name}","price":"{entry.product.variants.0.price}","available":"{entry.product.isActive}","category":"{entry.product.catalog.name}","is_top_sell":"{entry.product.isTopSell}","is_new":"{entry.product.isNew}"}},"display_mode":"{displayMode}","result_complete":true}'''
+arguments_template = '''{"items":{"$map":{"$filter":"{menu.result.items.0.menuItems}","as":"entry","where":{"all":[{"any":[{"equals":["{displayMode}","browse"]},{"search_matches":["{entry.product.name}","{itemTerms}"]},{"search_matches":["{entry.product.description}","{itemTerms}"]},{"search_matches":["{entry.product.catalog.name}","{categoryTerms}"]}]},{"gte":["{entry.product.variants.0.price}","{minPrice}"]},{"lte":["{entry.product.variants.0.price}","{maxPrice}"]}]}},"as":"entry","value":{"id":"{entry.product.variants.0.slug}","name":"{entry.product.name}","price":"{entry.product.variants.0.price}","available":"{entry.product.isActive}"}},"menu_items":{"$map":"{menu.result.items.0.menuItems}","as":"entry","value":{"id":"{entry.product.variants.0.slug}","name":"{entry.product.name}","price":"{entry.product.variants.0.price}","available":"{entry.product.isActive}","category":"{entry.product.catalog.name}","is_top_sell":"{entry.product.isTopSell}","is_new":"{entry.product.isNew}"}},"display_mode":"{displayMode}","result_complete":true}'''

@@ -297,6 +297,14 @@ class DisplayMenuTool(_DisplayTool):
             )
         result = self._publish(payload)
         if result.success and result_complete:
+            menu_categories = list(
+                dict.fromkeys(
+                    category.strip()
+                    for item in picked_menu
+                    if isinstance((category := item.get("category")), str)
+                    and category.strip()
+                )
+            )
             result.content = json.dumps(
                 {"shown": "menu", "count": len(picked), "complete": True},
                 separators=(",", ":"),
@@ -308,6 +316,7 @@ class DisplayMenuTool(_DisplayTool):
                     "result_complete": True,
                     "projected_count": len(picked),
                     "published_count": len(picked),
+                    "menu_categories": menu_categories,
                 }
             )
             conversation_id = current_conversation_id()

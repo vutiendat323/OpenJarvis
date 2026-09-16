@@ -406,6 +406,62 @@ class TestSkillExecutor:
 
         assert rendered == [rows[0]]
 
+    @pytest.mark.parametrize(
+        ("text", "terms"),
+        [
+            ("Nước Khoáng Có Gas", ["nuoc khoang co gas"]),
+            ("Cà phê đen", ["den ca phe"]),
+        ],
+    )
+    def test_search_matches_unaccented_semantic_terms(self, text, terms):
+        expression = {
+            "$filter": "{rows}",
+            "as": "row",
+            "where": {"search_matches": ["{row.text}", "{terms}"]},
+        }
+        rows = [{"text": text}, {"text": "Trà Bắc"}]
+
+        rendered = SkillExecutor._render_json_value(
+            expression,
+            {"rows": rows, "terms": terms},
+        )
+
+        assert rendered == [rows[0]]
+
+    def test_search_matches_any_agent_classified_term(self):
+        expression = {
+            "$filter": "{rows}",
+            "as": "row",
+            "where": {"search_matches": ["{row.text}", "{terms}"]},
+        }
+        rows = [
+            {"text": "bia/ rượu vang"},
+            {"text": "món bánh"},
+            {"text": "món trà"},
+        ]
+
+        rendered = SkillExecutor._render_json_value(
+            expression,
+            {"rows": rows, "terms": ["bia rượu vang", "món bánh"]},
+        )
+
+        assert rendered == rows[:2]
+
+    def test_search_matches_empty_terms_does_not_widen_a_filter(self):
+        expression = {
+            "$filter": "{rows}",
+            "as": "row",
+            "where": {"search_matches": ["{row.text}", "{terms}"]},
+        }
+        rows = [{"text": "Cà phê"}, {"text": "Món trà"}]
+
+        rendered = SkillExecutor._render_json_value(
+            expression,
+            {"rows": rows, "terms": []},
+        )
+
+        assert rendered == []
+
     def test_filter_missing_optional_field_is_false_and_preserves_order_duplicates(
         self,
     ):

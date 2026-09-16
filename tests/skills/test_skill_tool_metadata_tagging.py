@@ -95,6 +95,40 @@ class TestSkillToolMetadataTagging:
         assert result.metadata["completed_display"] is True
         assert "customer_message" not in result.metadata
 
+    def test_menu_skill_exposes_verified_categories_to_the_next_agent_turn(self):
+        class Display(_EchoTool):
+            tool_id = "display_menu"
+
+            @property
+            def spec(self):
+                return ToolSpec(name="display_menu", description="display menu")
+
+            def execute(self, **params):
+                return ToolResult(
+                    tool_name="display_menu",
+                    content="shown",
+                    success=True,
+                    metadata={
+                        "completed_display": True,
+                        "menu_categories": ["cà phê", "món trà"],
+                    },
+                )
+
+            def agent_context(self):
+                return {}
+
+        manifest = SkillManifest(
+            name="menu",
+            steps=[SkillStep(tool_name="display_menu", arguments_template="{}")],
+        )
+        tool = SkillTool(manifest, SkillExecutor(ToolExecutor([Display()])))
+
+        assert tool.agent_context() == {}
+        assert tool.execute().success is True
+        assert tool.agent_context() == {
+            "menu_categories": ["cà phê", "món trà"]
+        }
+
     def _make_tool(self, manifest: SkillManifest) -> SkillTool:
         executor = SkillExecutor(ToolExecutor([_EchoTool()]))
         return SkillTool(manifest, executor)
