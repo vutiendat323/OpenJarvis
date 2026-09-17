@@ -886,10 +886,14 @@ class DisplayCartTool(_DisplayTool):
                 and turn_nonce_is_active(current_turn_nonce())
             )
 
-    def end_checkout(self) -> None:
-        """Release edits, retaining the claim after ambiguous write failures."""
+    def end_checkout(self, *, release_claim: bool = False) -> None:
+        """Release edits, retaining claims once a merchant write was attempted."""
         with self._cart_lock:
-            self._checkout_pending.discard(current_conversation_id())
+            owner = current_conversation_id()
+            revision = _CHECKOUT_REVISION.get()
+            self._checkout_pending.discard(owner)
+            if release_claim and self._checkout_claims.get(owner) == revision:
+                self._checkout_claims.pop(owner, None)
             _CHECKOUT_REVISION.set(0)
 
     def agent_context(self) -> dict[str, Any]:

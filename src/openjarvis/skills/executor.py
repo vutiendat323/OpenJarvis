@@ -137,10 +137,18 @@ class SkillExecutor:
                     ),
                 ],
             )
+        result: SkillResult | None = None
         try:
-            return self._run_steps(manifest, initial_context=ctx)
+            ctx["_checkout_write_attempted"] = False
+            result = self._run_steps(manifest, initial_context=ctx)
+            return result
         finally:
-            cart.end_checkout()
+            cart.end_checkout(
+                release_claim=(
+                    result is not None
+                    and not result.context.get("_checkout_write_attempted", False)
+                )
+            )
 
     def _run_steps(
         self,
@@ -244,12 +252,39 @@ class SkillExecutor:
                 )
             else:
                 # Execute via tool executor
+                request_method = ""
+                if step.tool_name == "http_request":
+                    try:
+                        request_method = json.loads(rendered).get("method", "").upper()
+                    except (AttributeError, json.JSONDecodeError):
+                        pass
+                    if manifest.checkout and request_method not in {
+                        "",
+                        "GET",
+                        "HEAD",
+                    }:
+                        ctx["_checkout_write_attempted"] = True
                 tool_call = ToolCall(
                     id=f"skill_{manifest.name}_{i}",
                     name=step.tool_name,
                     arguments=rendered,
                 )
                 result = self._tool_executor.execute(tool_call)
+                if (
+                    manifest.checkout
+                    and step.tool_name == "http_request"
+                    and not result.success
+                    and result.content.startswith(
+                        ("Request timed out", "Request error")
+                    )
+                ):
+                    if request_method in {"GET", "HEAD"}:
+                        retry_call = ToolCall(
+                            id=f"skill_{manifest.name}_{i}_retry",
+                            name=step.tool_name,
+                            arguments=rendered,
+                        )
+                        result = self._tool_executor.execute(retry_call)
 
             if recipe is not None and step.tool_name == "http_request":
                 recipe_error = self._recipe_response_error(result, recipe)

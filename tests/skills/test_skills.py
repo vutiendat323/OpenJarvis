@@ -66,6 +66,67 @@ class RecordingHttpTool(BaseTool):
         return self.result
 
 
+class SequenceHttpTool(BaseTool):
+    tool_id = "http_request"
+
+    def __init__(self, results: list[ToolResult]):
+        self.results = list(results)
+        self.calls = []
+
+    @property
+    def spec(self):
+        return ToolSpec(name="http_request", description="Sequenced HTTP request")
+
+    def execute(self, **params):
+        self.calls.append(params)
+        return self.results.pop(0)
+
+
+def _checkout_http_harness(results: list[ToolResult], method: str):
+    from openjarvis.tools.display import DisplayCartTool
+
+    cart = DisplayCartTool()
+    cart._bus = EventBus()
+    http = SequenceHttpTool(results)
+    manifest = SkillManifest(
+        name="checkout",
+        checkout=True,
+        steps=[
+            SkillStep(
+                tool_name="http_request",
+                arguments_template=json.dumps(
+                    {"url": f"https://shop.example/{method.lower()}", "method": method}
+                ),
+                output_key="fresh_menu",
+            )
+        ],
+    )
+    return cart, http, SkillExecutor(ToolExecutor([cart, http])), manifest
+
+
+def _add_checkout_tea(cart) -> int:
+    added = cart.execute(
+        action="add",
+        item={
+            "variant_id": "tea",
+            "name": "Tea",
+            "unit_price": 55_000,
+            "quantity": 1,
+        },
+    )
+    return added.metadata["cart_revision"]
+
+
+def _run_checkout_turn(executor, manifest, revision: int):
+    from openjarvis.core.conversation import agent_turn_scope
+
+    with agent_turn_scope() as nonce:
+        return executor.run(
+            manifest,
+            initial_context={"cart_revision": revision, "turn_nonce": nonce},
+        )
+
+
 def _http_result(
     *,
     content: str = '{"result":{"items":[]}}',
@@ -819,6 +880,90 @@ class TestSkillExecutor:
                 assert not executor.run(
                     manifest, initial_context={"turn_nonce": nonce, "cart_revision": 1}
                 ).success
+
+    def test_checkout_retries_one_transient_preflight_read(self):
+        from openjarvis.core.conversation import conversation_scope
+
+        cart, http, executor, manifest = _checkout_http_harness(
+            [
+                ToolResult(
+                    tool_name="http_request",
+                    content="Request timed out after 5s: read timed out",
+                    success=False,
+                ),
+                ToolResult(
+                    tool_name="http_request",
+                    content='{"result":"fresh"}',
+                    success=True,
+                ),
+            ],
+            "GET",
+        )
+
+        with conversation_scope("checkout-read-retry"):
+            result = _run_checkout_turn(executor, manifest, _add_checkout_tea(cart))
+
+        assert result.success
+        assert result.context["fresh_menu"] == '{"result":"fresh"}'
+        assert http.calls == [
+            {"url": "https://shop.example/get", "method": "GET"},
+            {"url": "https://shop.example/get", "method": "GET"},
+        ]
+
+    def test_checkout_releases_revision_after_preflight_read_failure(self):
+        from openjarvis.core.conversation import conversation_scope
+
+        timeout = ToolResult(
+            tool_name="http_request",
+            content="Request timed out after 5s: read timed out",
+            success=False,
+        )
+        cart, http, executor, manifest = _checkout_http_harness(
+            [
+                timeout,
+                timeout,
+                ToolResult(
+                    tool_name="http_request",
+                    content='{"result":"fresh"}',
+                    success=True,
+                ),
+            ],
+            "GET",
+        )
+
+        with conversation_scope("checkout-read-recovery"):
+            revision = _add_checkout_tea(cart)
+            first = _run_checkout_turn(executor, manifest, revision)
+            retry = _run_checkout_turn(executor, manifest, revision)
+
+        assert not first.success
+        assert retry.success
+        assert retry.context["fresh_menu"] == '{"result":"fresh"}'
+        assert len(http.calls) == 3
+
+    def test_checkout_retains_revision_after_merchant_write_attempt(self):
+        from openjarvis.core.conversation import conversation_scope
+
+        cart, http, executor, manifest = _checkout_http_harness(
+            [
+                ToolResult(
+                    tool_name="http_request",
+                    content="Request timed out after 5s: read timed out",
+                    success=False,
+                )
+            ],
+            "POST",
+        )
+
+        with conversation_scope("checkout-write-failure"):
+            revision = _add_checkout_tea(cart)
+            first = _run_checkout_turn(executor, manifest, revision)
+            retry = _run_checkout_turn(executor, manifest, revision)
+
+        assert not first.success
+        assert not retry.success
+        assert retry.step_results[-1].content == "cart revision already consumed"
+        assert len(http.calls) == 1
 
     def test_checkout_can_atomically_replace_a_stale_draft(self):
         from openjarvis.core.conversation import agent_turn_scope, conversation_scope
