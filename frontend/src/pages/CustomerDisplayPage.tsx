@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
+import { CustomerDock, type DockTab } from '@/components/Kiosk/CustomerDock';
 import { useAgentEvents, type AgentEvent } from '@/lib/useAgentEvents';
 import {
   isSafeQrImageSource,
@@ -12,6 +13,27 @@ import {
 } from './customerDisplayState';
 
 const vnd = new Intl.NumberFormat('en-US');
+
+type MenuDisplayState = Extract<CustomerDisplayState, { view: 'menu' }>;
+type CartDisplayState = Extract<CustomerDisplayState, { view: 'cart' }>;
+
+const emptyCartState: CartDisplayState = {
+  view: 'cart',
+  lines: [],
+  total: 0,
+  order_note: '',
+  order_type: '',
+  table: '',
+  table_name: '',
+};
+
+function dockTabForState(state: CustomerDisplayState): DockTab {
+  return state.view === 'menu' || state.view === 'waiting' ? 'menu' : 'cart';
+}
+
+function cartQuantity(lines: CustomerDisplayLine[]): number {
+  return lines.reduce((total, line) => total + Math.max(0, line.quantity ?? 1), 0);
+}
 
 function money(value: number | undefined): string {
   return `${vnd.format(value ?? 0)} VND`;
@@ -53,7 +75,7 @@ function ColumnRibbon({
         />
       )}
       <div
-        className="relative z-10 flex h-8 min-w-0 max-w-full items-center justify-center bg-[#8c6239] px-4 sm:px-7 text-xs font-semibold tracking-[0.22em] sm:tracking-[0.32em] text-white uppercase shadow-sm shrink-0 truncate"
+        className="relative z-10 flex h-9 w-[280px] sm:w-[320px] max-w-full items-center justify-center bg-[#8c6239] px-4 sm:px-6 text-sm sm:text-[15px] font-bold tracking-[0.18em] sm:tracking-[0.25em] text-white uppercase shadow-sm shrink-0 truncate"
         style={{
           clipPath: 'polygon(0% 0%, 100% 0%, calc(100% - 14px) 50%, 100% 100%, 0% 100%, 14px 50%)',
         }}
@@ -254,7 +276,7 @@ export function MenuView({
               >
                 {row.map((section) => (
                   <div key={section.title} className="flex min-w-0 flex-col">
-                    <h3 className="mb-2 text-center text-[14.5px] font-bold tracking-[0.1em] uppercase text-[#8c6239] sm:text-[15.5px]">
+                    <h3 className="mb-2.5 text-center font-['Oswald',sans-serif] text-[18px] font-bold tracking-[0.08em] uppercase text-[#8c6239] leading-tight sm:text-[20px]">
                       {section.title}
                     </h3>
                     <div className="flex min-w-0 flex-col space-y-2">
@@ -774,6 +796,9 @@ export function CustomerDisplayPage() {
     if (preview === 'waiting') return { view: 'waiting' };
     return waitingState;
   });
+  const [menuSnapshot, setMenuSnapshot] = useState<MenuDisplayState | null>(null);
+  const [cartSnapshot, setCartSnapshot] = useState<CartDisplayState | null>(null);
+  const [manualTab, setManualTab] = useState<DockTab | null>(null);
 
   useEffect(() => {
     if (preview === 'menu') {
@@ -790,14 +815,29 @@ export function CustomerDisplayPage() {
     } else {
       setState(waitingState);
     }
+    setManualTab(null);
   }, [sessionId, preview]);
+
+  useEffect(() => {
+    if (state.view === 'menu') setMenuSnapshot(state);
+    if (state.view === 'cart') setCartSnapshot(state);
+  }, [state]);
 
   const handleEvent = useCallback((event: AgentEvent) => {
     if (!sessionId) return;
+    setManualTab(null);
     setState((current) => reduceCustomerDisplay(current, event, sessionId));
   }, [sessionId]);
 
   useAgentEvents(undefined, handleEvent, ['display_update'], sessionId);
+
+  const activeTab = manualTab ?? dockTabForState(state);
+  const visibleState = manualTab === 'menu' && menuSnapshot
+    ? menuSnapshot
+    : manualTab === 'cart'
+      ? (cartSnapshot ?? emptyCartState)
+      : state;
+  const cartLines = state.view === 'cart' ? state.lines : (cartSnapshot?.lines ?? []);
 
   return (
     <div className="h-screen w-full bg-[#fae7cd] text-[#8c6239] font-['Josefin_Sans',sans-serif] flex flex-col justify-between overflow-x-hidden overflow-y-auto selection:bg-[#8c6239] selection:text-white">
@@ -805,7 +845,7 @@ export function CustomerDisplayPage() {
       <StripedBand />
 
       {/* Main Container */}
-      <main className="w-full flex-1 flex flex-col justify-between max-w-[1440px] xl:max-w-[1600px] mx-auto py-2 px-2 sm:px-4 md:px-6">
+      <main className="w-full flex-1 flex flex-col justify-between max-w-[1440px] xl:max-w-[1600px] mx-auto pt-2 pb-28 px-2 sm:px-4 md:px-6">
         {!sessionId && !preview ? (
           <div className="my-auto flex flex-col items-center justify-center p-8 text-center">
             <h2 className="font-['Alex_Brush',cursive] text-5xl text-[#8c6239] mb-2">Trend Coffee</h2>
@@ -815,61 +855,73 @@ export function CustomerDisplayPage() {
           </div>
         ) : (
           <>
-            {state.view === 'menu' && (
+            {visibleState.view === 'menu' && (
               <>
                 <RestaurantHeader />
                 <MenuView
-                  items={state.items}
-                  menuItems={state.menuItems}
-                  displayMode={state.displayMode}
-                  resultComplete={state.resultComplete}
-                  projectedCount={state.projectedCount}
-                  publishedCount={state.publishedCount}
-                  preview={state.preview}
+                  items={visibleState.items}
+                  menuItems={visibleState.menuItems}
+                  displayMode={visibleState.displayMode}
+                  resultComplete={visibleState.resultComplete}
+                  projectedCount={visibleState.projectedCount}
+                  publishedCount={visibleState.publishedCount}
+                  preview={visibleState.preview}
                 />
               </>
             )}
 
-            {state.view === 'cart' && (
+            {visibleState.view === 'cart' && (
               <CartView
-                lines={state.lines}
-                total={state.total}
-                order_note={state.order_note}
-                order_type={state.order_type}
-                table_name={state.table_name}
+                lines={visibleState.lines}
+                total={visibleState.total}
+                order_note={visibleState.order_note}
+                order_type={visibleState.order_type}
+                table_name={visibleState.table_name}
               />
             )}
 
-            {state.view === 'bill' && (
+            {visibleState.view === 'bill' && (
               <BillView
-                order_id={state.order_id}
-                branch={state.branch}
-                order_type={state.order_type}
-                status={state.status}
-                lines={state.lines}
-                total={state.total}
+                order_id={visibleState.order_id}
+                branch={visibleState.branch}
+                order_type={visibleState.order_type}
+                status={visibleState.status}
+                lines={visibleState.lines}
+                total={visibleState.total}
               />
             )}
 
-            {state.view === 'payment_qr' && (
+            {visibleState.view === 'payment_qr' && (
               <PaymentQrView
-                qr_code={state.qr_code}
-                total={state.total}
-                order_id={state.order_id}
-                status={state.status}
-                order_type={state.order_type}
-                branch={state.branch}
-                table_name={state.table_name}
-                lines={state.lines}
+                qr_code={visibleState.qr_code}
+                total={visibleState.total}
+                order_id={visibleState.order_id}
+                status={visibleState.status}
+                order_type={visibleState.order_type}
+                branch={visibleState.branch}
+                table_name={visibleState.table_name}
+                lines={visibleState.lines}
               />
             )}
 
-            {state.view === 'waiting' && (
+            {visibleState.view === 'waiting' && (
               <WaitingView />
             )}
           </>
         )}
       </main>
+
+      {manualTab === 'help' && (
+        <div role="dialog" aria-modal="true" aria-label="Customer help" className="fixed inset-0 z-40 flex items-center justify-center bg-[#3d1b0c]/35 p-6">
+          <div className="w-full max-w-md border-2 border-[#68341a] bg-[#fae7cd] p-8 text-center shadow-[0_18px_40px_rgba(60,25,10,0.28)]">
+            <div className="font-['Playfair_Display',serif] text-3xl tracking-wide text-[#68341a]">Need a hand?</div>
+            <p className="mt-3 text-sm font-semibold tracking-wide text-[#783820]">You can ask the voice assistant to browse the menu, update your cart, or start checkout.</p>
+            <button type="button" onClick={() => setManualTab(null)} className="mt-6 border border-[#68341a] px-5 py-2 font-['Playfair_Display',serif] text-sm font-bold tracking-[0.18em] text-[#68341a] active:scale-95">CLOSE</button>
+          </div>
+        </div>
+      )}
+
+      <CustomerDock activeTab={activeTab} cartCount={cartQuantity(cartLines)} onTabChange={setManualTab} />
 
       {/* Bottom Editorial Footer */}
       <EditorialFooter />

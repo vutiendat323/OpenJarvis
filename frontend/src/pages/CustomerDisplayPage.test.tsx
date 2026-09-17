@@ -161,6 +161,17 @@ describe('MenuView', () => {
     expect(rootClass).not.toContain('min-h-screen');
   });
 
+  it('renders a touch-available dock with MENU selected for the menu display', () => {
+    const markup = renderToStaticMarkup(
+      <MemoryRouter initialEntries={['/customer-display?preview=menu']}>
+        <CustomerDisplayPage />
+      </MemoryRouter>,
+    );
+
+    expect(markup).toContain('data-testid="customer-dock"');
+    expect(markup).toContain('data-active-tab="menu"');
+  });
+
   it('renders verified zero as no results, never demo content', () => {
     const markup = renderMenu({
       items: [],
