@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   persistUiLanguage,
   readUiLanguage,
+  UI_LANGUAGE_EVENT,
   UI_LANGUAGE_STORAGE_KEY,
 } from './useUiLanguage';
 
@@ -42,5 +43,10 @@ describe('useUiLanguage storage helpers', () => {
         'vi',
       ),
     ).not.toThrow();
+  });
+
+  it('exports stable storage key and custom event name for cross-window sync', () => {
+    expect(UI_LANGUAGE_STORAGE_KEY).toBe('openjarvis.ui-language');
+    expect(UI_LANGUAGE_EVENT).toBe('openjarvis:ui-language');
   });
 });

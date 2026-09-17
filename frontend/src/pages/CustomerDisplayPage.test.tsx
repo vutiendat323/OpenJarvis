@@ -230,6 +230,25 @@ describe('MenuView', () => {
     expect(markup).toContain('MINCED BEEF SPAGHETTI');
     expect(markup).toContain('data-menu-item=');
   });
+
+  it('renders localized Vietnamese ribbons and empty message when uiLanguage="vi"', () => {
+    const markup = renderToStaticMarkup(
+      <MenuView
+        items={[]}
+        menuItems={[{ id: 'coffee', name: 'Coffee Trend', price: 60000, category: 'cà phê' }]}
+        displayMode="filtered"
+        resultComplete={true}
+        projectedCount={0}
+        publishedCount={0}
+        preview={false}
+        uiLanguage="vi"
+      />,
+    );
+
+    expect(markup).toContain('THỰC ĐƠN');
+    expect(markup).toContain('GỢI Ý HÔM NAY');
+    expect(markup).toContain('Không có kết quả phù hợp.');
+  });
 });
 
 describe('CartView', () => {
@@ -279,6 +298,63 @@ describe('CartView', () => {
     expect(markup).toContain('mt-6 flex flex-wrap');
     expect(markup).not.toContain('mt-auto flex flex-wrap');
   });
+
+  it('renders localized Vietnamese receipt text when uiLanguage="vi"', () => {
+    const markup = renderToStaticMarkup(
+      <CartView
+        uiLanguage="vi"
+        lines={[{
+          line_id: 'line-1',
+          name: 'Cà phê sữa',
+          size: 'tiêu chuẩn',
+          note: 'ít đá',
+          quantity: 3,
+          unit_price: 40000,
+          line_total: 120000,
+        }]}
+        total={120000}
+        order_note="Làm nhanh giúp mình"
+        order_type="at-table"
+        table_name="73"
+      />,
+    );
+
+    expect(markup).toContain('GIỎ HÀNG');
+    expect(markup).toContain('CHƯA TẠO ĐƠN');
+    expect(markup).toContain('Cà phê sữa');
+    expect(markup).toContain('Ghi chú: ít đá');
+    expect(markup).toContain('GHI CHÚ ĐƠN HÀNG: ');
+    expect(markup).toContain('Làm nhanh giúp mình');
+    expect(markup).toContain('LOẠI ĐƠN: TẠI BÀN');
+    expect(markup).toContain('BÀN: 73');
+    expect(markup).toContain('MÓN');
+    expect(markup).toContain('SL');
+    expect(markup).toContain('ĐƠN GIÁ');
+    expect(markup).toContain('TẠM TÍNH');
+    expect(markup).toContain('PHÍ DỊCH VỤ (10%)');
+    expect(markup).toContain('TỔNG CỘNG (TẠM TÍNH)');
+    expect(markup).toContain('THẺ TÍN DỤNG &amp; GHI NỢ: VISA, MASTERCARD, NAPAS');
+    expect(markup).toContain('CHUYỂN KHOẢN:');
+    expect(markup).toContain('TÊN TÀI KHOẢN: CONG TY CO PHAN TREND COFFEE');
+    expect(markup).toContain('TRẠNG THÁI: ĐANG XỬ LÝ ĐƠN HÀNG (VUI LÒNG KIỂM TRA MÓN).');
+    expect(markup).toContain('CẢM ƠN QUÝ KHÁCH ĐÃ GHÉ THĂM.');
+  });
+
+  it('renders localized empty cart message when uiLanguage="vi"', () => {
+    const markup = renderToStaticMarkup(
+      <CartView
+        uiLanguage="vi"
+        lines={[]}
+        total={0}
+        order_note=""
+        order_type=""
+        table_name=""
+      />,
+    );
+
+    expect(markup).toContain('Giỏ hàng đang trống.');
+    expect(markup).not.toContain('Cart is empty.');
+  });
 });
 
 describe('BillView', () => {
@@ -317,6 +393,40 @@ describe('BillView', () => {
     expect(markup).not.toContain('HÌNH THỨC:');
     expect(markup).not.toContain('INV-000245');
     expect(markup).not.toContain('30-71234567-8');
+  });
+
+  it('renders localized Vietnamese bill text when uiLanguage="vi"', () => {
+    const markup = renderToStaticMarkup(
+      <BillView
+        uiLanguage="vi"
+        order_id="order-1"
+        branch="Trend Coffee Thủ Đức"
+        order_type="take-out"
+        status="pending"
+        lines={[{
+          line_id: 'line-1',
+          name: 'Cà phê đen',
+          quantity: 1,
+          unit_price: 35000,
+          line_total: 35000,
+        }]}
+        total={35000}
+      />,
+    );
+
+    expect(markup).toContain('HÓA ĐƠN');
+    expect(markup).toContain('MÃ HÓA ĐƠN: order-1');
+    expect(markup).toContain('TRẠNG THÁI: CHỜ XỬ LÝ');
+    expect(markup).toContain('CHI NHÁNH: Trend Coffee Thủ Đức');
+    expect(markup).toContain('LOẠI ĐƠN: MANG VỀ');
+    expect(markup).toContain('MÓN');
+    expect(markup).toContain('SL');
+    expect(markup).toContain('ĐƠN GIÁ');
+    expect(markup).toContain('TẠM TÍNH');
+    expect(markup).toContain('PHÍ DỊCH VỤ (10%)');
+    expect(markup).toContain('TỔNG TIỀN THANH TOÁN');
+    expect(markup).toContain('THANH TOÁN TIỀN MẶT: TẠI QUẦY.');
+    expect(markup).toContain('CẢM ƠN QUÝ KHÁCH ĐÃ GHÉ THĂM.');
   });
 });
 
@@ -367,5 +477,68 @@ describe('PaymentQrView', () => {
     expect(imageMarkup).not.toContain('border border-[#c4ab91]');
     expect(imageMarkup).not.toContain('h-32 w-32');
     expect(imageMarkup).not.toContain('h-64 w-64');
+  });
+
+  it('renders localized Vietnamese payment QR text when uiLanguage="vi"', () => {
+    const markup = renderToStaticMarkup(
+      <PaymentQrView
+        uiLanguage="vi"
+        qr_code="data:image/png;base64,abc"
+        total={70000}
+        order_id="order-1"
+        status="pending"
+        order_type="at-table"
+        branch="ba9355f797"
+        table_name="73"
+        lines={[{
+          name: 'Cà phê đen',
+          quantity: 2,
+          unit_price: 35000,
+          line_total: 70000,
+        }]}
+      />,
+    );
+
+    expect(markup).toContain('HÓA ĐƠN');
+    expect(markup).toContain('MÃ HÓA ĐƠN: order-1');
+    expect(markup).toContain('TRẠNG THÁI: CHỜ THANH TOÁN');
+    expect(markup).toContain('CHI NHÁNH: ba9355f797');
+    expect(markup).toContain('LOẠI ĐƠN: TẠI BÀN');
+    expect(markup).toContain('BÀN: 73');
+    expect(markup).toContain('MÓN');
+    expect(markup).toContain('SL');
+    expect(markup).toContain('ĐƠN GIÁ');
+    expect(markup).toContain('TẠM TÍNH');
+    expect(markup).toContain('PHÍ DỊCH VỤ (10%)');
+    expect(markup).toContain('TỔNG TIỀN THANH TOÁN');
+    expect(markup).toContain('CẢM ƠN QUÝ KHÁCH ĐÃ GHÉ THĂM.');
+  });
+});
+
+describe('CustomerDisplayPage language sync', () => {
+  it('renders localized dock and menu header ribbons when uiLanguage="vi"', () => {
+    const markup = renderToStaticMarkup(
+      <MemoryRouter initialEntries={['/customer-display?preview=menu']}>
+        <CustomerDisplayPage uiLanguage="vi" />
+      </MemoryRouter>,
+    );
+
+    expect(markup).toContain('GIỎ HÀNG');
+    expect(markup).toContain('THỰC ĐƠN');
+    expect(markup).toContain('TRỢ GIÚP');
+    expect(markup).toContain('GỢI Ý HÔM NAY');
+  });
+
+  it('renders English dock and menu ribbons by default or when uiLanguage="en"', () => {
+    const markup = renderToStaticMarkup(
+      <MemoryRouter initialEntries={['/customer-display?preview=menu']}>
+        <CustomerDisplayPage uiLanguage="en" />
+      </MemoryRouter>,
+    );
+
+    expect(markup).toContain('CART');
+    expect(markup).toContain('MENU');
+    expect(markup).toContain('HELP');
+    expect(markup).toContain('RECOMMENDATIONS');
   });
 });

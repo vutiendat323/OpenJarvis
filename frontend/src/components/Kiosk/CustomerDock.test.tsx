@@ -30,4 +30,24 @@ describe('CustomerDock', () => {
     expect(markup).toContain('min-h-[72px]');
     expect(markup).toContain('active:scale-[0.96]');
   });
+
+  it('renders localized Vietnamese tab labels when uiLanguage="vi"', () => {
+    const markup = renderToStaticMarkup(<CustomerDock uiLanguage="vi" />);
+
+    expect(markup).toContain('GIỎ HÀNG');
+    expect(markup).toContain('THỰC ĐƠN');
+    expect(markup).toContain('TRỢ GIÚP');
+    expect(markup).not.toContain('>CART<');
+    expect(markup).not.toContain('>MENU<');
+    expect(markup).not.toContain('>HELP<');
+  });
+
+  it('renders English tab labels when uiLanguage="en" or default', () => {
+    const markup = renderToStaticMarkup(<CustomerDock />);
+
+    expect(markup).toContain('CART');
+    expect(markup).toContain('MENU');
+    expect(markup).toContain('HELP');
+    expect(markup).not.toContain('GIỎ HÀNG');
+  });
 });

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
 import { CustomerDock, type DockTab } from '@/components/Kiosk/CustomerDock';
+import { useUiLanguage, type UiLanguage } from '@/hooks/useUiLanguage';
 import { useAgentEvents, type AgentEvent } from '@/lib/useAgentEvents';
 import {
   isSafeQrImageSource,
@@ -98,7 +99,7 @@ function ColumnRibbon({
 }
 
 // Restaurant Editorial Header (Only on Menu View)
-function RestaurantHeader() {
+function RestaurantHeader({ isVi = false }: { isVi?: boolean }) {
   return (
     <header className="grid grid-cols-1 items-center gap-4 px-8 pt-5 pb-3 md:grid-cols-3 text-[#8c6239]">
       <div className="text-left text-[12px] leading-[1.42] tracking-[0.12em]">
@@ -119,7 +120,9 @@ function RestaurantHeader() {
             <path d="M5,35 C30,35 55,28 70,12 C60,10 52,15 48,22 C62,16 68,6 62,2 C58,10 50,16 38,24 C50,10 48,2 40,2 C36,12 30,20 22,30"/>
           </svg>
         </div>
-        <div className="mt-0.5 text-2xl font-bold tracking-[0.35em] uppercase leading-none sm:text-3xl text-[#8c6239]">MENU</div>
+        <div className="mt-0.5 text-2xl font-bold tracking-[0.35em] uppercase leading-none sm:text-3xl text-[#8c6239]">
+          {isVi ? 'THỰC ĐƠN' : 'MENU'}
+        </div>
         <div className="mt-1 text-[10.5px] font-semibold tracking-[0.26em] uppercase text-[#8c6239]">BEST FOOD IN TOWN</div>
       </div>
 
@@ -132,21 +135,23 @@ function RestaurantHeader() {
 }
 
 // Editorial Footer Bar
-function EditorialFooter() {
+function EditorialFooter({ showInfo = true }: { showInfo?: boolean }) {
   return (
     <footer className="mt-auto shrink-0 font-['Josefin_Sans',sans-serif]">
-      <div className="flex flex-wrap items-center justify-center gap-6 bg-[#c0a386] px-8 py-2 text-[11px] font-medium tracking-wider text-white">
-        <div>@trendcoffee.vn</div>
-        <div>Trend Coffee Vietnam</div>
-        <div>trendcoffee.net</div>
-        <div>03 NGUYEN CONG TRU STREET, THU DUC CITY</div>
-      </div>
+      {showInfo && (
+        <div className="flex flex-wrap items-center justify-center gap-6 bg-[#c0a386] px-8 py-2 text-[11px] font-medium tracking-wider text-white">
+          <div>@trendcoffee.vn</div>
+          <div>Trend Coffee Vietnam</div>
+          <div>trendcoffee.net</div>
+          <div>03 NGUYEN CONG TRU STREET, THU DUC CITY</div>
+        </div>
+      )}
       <StripedBand />
     </footer>
   );
 }
 
-function ReceiptFooter() {
+function ReceiptFooter({ isVi = false }: { isVi?: boolean }) {
   return (
     <footer className="mt-6 flex flex-wrap items-center justify-between gap-5 border-t-[1.5px] border-[#783820] pt-4 text-[#783820]">
       <div className="flex items-center gap-3 font-['Josefin_Sans',sans-serif] uppercase">
@@ -163,7 +168,7 @@ function ReceiptFooter() {
         </div>
       </div>
       <div className="font-['Playfair_Display',serif] text-[14px] tracking-wide uppercase">
-        THANK YOU FOR DINING WITH US.
+        {isVi ? 'CẢM ƠN QUÝ KHÁCH ĐÃ GHÉ THĂM.' : 'THANK YOU FOR DINING WITH US.'}
       </div>
     </footer>
   );
@@ -217,6 +222,7 @@ export function MenuView({
   projectedCount,
   publishedCount,
   preview,
+  uiLanguage = 'en',
 }: {
   items: CustomerMenuItem[];
   menuItems: CustomerMenuItem[];
@@ -225,7 +231,9 @@ export function MenuView({
   projectedCount: number;
   publishedCount: number;
   preview: boolean;
+  uiLanguage?: UiLanguage;
 }) {
+  const isVi = uiLanguage === 'vi';
   const demoMenuItems: CustomerMenuItem[] = [
     {
       name: 'MINCED BEEF SPAGHETTI',
@@ -263,7 +271,7 @@ export function MenuView({
       >
         {/* LEFT COLUMN: MENU */}
         <div className="flex min-h-0 w-full min-w-0 flex-col">
-          <ColumnRibbon title="MENU" dotsLeft={true} dotsRight={true} />
+          <ColumnRibbon title={isVi ? 'THỰC ĐƠN' : 'MENU'} dotsLeft={true} dotsRight={true} />
           <div
             className="flex max-h-[calc(100vh-16rem)] flex-1 flex-col gap-y-6 overflow-y-auto pr-2 sm:gap-y-8"
             data-menu-scroll="true"
@@ -300,14 +308,14 @@ export function MenuView({
 
         {/* RIGHT COLUMN: RECOMMENDATIONS */}
         <div className="flex min-h-0 w-full min-w-0 flex-col">
-          <ColumnRibbon title="RECOMMENDATIONS" dotsLeft={true} dotsRight={true} />
+          <ColumnRibbon title={isVi ? 'GỢI Ý HÔM NAY' : 'RECOMMENDATIONS'} dotsLeft={true} dotsRight={true} />
           <div
             className="flex w-full min-w-0 flex-col space-y-4"
             data-recommendations-layout="compact"
           >
             {resultComplete && !preview && displayMode === 'filtered' && items.length === 0 && (
               <p className="py-12 text-center font-['Josefin_Sans',sans-serif] text-[15px] font-semibold leading-tight tracking-[0.03em] sm:text-[16px]">
-                No matching items found.
+                {isVi ? 'Không có kết quả phù hợp.' : 'No matching items found.'}
               </p>
             )}
             {mainDishes.map((item, index) => {
@@ -340,10 +348,10 @@ export function MenuView({
   );
 }
 
-function orderTypeLabel(orderType: string): string {
-  if (orderType === 'at-table') return 'AT TABLE';
-  if (orderType === 'take-out') return 'TAKE OUT';
-  return 'NOT SELECTED';
+function orderTypeLabel(orderType: string, isVi = false): string {
+  if (orderType === 'at-table') return isVi ? 'TẠI BÀN' : 'AT TABLE';
+  if (orderType === 'take-out') return isVi ? 'MANG VỀ' : 'TAKE OUT';
+  return isVi ? 'CHƯA CHỌN' : 'NOT SELECTED';
 }
 
 function englishOrderTypeLabel(orderType: string): string {
@@ -359,21 +367,24 @@ export function CartView({
   order_note,
   order_type,
   table_name,
+  uiLanguage = 'en',
 }: {
   lines: CustomerDisplayLine[];
   total: number;
   order_note: string;
   order_type: string;
   table_name: string;
+  uiLanguage?: UiLanguage;
 }) {
+  const isVi = uiLanguage === 'vi';
   return (
     <div className="mx-auto flex w-full max-w-[680px] flex-1 flex-col px-10 py-8 text-left font-['Josefin_Sans',sans-serif] text-[#783820]">
       <div className="flex items-baseline justify-between border-b-[1.5px] border-[#783820] pb-2">
         <h1 className="font-['Playfair_Display',serif] text-4xl font-normal tracking-wide uppercase sm:text-5xl">
-          CART
+          {isVi ? 'GIỎ HÀNG' : 'CART'}
         </h1>
         <div className="text-right text-[11px] font-semibold tracking-wider uppercase leading-tight">
-          ORDER NOT CREATED
+          {isVi ? 'CHƯA TẠO ĐƠN' : 'ORDER NOT CREATED'}
         </div>
       </div>
 
@@ -384,16 +395,16 @@ export function CartView({
           <div>WWW.TRENDCOFFEE.NET</div>
         </div>
         <div className="flex flex-wrap gap-x-8 gap-y-1 text-[11px]">
-          <div>ORDER TYPE: {englishOrderTypeLabel(order_type)}</div>
-          {order_type === 'at-table' && table_name && <div>TABLE: {table_name}</div>}
+          <div>{isVi ? 'LOẠI ĐƠN' : 'ORDER TYPE'}: {orderTypeLabel(order_type, isVi)}</div>
+          {order_type === 'at-table' && table_name && <div>{isVi ? 'BÀN' : 'TABLE'}: {table_name}</div>}
         </div>
       </div>
 
       <div className="grid grid-cols-12 border-b-[1.5px] border-[#783820] pb-1.5 text-[12px] font-bold tracking-widest uppercase">
-        <div className="col-span-6">ITEM</div>
-        <div className="col-span-2 text-center">QTY</div>
-        <div className="col-span-2 text-right">UNIT PRICE</div>
-        <div className="col-span-2 text-right">SUBTOTAL</div>
+        <div className="col-span-6">{isVi ? 'MÓN' : 'ITEM'}</div>
+        <div className="col-span-2 text-center">{isVi ? 'SL' : 'QTY'}</div>
+        <div className="col-span-2 text-right">{isVi ? 'ĐƠN GIÁ' : 'UNIT PRICE'}</div>
+        <div className="col-span-2 text-right">{isVi ? 'TẠM TÍNH' : 'SUBTOTAL'}</div>
       </div>
 
       <div className="space-y-2.5 py-3 text-[12.5px] font-medium tracking-wide">
@@ -412,7 +423,7 @@ export function CartView({
                   <div>{line.name}{line.size ? ` (${line.size})` : ''}</div>
                   {line.note && (
                     <div className="mt-1 text-[10px] font-normal normal-case tracking-normal text-[#9b7352]">
-                      Note: {line.note}
+                      {isVi ? 'Ghi chú' : 'Note'}: {line.note}
                     </div>
                   )}
                 </div>
@@ -424,7 +435,7 @@ export function CartView({
           })
         ) : (
           <div className="py-4 text-center text-sm normal-case tracking-normal text-[#9b7352]">
-            Cart is empty.
+            {isVi ? 'Giỏ hàng đang trống.' : 'Cart is empty.'}
           </div>
         )}
       </div>
@@ -432,35 +443,35 @@ export function CartView({
       <div className="border-t-[1.5px] border-[#783820] pt-3 pb-6">
         <div className="ml-auto w-full max-w-64 space-y-1.5 text-[12px] font-semibold tracking-wider uppercase">
           <div className="flex justify-between text-[10px]">
-            <span>SUBTOTAL</span>
+            <span>{isVi ? 'TẠM TÍNH' : 'SUBTOTAL'}</span>
             <span className="tabular-nums">{money(total)}</span>
           </div>
           <div className="flex justify-between text-[10px]">
-            <span>SERVICE CHARGE (10%)</span>
+            <span>{isVi ? 'PHÍ DỊCH VỤ (10%)' : 'SERVICE CHARGE (10%)'}</span>
             <span className="tabular-nums">{money(0)}</span>
           </div>
           <div className="flex justify-between border-t border-[#783820] pt-2 text-[14px] font-bold">
-            <span>TOTAL ESTIMATED</span>
+            <span>{isVi ? 'TỔNG CỘNG (TẠM TÍNH)' : 'TOTAL ESTIMATED'}</span>
             <span className="text-[15px] font-extrabold tabular-nums">{money(total)}</span>
           </div>
         </div>
         <div className="mt-8 max-w-[440px] space-y-1 text-[10px] font-medium tracking-wider uppercase leading-relaxed">
-          <div>CREDIT &amp; DEBIT CARDS: VISA, MASTERCARD, NAPAS</div>
-          <div className="pt-2">BANK TRANSFER:</div>
-          <div>ACCOUNT NAME: CONG TY CO PHAN TREND COFFEE</div>
+          <div>{isVi ? 'THẺ TÍN DỤNG & GHI NỢ: VISA, MASTERCARD, NAPAS' : 'CREDIT & DEBIT CARDS: VISA, MASTERCARD, NAPAS'}</div>
+          <div className="pt-2">{isVi ? 'CHUYỂN KHOẢN:' : 'BANK TRANSFER:'}</div>
+          <div>{isVi ? 'TÊN TÀI KHOẢN: CONG TY CO PHAN TREND COFFEE' : 'ACCOUNT NAME: CONG TY CO PHAN TREND COFFEE'}</div>
           <div>MB BANK: 9999.8888.68</div>
-          <div className="pt-2">STATUS: ORDER IN PROGRESS (PLEASE CHECK YOUR ITEMS).</div>
+          <div className="pt-2">{isVi ? 'TRẠNG THÁI: ĐANG XỬ LÝ ĐƠN HÀNG (VUI LÒNG KIỂM TRA MÓN).' : 'STATUS: ORDER IN PROGRESS (PLEASE CHECK YOUR ITEMS).'}</div>
         </div>
       </div>
 
       {order_note && (
         <div className="border-t-[1.5px] border-[#783820] pt-4 text-[11px] leading-relaxed">
-          <span className="font-bold tracking-wider uppercase">ORDER NOTE: </span>
+          <span className="font-bold tracking-wider uppercase">{isVi ? 'GHI CHÚ ĐƠN HÀNG: ' : 'ORDER NOTE: '}</span>
           <span>{order_note}</span>
         </div>
       )}
 
-      <ReceiptFooter />
+      <ReceiptFooter isVi={isVi} />
     </div>
   );
 }
@@ -473,6 +484,7 @@ export function BillView({
   status,
   lines,
   total,
+  uiLanguage = 'en',
 }: {
   order_id: string;
   branch: string;
@@ -480,23 +492,25 @@ export function BillView({
   status: string;
   lines: CustomerDisplayLine[];
   total: number;
+  uiLanguage?: UiLanguage;
 }) {
+  const isVi = uiLanguage === 'vi';
   return (
     <div className="mx-auto flex w-full max-w-[680px] flex-1 flex-col px-10 py-8 text-left font-['Josefin_Sans',sans-serif] text-[#783820]">
       <div className="flex items-baseline justify-between border-b-[1.5px] border-[#783820] pb-2">
         <h1 className="font-['Playfair_Display',serif] text-4xl font-normal tracking-wide uppercase sm:text-5xl">
-          INVOICE
+          {isVi ? 'HÓA ĐƠN' : 'INVOICE'}
         </h1>
         <div className="text-right text-[11px] font-semibold tracking-wider uppercase leading-tight">
-          <div>INVOICE NO.: {order_id}</div>
-          <div>STATUS: {status.toUpperCase()}</div>
+          <div>{isVi ? 'MÃ HÓA ĐƠN' : 'INVOICE NO.'}: {order_id}</div>
+          <div>{isVi ? 'TRẠNG THÁI' : 'STATUS'}: {isVi && status.toLowerCase() === 'pending' ? 'CHỜ XỬ LÝ' : status.toUpperCase()}</div>
         </div>
       </div>
 
       <div className="space-y-2 pt-3 pb-6 text-[10px] font-semibold tracking-wider uppercase leading-relaxed">
         <div className="flex flex-wrap gap-x-8 gap-y-1 text-[11px]">
-          <div>BRANCH: {branch}</div>
-          <div>ORDER TYPE: {englishOrderTypeLabel(order_type ?? '')}</div>
+          <div>{isVi ? 'CHI NHÁNH' : 'BRANCH'}: {branch}</div>
+          <div>{isVi ? 'LOẠI ĐƠN' : 'ORDER TYPE'}: {orderTypeLabel(order_type ?? '', isVi)}</div>
         </div>
         <div>
           <div>RESERVATIONS@TRENDCOFFEE.VN | +84 90 123 4567</div>
@@ -505,10 +519,10 @@ export function BillView({
       </div>
 
       <div className="grid grid-cols-12 border-b-[1.5px] border-[#783820] pb-1.5 text-[12px] font-bold tracking-widest uppercase">
-        <div className="col-span-6">ITEM</div>
-        <div className="col-span-2 text-center">QTY</div>
-        <div className="col-span-2 text-right">UNIT PRICE</div>
-        <div className="col-span-2 text-right">SUBTOTAL</div>
+        <div className="col-span-6">{isVi ? 'MÓN' : 'ITEM'}</div>
+        <div className="col-span-2 text-center">{isVi ? 'SL' : 'QTY'}</div>
+        <div className="col-span-2 text-right">{isVi ? 'ĐƠN GIÁ' : 'UNIT PRICE'}</div>
+        <div className="col-span-2 text-right">{isVi ? 'TẠM TÍNH' : 'SUBTOTAL'}</div>
       </div>
 
       <div className="space-y-2.5 py-3 text-[12.5px] font-medium tracking-wide">
@@ -523,7 +537,7 @@ export function BillView({
                   <div>{line.name}{line.size ? ` (${line.size})` : ''}</div>
                   {line.note && (
                     <div className="mt-1 text-[10px] font-normal normal-case tracking-normal text-[#9b7352]">
-                    Note: {line.note}
+                      {isVi ? 'Ghi chú' : 'Note'}: {line.note}
                     </div>
                   )}
                 </div>
@@ -535,7 +549,7 @@ export function BillView({
           })
         ) : (
           <div className="py-4 text-center text-sm normal-case tracking-normal text-[#9b7352]">
-            Provider returned no line items.
+            {isVi ? 'Không có dòng món nào.' : 'Provider returned no line items.'}
           </div>
         )}
       </div>
@@ -543,28 +557,28 @@ export function BillView({
       <div className="border-t-[1.5px] border-[#783820] pt-3 pb-6">
         <div className="ml-auto w-full max-w-64 space-y-1.5 text-[12px] font-semibold tracking-wider uppercase">
           <div className="flex justify-between text-[10px]">
-            <span>SUBTOTAL</span>
+            <span>{isVi ? 'TẠM TÍNH' : 'SUBTOTAL'}</span>
             <span className="tabular-nums">{money(total)}</span>
           </div>
           <div className="flex justify-between text-[10px]">
-            <span>SERVICE CHARGE (10%)</span>
+            <span>{isVi ? 'PHÍ DỊCH VỤ (10%)' : 'SERVICE CHARGE (10%)'}</span>
             <span className="tabular-nums">{money(0)}</span>
           </div>
           <div className="flex justify-between border-t border-[#783820] pt-2 text-[14px] font-bold">
-            <span>TOTAL AMOUNT DUE</span>
+            <span>{isVi ? 'TỔNG TIỀN THANH TOÁN' : 'TOTAL AMOUNT DUE'}</span>
             <span className="text-[15px] font-extrabold tabular-nums">{money(total)}</span>
           </div>
         </div>
         <div className="mt-8 max-w-[440px] space-y-1 text-[10px] font-medium tracking-wider uppercase leading-relaxed">
-          <div>CREDIT &amp; DEBIT CARDS: VISA, MASTERCARD, AMERICAN EXPRESS, NAPAS</div>
-          <div className="pt-2">BANK TRANSFER:</div>
-          <div>ACCOUNT NAME: CONG TY CO PHAN TREND COFFEE</div>
+          <div>{isVi ? 'THẺ TÍN DỤNG & GHI NỢ: VISA, MASTERCARD, AMERICAN EXPRESS, NAPAS' : 'CREDIT & DEBIT CARDS: VISA, MASTERCARD, AMERICAN EXPRESS, NAPAS'}</div>
+          <div className="pt-2">{isVi ? 'CHUYỂN KHOẢN:' : 'BANK TRANSFER:'}</div>
+          <div>{isVi ? 'TÊN TÀI KHOẢN: CONG TY CO PHAN TREND COFFEE' : 'ACCOUNT NAME: CONG TY CO PHAN TREND COFFEE'}</div>
           <div>MB BANK: 9999.8888.68</div>
-          <div className="pt-2">CASH PAYMENTS: IN-PERSON ONLY.</div>
+          <div className="pt-2">{isVi ? 'THANH TOÁN TIỀN MẶT: TẠI QUẦY.' : 'CASH PAYMENTS: IN-PERSON ONLY.'}</div>
         </div>
       </div>
 
-      <ReceiptFooter />
+      <ReceiptFooter isVi={isVi} />
     </div>
   );
 }
@@ -579,6 +593,7 @@ export function PaymentQrView({
   branch,
   table_name,
   lines = [],
+  uiLanguage = 'en',
 }: {
   qr_code: string;
   total?: number;
@@ -588,29 +603,31 @@ export function PaymentQrView({
   branch?: string;
   table_name?: string;
   lines?: CustomerDisplayLine[];
+  uiLanguage?: UiLanguage;
 }) {
+  const isVi = uiLanguage === 'vi';
   const isImage = isSafeQrImageSource(qr_code);
   const statusLabel = status?.toLowerCase() === 'pending'
-    ? 'PENDING PAYMENT'
-    : (status?.toUpperCase() ?? 'PAYMENT STATUS UNAVAILABLE');
+    ? (isVi ? 'CHỜ THANH TOÁN' : 'PENDING PAYMENT')
+    : (status?.toUpperCase() ?? (isVi ? 'KHÔNG CÓ TRẠNG THÁI' : 'PAYMENT STATUS UNAVAILABLE'));
 
   return (
     <div className="mx-auto flex w-full max-w-[680px] flex-1 flex-col px-10 py-8 text-left font-['Josefin_Sans',sans-serif] text-[#783820]">
       <div className="flex items-baseline justify-between border-b-[1.5px] border-[#783820] pb-2">
         <h1 className="font-['Playfair_Display',serif] text-4xl font-normal tracking-wide uppercase sm:text-5xl">
-          INVOICE
+          {isVi ? 'HÓA ĐƠN' : 'INVOICE'}
         </h1>
         <div className="text-right text-[11px] font-semibold tracking-wider uppercase leading-tight">
-          <div>INVOICE NO.: {order_id}</div>
-          <div>STATUS: {statusLabel}</div>
+          <div>{isVi ? 'MÃ HÓA ĐƠN' : 'INVOICE NO.'}: {order_id}</div>
+          <div>{isVi ? 'TRẠNG THÁI' : 'STATUS'}: {statusLabel}</div>
         </div>
       </div>
 
       <div className="space-y-2 pt-3 pb-6 text-[10px] font-semibold tracking-wider uppercase leading-relaxed">
         <div className="flex flex-wrap gap-x-8 gap-y-1 text-[11px]">
-          {branch && <div>BRANCH: {branch}</div>}
-          {order_type && <div>ORDER TYPE: {englishOrderTypeLabel(order_type)}</div>}
-          {order_type === 'at-table' && table_name && <div>TABLE: {table_name}</div>}
+          {branch && <div>{isVi ? 'CHI NHÁNH' : 'BRANCH'}: {branch}</div>}
+          {order_type && <div>{isVi ? 'LOẠI ĐƠN' : 'ORDER TYPE'}: {orderTypeLabel(order_type, isVi)}</div>}
+          {order_type === 'at-table' && table_name && <div>{isVi ? 'BÀN' : 'TABLE'}: {table_name}</div>}
         </div>
         <div>
           <div>03 NGUYEN CONG TRU STREET, BINH THO WARD, THU DUC CITY</div>
@@ -620,10 +637,10 @@ export function PaymentQrView({
       </div>
 
       <div className="grid grid-cols-12 border-b-[1.5px] border-[#783820] pb-1.5 text-[12px] font-bold tracking-widest uppercase">
-        <div className="col-span-6">ITEM</div>
-        <div className="col-span-2 text-center">QTY</div>
-        <div className="col-span-2 text-right">UNIT PRICE</div>
-        <div className="col-span-2 text-right">SUBTOTAL</div>
+        <div className="col-span-6">{isVi ? 'MÓN' : 'ITEM'}</div>
+        <div className="col-span-2 text-center">{isVi ? 'SL' : 'QTY'}</div>
+        <div className="col-span-2 text-right">{isVi ? 'ĐƠN GIÁ' : 'UNIT PRICE'}</div>
+        <div className="col-span-2 text-right">{isVi ? 'TẠM TÍNH' : 'SUBTOTAL'}</div>
       </div>
 
       <div className="space-y-2.5 py-3 text-[12.5px] font-medium tracking-wide">
@@ -637,7 +654,7 @@ export function PaymentQrView({
                 <div>{line.name}{line.size ? ` (${line.size})` : ''}</div>
                 {line.note && (
                   <div className="mt-1 text-[10px] font-normal normal-case tracking-normal text-[#9b7352]">
-                    Note: {line.note}
+                    {isVi ? 'Ghi chú' : 'Note'}: {line.note}
                   </div>
                 )}
               </div>
@@ -648,7 +665,7 @@ export function PaymentQrView({
           );
         }) : (
           <div className="py-3 text-center text-[11px] font-semibold tracking-wider uppercase text-[#9b7352]">
-            ORDER DETAILS UNAVAILABLE.
+            {isVi ? 'KHÔNG CÓ CHI TIẾT ĐƠN HÀNG.' : 'ORDER DETAILS UNAVAILABLE.'}
           </div>
         )}
       </div>
@@ -657,16 +674,16 @@ export function PaymentQrView({
         <div className="ml-auto w-full max-w-64 space-y-1.5 font-semibold tracking-wider uppercase">
           {total !== undefined && (
             <div className="flex justify-between text-[10px]">
-              <span>SUBTOTAL</span>
+              <span>{isVi ? 'TẠM TÍNH' : 'SUBTOTAL'}</span>
               <span className="tabular-nums">{money(total)}</span>
             </div>
           )}
           <div className="flex justify-between text-[10px]">
-            <span>SERVICE CHARGE (10%)</span>
+            <span>{isVi ? 'PHÍ DỊCH VỤ (10%)' : 'SERVICE CHARGE (10%)'}</span>
             <span className="tabular-nums">{money(0)}</span>
           </div>
           <div className="flex justify-between border-t border-[#783820] pt-2 text-[14px] font-bold">
-            <span>TOTAL AMOUNT DUE</span>
+            <span>{isVi ? 'TỔNG TIỀN THANH TOÁN' : 'TOTAL AMOUNT DUE'}</span>
             <span className="text-[15px] font-extrabold tabular-nums">
               {total !== undefined ? money(total) : '—'}
             </span>
@@ -675,9 +692,9 @@ export function PaymentQrView({
 
         <div className="mt-7 grid grid-cols-12 items-end gap-6">
           <div className="col-span-7 space-y-1 text-[9.5px] font-medium tracking-wider uppercase leading-relaxed">
-            <div>CREDIT &amp; DEBIT CARDS: VISA, MASTERCARD, AMERICAN EXPRESS, NAPAS</div>
-            <div className="pt-2">BANK TRANSFER:</div>
-            <div>ACCOUNT NAME: CONG TY CO PHAN TREND COFFEE</div>
+            <div>{isVi ? 'THẺ TÍN DỤNG & GHI NỢ: VISA, MASTERCARD, AMERICAN EXPRESS, NAPAS' : 'CREDIT & DEBIT CARDS: VISA, MASTERCARD, AMERICAN EXPRESS, NAPAS'}</div>
+            <div className="pt-2">{isVi ? 'CHUYỂN KHOẢN:' : 'BANK TRANSFER:'}</div>
+            <div>{isVi ? 'TÊN TÀI KHOẢN: CONG TY CO PHAN TREND COFFEE' : 'ACCOUNT NAME: CONG TY CO PHAN TREND COFFEE'}</div>
             <div>MB BANK: 9999.8888.68</div>
           </div>
           <div className="col-span-5 flex justify-end">
@@ -689,14 +706,14 @@ export function PaymentQrView({
               />
             ) : (
               <div className="max-w-36 border border-[#c4ab91] px-3 py-5 text-center text-[9px] font-semibold tracking-wider uppercase">
-                UNABLE TO DISPLAY A VERIFIED QR CODE.
+                {isVi ? 'KHÔNG THỂ HIỂN THỊ MÃ QR XÁC THỰC.' : 'UNABLE TO DISPLAY A VERIFIED QR CODE.'}
               </div>
             )}
           </div>
         </div>
       </div>
 
-      <ReceiptFooter />
+      <ReceiptFooter isVi={isVi} />
     </div>
   );
 }
@@ -778,7 +795,14 @@ function WaitingView() {
   );
 }
 
-export function CustomerDisplayPage() {
+export function CustomerDisplayPage({
+  uiLanguage: forcedLanguage,
+}: {
+  uiLanguage?: UiLanguage;
+} = {}) {
+  const { language: storedLanguage } = useUiLanguage();
+  const uiLanguage = forcedLanguage ?? storedLanguage;
+  const isVi = uiLanguage === 'vi';
   const [searchParams] = useSearchParams();
   const sessionId = searchParams.get('session')?.trim() || undefined;
   const preview = searchParams.get('preview')?.trim();
@@ -857,7 +881,7 @@ export function CustomerDisplayPage() {
           <>
             {visibleState.view === 'menu' && (
               <>
-                <RestaurantHeader />
+                <RestaurantHeader isVi={isVi} />
                 <MenuView
                   items={visibleState.items}
                   menuItems={visibleState.menuItems}
@@ -866,6 +890,7 @@ export function CustomerDisplayPage() {
                   projectedCount={visibleState.projectedCount}
                   publishedCount={visibleState.publishedCount}
                   preview={visibleState.preview}
+                  uiLanguage={uiLanguage}
                 />
               </>
             )}
@@ -877,6 +902,7 @@ export function CustomerDisplayPage() {
                 order_note={visibleState.order_note}
                 order_type={visibleState.order_type}
                 table_name={visibleState.table_name}
+                uiLanguage={uiLanguage}
               />
             )}
 
@@ -888,6 +914,7 @@ export function CustomerDisplayPage() {
                 status={visibleState.status}
                 lines={visibleState.lines}
                 total={visibleState.total}
+                uiLanguage={uiLanguage}
               />
             )}
 
@@ -901,6 +928,7 @@ export function CustomerDisplayPage() {
                 branch={visibleState.branch}
                 table_name={visibleState.table_name}
                 lines={visibleState.lines}
+                uiLanguage={uiLanguage}
               />
             )}
 
@@ -912,19 +940,24 @@ export function CustomerDisplayPage() {
       </main>
 
       {manualTab === 'help' && (
-        <div role="dialog" aria-modal="true" aria-label="Customer help" className="fixed inset-0 z-40 flex items-center justify-center bg-[#3d1b0c]/35 p-6">
+        <div role="dialog" aria-modal="true" aria-label={isVi ? 'Hỗ trợ khách hàng' : 'Customer help'} className="fixed inset-0 z-40 flex items-center justify-center bg-[#3d1b0c]/35 p-6">
           <div className="w-full max-w-md border-2 border-[#68341a] bg-[#fae7cd] p-8 text-center shadow-[0_18px_40px_rgba(60,25,10,0.28)]">
-            <div className="font-['Playfair_Display',serif] text-3xl tracking-wide text-[#68341a]">Need a hand?</div>
-            <p className="mt-3 text-sm font-semibold tracking-wide text-[#783820]">You can ask the voice assistant to browse the menu, update your cart, or start checkout.</p>
-            <button type="button" onClick={() => setManualTab(null)} className="mt-6 border border-[#68341a] px-5 py-2 font-['Playfair_Display',serif] text-sm font-bold tracking-[0.18em] text-[#68341a] active:scale-95">CLOSE</button>
+            <div className="font-['Playfair_Display',serif] text-3xl tracking-wide text-[#68341a]">{isVi ? 'Cần hỗ trợ?' : 'Need a hand?'}</div>
+            <p className="mt-3 text-sm font-semibold tracking-wide text-[#783820]">{isVi ? 'Bạn có thể nói với trợ lý để xem thực đơn, cập nhật giỏ hàng hoặc thanh toán.' : 'You can ask the voice assistant to browse the menu, update your cart, or start checkout.'}</p>
+            <button type="button" onClick={() => setManualTab(null)} className="mt-6 border border-[#68341a] px-5 py-2 font-['Playfair_Display',serif] text-sm font-bold tracking-[0.18em] text-[#68341a] active:scale-95">{isVi ? 'ĐÓNG' : 'CLOSE'}</button>
           </div>
         </div>
       )}
 
-      <CustomerDock activeTab={activeTab} cartCount={cartQuantity(cartLines)} onTabChange={setManualTab} />
+      <CustomerDock
+        activeTab={activeTab}
+        cartCount={cartQuantity(cartLines)}
+        onTabChange={setManualTab}
+        uiLanguage={uiLanguage}
+      />
 
       {/* Bottom Editorial Footer */}
-      <EditorialFooter />
+      <EditorialFooter showInfo={visibleState.view !== 'cart'} />
     </div>
   );
 }
