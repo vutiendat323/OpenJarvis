@@ -22,6 +22,24 @@ class PresentationUnavailableError(RuntimeError):
     """Raised when the customer display cannot be backed by Playwright."""
 
 
+def _fetch_json(url: str) -> Any:
+    import httpx
+
+    response = httpx.get(url, timeout=5.0)
+    response.raise_for_status()
+    return response.json()
+
+
+@dataclass(frozen=True, slots=True)
+class TouchCheckout:
+    """The merchant checkout recipe plus the reads the touch cart needs."""
+
+    run: Callable[..., ToolResult]
+    tables_url: str
+    order_url: str  # "{order_id}" is replaced with the displayed order
+    fetch_json: Callable[[str], Any] = _fetch_json
+
+
 _PRESENTATION_GENERATION: ContextVar[str | None] = ContextVar(
     "openjarvis_presentation_generation", default=None
 )
@@ -43,10 +61,18 @@ class PresentationSession:
 
     session_id: str
     display_url: str
-    display_tab_index: int
     last_payload: dict[str, Any] = field(default_factory=lambda: {"view": "none"})
     display_connected: bool = True
     initial_display_started: bool = False
+    # Portions of the last menu shown, keyed by variant id: a touch order is
+    # priced from what the customer saw, never from what the page sends.
+    menu_variants: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # The last live table read, so a tap can only select a table it was shown.
+    tables: dict[str, dict[str, str]] = field(default_factory=dict)
+    # The payment receipt on screen until the merchant reports it paid.
+    payment: dict[str, Any] | None = None
+    # Menu rows the customer found by typing on the display, in screen order.
+    screen_search: list[dict[str, Any]] = field(default_factory=list)
 
 
 def find_playwright_client(clients: Iterable[Any]) -> Any | None:
@@ -71,11 +97,135 @@ class PresentationSessionManager:
         self._session: PresentationSession | None = None
         self._active_generation: str | None = None
         self._initial_display: Callable[[], ToolResult] | None = None
+        self._touch_checkout: TouchCheckout | None = None
+        self._ui_language: str | None = None
+
+    def set_language(self, language: str) -> None:
+        """Update active language for customer presentation."""
+        with self._lock:
+            self._ui_language = language
 
     def configure_initial_display(self, loader: Callable[[], ToolResult]) -> None:
         """Configure the recipe-backed display load for a newly opened tab."""
         with self._lock:
             self._initial_display = loader
+
+    def configure_touch_checkout(self, checkout: TouchCheckout) -> None:
+        """Configure the merchant checkout the customer can start by touch."""
+        with self._lock:
+            self._touch_checkout = checkout
+
+    @property
+    def touch_checkout(self) -> TouchCheckout | None:
+        return self._touch_checkout
+
+    def live_tables(self, session_id: str) -> list[dict[str, str]] | None:
+        """Read the merchant's tables now and remember them for this session."""
+        checkout = self._touch_checkout
+        with self._lock:
+            if self._session is None or self._session.session_id != session_id:
+                return None
+        if checkout is None:
+            raise PresentationUnavailableError("touch_checkout_unavailable")
+        try:
+            rows = checkout.fetch_json(checkout.tables_url)["result"]
+            if not isinstance(rows, list):
+                raise TypeError("table list expected")
+        except Exception as exc:
+            raise PresentationUnavailableError("tables_unavailable") from exc
+        tables = sorted(
+            (
+                {"slug": row["slug"], "name": row["name"], "status": row["status"]}
+                for row in rows
+                if isinstance(row, dict)
+                and all(
+                    isinstance(row.get(key), str) and row[key].strip()
+                    for key in ("slug", "name", "status")
+                )
+            ),
+            key=_table_order,
+        )
+        with self._lock:
+            if self._session is None or self._session.session_id != session_id:
+                return None
+            self._session.tables = {row["slug"]: row for row in tables}
+        return [dict(row) for row in tables]
+
+    def share_screen_search(self, session_id: str, item_ids: list[str]) -> int | None:
+        """Record what a typed search shows, resolved against the shown menu.
+
+        Only ids from the menu this display last published become rows, so the
+        page can point at items but never name or price them itself.
+        """
+        with self._lock:
+            if self._session is None or self._session.session_id != session_id:
+                return None
+            variants = self._session.menu_variants
+            rows = [
+                {
+                    "id": variant["variant_id"],
+                    "name": variant["name"],
+                    "price": variant["unit_price"],
+                    "available": variant["available"],
+                }
+                for item_id in dict.fromkeys(item_ids)
+                if (variant := variants.get(item_id)) is not None
+            ]
+            self._session.screen_search = rows
+            return len(rows)
+
+    def screen_search(self) -> list[dict[str, Any]]:
+        """The rows the customer currently sees from their own typed search."""
+        with self._lock:
+            if self._session is None:
+                return []
+            return [dict(row) for row in self._session.screen_search]
+
+    def table(self, session_id: str, slug: str) -> dict[str, str] | None:
+        """Return one table from this session's last live read."""
+        with self._lock:
+            if self._session is None or self._session.session_id != session_id:
+                return None
+            row = self._session.tables.get(slug)
+            return dict(row) if row is not None else None
+
+    def check_payment(self, session_id: str) -> str | None:
+        """Ask the merchant about the displayed order; show its bill once paid."""
+        checkout = self._touch_checkout
+        with self._lock:
+            if self._session is None or self._session.session_id != session_id:
+                return None
+            payment = self._session.payment
+        if payment is None:
+            return "none"
+        if checkout is None:
+            raise PresentationUnavailableError("touch_checkout_unavailable")
+        url = checkout.order_url.replace(
+            "{order_id}", quote(str(payment["order_id"]), safe="")
+        )
+        try:
+            order = checkout.fetch_json(url)["result"]
+            status = order["status"]
+        except Exception as exc:
+            raise PresentationUnavailableError("order_unavailable") from exc
+        if status != "paid":
+            return status if isinstance(status, str) else "unknown"
+        with self._lock:
+            # A concurrent poll may already have shown this bill.
+            if self._session is None or self._session.payment is not payment:
+                return "none"
+        self.publish(
+            {
+                "view": "bill",
+                "order_id": payment["order_id"],
+                "status": "paid",
+                "order_type": payment.get("order_type", ""),
+                "branch": payment.get("branch", ""),
+                "lines": payment.get("lines", []),
+                "total": payment.get("total", 0),
+            }
+        )
+        return "paid"
 
     def preload_initial_display(self) -> bool:
         """Run the configured display recipe once without racing a Voice turn."""
@@ -120,27 +270,25 @@ class PresentationSessionManager:
             return False
 
     def ensure(self, display_origin: str) -> PresentationSession:
-        """Create one display tab, returning the existing session on later calls."""
+        """Create one display tab, returning the existing session on later calls.
+
+        Never selects the tab: Playwright's tab selection raises the browser
+        window and steals OS focus from the operator's kiosk browser.
+        """
         origin = _normalize_display_origin(display_origin)
         with self._lock:
             if self._session is not None:
                 self.recover_display_tab()
                 return self._session
-            display_tab_index = _selected_tab_index(
-                self._call_tool("browser_tabs", {"action": "list"})
-            )
             session_id = uuid4().hex
+            display_url = f"{origin}/customer-display?session={session_id}"
+            if self._ui_language:
+                display_url = f"{display_url}&lang={self._ui_language}"
             session = PresentationSession(
                 session_id=session_id,
-                display_url=f"{origin}/customer-display?session={session_id}",
-                display_tab_index=display_tab_index,
+                display_url=display_url,
             )
-            try:
-                self._call_tool("browser_navigate", {"url": session.display_url})
-                self._focus_display_tab(session.display_tab_index)
-            except PresentationUnavailableError:
-                self._restore_tab(display_tab_index)
-                raise
+            self._call_tool("browser_navigate", {"url": session.display_url})
             self._session = session
             return session
 
@@ -171,7 +319,24 @@ class PresentationSessionManager:
             check_agent_cancelled()
             normalized = deepcopy(payload)
             normalized["presentation_session_id"] = self._session.session_id
-            self._session.last_payload = normalized
+            if normalized.get("navigate") is not False:
+                self._session.last_payload = normalized
+            elif self._session.last_payload.get("view") == "cart":
+                # A reconnect replays the screen: keep the open receipt current
+                # without letting a background update choose the screen.
+                self._session.last_payload = {
+                    key: value for key, value in normalized.items() if key != "navigate"
+                }
+            if normalized.get("view") == "menu":
+                self._session.menu_variants = _menu_variants(
+                    normalized.get("menu_items")
+                )
+                # A new spoken search replaces the screen the customer typed on.
+                self._session.screen_search = []
+            elif normalized.get("view") == "payment_qr":
+                self._session.payment = normalized
+            elif normalized.get("view") == "bill":
+                self._session.payment = None
             self._bus.publish(EventType.DISPLAY_UPDATE, normalized)
             return ToolResult(
                 tool_name="presentation", content="presentation_published"
@@ -181,12 +346,15 @@ class PresentationSessionManager:
         """Make one native Voice session authoritative for publications."""
         with self._lock:
             self._active_generation = generation
-            if self._session is not None:
-                try:
-                    self._focus_display_tab(self._session.display_tab_index)
-                except PresentationUnavailableError:
-                    pass
             return True
+
+    def menu_variant(self, session_id: str, variant_id: str) -> dict[str, Any] | None:
+        """Return one portion of the menu this display session last showed."""
+        with self._lock:
+            if self._session is None or self._session.session_id != session_id:
+                return None
+            variant = self._session.menu_variants.get(variant_id)
+            return dict(variant) if variant is not None else None
 
     def active_generation(self, session_id: str) -> str | None:
         """Return the active publication generation for one display session."""
@@ -203,6 +371,10 @@ class PresentationSessionManager:
             if generation is not None and self._active_generation != generation:
                 return False
             self._active_generation = None
+            self._session.menu_variants = {}
+            self._session.tables = {}
+            self._session.payment = None
+            self._session.screen_search = []
             self._session.last_payload = {
                 "view": "none",
                 "presentation_session_id": self._session.session_id,
@@ -236,27 +408,16 @@ class PresentationSessionManager:
             return True
 
     def recover_display_tab(self) -> bool:
-        """Recreate and foreground a missing customer-display page."""
+        """Recreate a missing customer-display page without foregrounding it."""
         with self._lock:
             session = self._session
             if session is None:
                 return False
-            previous_tab_index = session.display_tab_index
-            try:
-                tab_result = self._call_tool("browser_tabs", {"action": "list"})
-                tab_list = _tool_text(tab_result)
-                previous_tab_index = _selected_tab_index(tab_result)
-                encoded_url = quote(session.display_url, safe=":/?=&")
-                if encoded_url in tab_list:
-                    self._focus_display_tab(session.display_tab_index)
-                    return False
-                self._call_tool("browser_navigate", {"url": session.display_url})
-                session.display_tab_index = previous_tab_index
-                self._focus_display_tab(session.display_tab_index)
-                return True
-            except PresentationUnavailableError:
-                self._restore_tab(previous_tab_index)
-                raise
+            tab_list = _tool_text(self._call_tool("browser_tabs", {"action": "list"}))
+            if quote(session.display_url, safe=":/?=&") in tab_list:
+                return False
+            self._call_tool("browser_navigate", {"url": session.display_url})
+            return True
 
     def _require_client(self) -> Any:
         if self._client is None:
@@ -275,17 +436,36 @@ class PresentationSessionManager:
             raise PresentationUnavailableError(f"{name} returned an MCP error")
         return result
 
-    def _focus_display_tab(self, display_tab_index: int) -> None:
-        self._call_tool(
-            "browser_tabs", {"action": "select", "index": display_tab_index}
-        )
 
-    def _restore_tab(self, tab_index: int) -> None:
-        """Best-effort rollback that must not replace the primary MCP failure."""
-        try:
-            self._focus_display_tab(tab_index)
-        except PresentationUnavailableError:
-            pass
+def _table_order(row: dict[str, str]) -> tuple[bool, int, str]:
+    """Numbered tables in numeric order, then any named ones."""
+    name = row["name"]
+    return (not name.isdigit(), int(name) if name.isdigit() else 0, name)
+
+
+def _menu_variants(rows: Any) -> dict[str, dict[str, Any]]:
+    variants: dict[str, dict[str, Any]] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+            continue
+        portions = row.get("variants")
+        if not isinstance(portions, list):
+            portions = [{"id": row.get("id"), "price": row.get("price")}]
+        for portion in portions:
+            if (
+                not isinstance(portion, dict)
+                or not isinstance(portion.get("id"), str)
+                or type(portion.get("price")) is not int
+            ):
+                continue
+            variants[portion["id"]] = {
+                "variant_id": portion["id"],
+                "name": row["name"],
+                "size": portion.get("size", ""),
+                "unit_price": portion["price"],
+                "available": row.get("available", True) is True,
+            }
+    return variants
 
 
 def _normalize_display_origin(display_origin: str) -> str:
@@ -299,19 +479,6 @@ def _normalize_display_origin(display_origin: str) -> str:
     ):
         raise ValueError("display_origin must be an http(s) origin without a path")
     return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
-
-
-def _selected_tab_index(result: dict[str, Any]) -> int:
-    """Parse the selected tab index from the textual Playwright tab listing."""
-    text = _tool_text(result)
-    for line in text.splitlines():
-        if "current" not in line.lower():
-            continue
-        stripped = line.lstrip("- ").lstrip()
-        index, separator, _ = stripped.partition(":")
-        if separator and index.isdigit():
-            return int(index)
-    return 0
 
 
 def _tool_text(result: dict[str, Any]) -> str:
@@ -331,6 +498,7 @@ def _tool_text(result: dict[str, Any]) -> str:
 
 
 __all__ = [
+    "TouchCheckout",
     "PresentationSession",
     "PresentationSessionManager",
     "PresentationUnavailableError",

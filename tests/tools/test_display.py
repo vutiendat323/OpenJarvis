@@ -26,6 +26,13 @@ class _Recorder:
         bus.subscribe(EventType.DISPLAY_UPDATE, self.events.append)
 
 
+class _BlankPlaywright:
+    _server_name = "playwright"
+
+    def call_tool(self, name, arguments):
+        return {"content": [{"type": "text", "text": "0: (current) about:blank"}]}
+
+
 class _FakePresentationManager:
     def __init__(self) -> None:
         self.payloads = []
@@ -102,6 +109,30 @@ def test_display_menu_keeps_only_the_fields_the_page_renders():
         "is_top_sell": True,
         "is_new": False,
     }
+
+
+def test_display_menu_keeps_only_well_formed_portion_fields():
+    """Would fail if a portion row carried invented fields or a non-integer price."""
+    tool, recorder = _wired(DisplayMenuTool)
+    tool.execute(
+        items=[
+            {
+                "id": "latte",
+                "name": "Latte",
+                "price": 45000,
+                "variants": [
+                    {"id": "latte", "size": "tiêu chuẩn", "price": 45000, "html": "x"},
+                    {"id": "latte-l", "size": "lớn", "price": "55000"},
+                    {"id": "", "size": "nhỏ", "price": 40000},
+                    {"id": "latte-xl", "price": True},
+                    "latte-xxl",
+                ],
+            }
+        ]
+    )
+
+    item = recorder.events[0].data["items"][0]
+    assert item["variants"] == [{"id": "latte", "size": "tiêu chuẩn", "price": 45000}]
 
 
 def test_display_menu_publishes_complete_catalog_and_explicit_mode():
@@ -183,9 +214,13 @@ def test_display_cart_advertises_conversation_draft_actions():
         "set_order_note",
         "set_order_type",
         "set_table",
+        "set_pickup_time",
         "view",
         "clear",
     ]
+    assert params["properties"]["pickup_minutes"]["enum"] == [0, 5, 10, 15, 30, 45, 60]
+    assert params["properties"]["open_cart"]["type"] == "boolean"
+    assert "open_cart" not in params["required"]
     assert params["properties"]["item"]["required"] == [
         "variant_id",
         "name",
@@ -571,6 +606,41 @@ def test_display_cart_persists_an_at_table_selection_and_take_out_clears_it():
     assert recorder.events[-1].data["table_name"] == ""
 
 
+def test_display_cart_saves_a_take_out_pickup_time_in_the_revisioned_draft():
+    """Would fail if a pickup time was lost, invented, or kept for a table order."""
+    tool, recorder = _wired(DisplayCartTool)
+
+    with conversation_scope("cart-pickup"):
+        empty = tool.current_snapshot()
+        picked = tool.execute(action="set_pickup_time", pickup_minutes=15)
+        picked_snapshot = tool.current_snapshot()
+        invalid = [
+            tool.execute(action="set_pickup_time", pickup_minutes=value)
+            for value in (7, True, "15", None)
+        ]
+        tabled = tool.execute(action="set_table", table="table-1", table_name="1")
+        tabled_snapshot = tool.current_snapshot()
+        tool.execute(action="set_pickup_time", pickup_minutes=30)
+        cleared = tool.execute(action="clear")
+        cleared_snapshot = tool.current_snapshot()
+
+    assert empty["pickup_minutes"] == 0
+    assert picked.success
+    assert (picked_snapshot["order_type"], picked_snapshot["pickup_minutes"]) == (
+        "take-out",
+        15,
+    )
+    assert recorder.events[0].data["pickup_minutes"] == 15
+    assert [result.content for result in invalid] == ["invalid_pickup_time"] * 4
+    assert (tabled_snapshot["order_type"], tabled_snapshot["pickup_minutes"]) == (
+        "at-table",
+        0,
+    )
+    assert tabled.metadata["cart_revision"] > picked.metadata["cart_revision"]
+    assert cleared.success
+    assert cleared_snapshot["pickup_minutes"] == 0
+
+
 def test_display_cart_adds_and_accumulates_a_conversation_draft():
     tool, recorder = _wired(DisplayCartTool)
 
@@ -620,6 +690,7 @@ def test_display_cart_adds_and_accumulates_a_conversation_draft():
         "order_type": "",
         "table": "",
         "table_name": "",
+        "pickup_minutes": 0,
     }
     assert recorder.events[-1].data == {
         "view": "cart",
@@ -639,7 +710,85 @@ def test_display_cart_adds_and_accumulates_a_conversation_draft():
         "order_type": "",
         "table": "",
         "table_name": "",
+        "pickup_minutes": 0,
     }
+
+
+def test_touch_add_saves_the_draft_without_switching_the_screen():
+    """Would fail if a customer's tap replaced the menu or skipped the revision."""
+    tool, recorder = _wired(DisplayCartTool)
+    item = {
+        "variant_id": "v-latte",
+        "name": "Latte",
+        "size": "tiêu chuẩn",
+        "unit_price": 45000,
+        "quantity": 2,
+        "note": "ít đá",
+        "available": True,
+    }
+    with conversation_scope("voice-1"):
+        result = tool.edit_without_display("add", {"item": item})
+        sold_out = tool.edit_without_display(
+            "add", {"item": {**item, "available": False}}
+        )
+        snapshot = tool.current_snapshot()
+
+    assert result.success is True
+    assert sold_out.success is False
+    assert recorder.events == []
+    assert snapshot["revision"] > 0
+    assert snapshot["total"] == 90000
+    assert [
+        (line["variant_id"], line["quantity"], line["note"])
+        for line in snapshot["lines"]
+    ] == [("v-latte", 2, "ít đá")]
+
+
+def test_display_cart_can_save_an_add_without_leaving_the_current_screen():
+    """Would fail if "add to cart" forced the cart open, or "buy now" did not."""
+    tool, recorder = _wired(DisplayCartTool)
+    item = {
+        "variant_id": "v-latte",
+        "name": "Latte",
+        "size": "",
+        "unit_price": 45000,
+        "quantity": 1,
+        "note": "",
+    }
+
+    with conversation_scope("voice-browse"):
+        stay = tool.execute(action="add", item=item, open_cart=False)
+        buy = tool.execute(action="add", item=item, open_cart=True)
+        legacy = tool.execute(action="add", item=item)
+        view = tool.execute(action="view", open_cart=False)
+        snapshot = tool.current_snapshot()
+
+    assert [event.data.get("navigate", True) for event in recorder.events] == [
+        False,
+        True,
+        True,
+        True,
+    ]
+    assert recorder.events[0].data["lines"][0]["quantity"] == 1
+    assert snapshot["lines"][0]["quantity"] == 3
+    assert json.loads(stay.content)["shown"] == "cart_badge"
+    assert [json.loads(r.content)["shown"] for r in (buy, legacy, view)] == ["cart"] * 3
+
+
+def test_display_cart_rejects_a_non_boolean_open_cart_without_changing_anything():
+    tool, recorder = _wired(DisplayCartTool)
+
+    with conversation_scope("voice-browse"):
+        result = tool.execute(
+            action="add",
+            item={"variant_id": "v", "name": "Latte", "unit_price": 1, "quantity": 1},
+            open_cart="false",
+        )
+        snapshot = tool.current_snapshot()
+
+    assert (result.success, result.content) == (False, "invalid_open_cart")
+    assert recorder.events == []
+    assert snapshot["lines"] == []
 
 
 def test_display_cart_draft_is_isolated_by_conversation():
@@ -666,6 +815,7 @@ def test_display_cart_draft_is_isolated_by_conversation():
         "order_type": "",
         "table": "",
         "table_name": "",
+        "pickup_minutes": 0,
     }
     assert recorder.events[-1].data == {
         "view": "cart",
@@ -675,6 +825,7 @@ def test_display_cart_draft_is_isolated_by_conversation():
         "order_type": "",
         "table": "",
         "table_name": "",
+        "pickup_minutes": 0,
     }
 
 
@@ -856,6 +1007,7 @@ def test_display_cart_revision_changes_only_when_the_draft_changes():
         "order_type": "",
         "table": "",
         "table_name": "",
+        "pickup_minutes": 0,
     }
 
 
@@ -933,6 +1085,7 @@ def test_display_payment_qr_publishes_a_normalized_receipt_snapshot():
                     }
                 ],
                 total=70_000,
+                created_at="Thu Sep 17 2026 19:00:00 GMT+0700 (Indochina Time)",
                 html="<img src=x onerror=alert(1)>",
                 receipt_id="receipt-that-must-not-be-shown",
             )
@@ -959,6 +1112,7 @@ def test_display_payment_qr_publishes_a_normalized_receipt_snapshot():
             }
         ],
         "total": 70_000,
+        "created_at": "Thu Sep 17 2026 19:00:00 GMT+0700 (Indochina Time)",
     }
 
 
@@ -1065,6 +1219,32 @@ def test_display_menu_remembers_the_latest_complete_menu_per_conversation():
         assert tool.agent_context() == {"displayed_menu": second}
     with conversation_scope("next-customer"):
         assert tool.agent_context() == {}
+
+
+def test_agent_sees_the_customers_typed_search_apart_from_its_own_display():
+    """Would fail if a typed search posed as a menu the agent displayed, or
+    reached the agent outside a conversation turn."""
+    tool = DisplayMenuTool()
+    manager = PresentationSessionManager(EventBus(), _BlankPlaywright())
+    tool._presentation = manager
+    session = manager.ensure("http://127.0.0.1:5173")
+    shown = [{"id": "v-1", "name": "Taco gà", "price": 86000, "available": True}]
+    typed = [
+        {"id": "v-2", "name": "Cà phê sữa", "price": 40000, "available": True},
+        {"id": "v-3", "name": "Cà phê đen", "price": 35000, "available": True},
+    ]
+
+    with conversation_scope("voice-1"):
+        tool.execute(items=shown, menu_items=shown + typed, result_complete=True)
+        manager.share_screen_search(session.session_id, ["v-3", "v-2"])
+        context = tool.agent_context()
+    outside = tool.agent_context()
+
+    assert context == {
+        "displayed_menu": shown,
+        "customer_screen_search": {"visible_items": [typed[1], typed[0]]},
+    }
+    assert outside == {}
 
 
 def test_display_menu_forgets_nothing_it_did_not_verifiably_publish():

@@ -1,19 +1,15 @@
 import React from 'react';
-import { Mic, ScreenShare } from 'lucide-react';
+import { ScreenShare } from 'lucide-react';
 
 export interface ScreenShareHeroProps {
-  onStartVoice: () => void;
   onStartScreenShare: () => void;
-  isVoiceActive?: boolean;
   isShareUnavailable?: boolean;
   uiLanguage?: string;
   className?: string;
 }
 
 export function ScreenShareHero({
-  onStartVoice,
   onStartScreenShare,
-  isVoiceActive = false,
   isShareUnavailable = false,
   uiLanguage = 'en',
   className = '',
@@ -36,22 +32,6 @@ export function ScreenShareHero({
 
         {/* Action Pills Row */}
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            data-testid="hero-talk-btn"
-            onClick={onStartVoice}
-            aria-pressed={isVoiceActive}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-medium cursor-pointer transition-all duration-200 hover:scale-105 active:scale-95 shadow-md"
-            style={{
-              background: isVoiceActive ? 'var(--color-accent)' : 'var(--color-surface)',
-              border: '1px solid var(--color-border)',
-              color: isVoiceActive ? 'var(--color-text-inverse, #ffffff)' : 'var(--color-text)',
-            }}
-          >
-            <Mic size={16} className={isVoiceActive ? 'animate-pulse' : ''} />
-            <span>{isVoiceActive ? (isVi ? 'Đang nói...' : 'Talking...') : (isVi ? 'Trò chuyện' : 'Talk')}</span>
-          </button>
-
           <button
             type="button"
             data-testid="hero-share-btn"

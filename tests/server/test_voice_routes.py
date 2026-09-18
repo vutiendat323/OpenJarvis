@@ -215,3 +215,17 @@ async def test_lease_survives_a_second_cancel_landing_inside_teardown():
         chat_thread_id="thread-2", execution_binding=object()
     )
     assert second.session is not None
+
+
+def test_active_session_is_the_lease_holder_until_it_ends():
+    """Would fail if a touch order could reach an ended Voice session's cart."""
+    sessions = VoiceSessionService()
+    assert sessions.active_session() is None
+
+    session = sessions.start_session(
+        chat_thread_id="thread-1", execution_binding=object()
+    ).session
+    assert sessions.active_session() is session
+
+    sessions.end_session(session.voice_session_id, reason="done")
+    assert sessions.active_session() is None

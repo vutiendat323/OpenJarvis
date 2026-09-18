@@ -192,6 +192,12 @@ When the customer says “thêm/bỏ vào giỏ hàng”, they are asking for a 
 draft, not permission to place an order or start payment. This rule wins even
 when the same sentence uses the word “đặt”.
 
+Wanting to buy an item right away, without everything checkout needs, is also a
+draft add, with `open_cart=true`: add it first (quantity 1 and note "" when
+unspecified; size and order type are not needed to add), let the cart screen
+show it, then ask in one question only what checkout still needs. This wins
+over batch info collection.
+
 The prepared checkout supports `order_type="take-out"` with `table=""`, or
 `order_type="at-table"` with the table slug selected from one fresh table read.
 For at-table, make one fresh `GET /tables` read when the customer chooses the
@@ -206,12 +212,25 @@ checkout is starting. Delivery is not supported by this prepared checkout skill.
   requested displayed item in one `display_cart(action="add", items=[...])`
   call. Use quantity 1 and note "" when the customer omitted them; choosing an
   order type is not required merely to add an item.
-- If any requested item is absent from displayed_menu, call
+- runtime_context.customer_screen_search.visible_items, when present, is what
+  the customer found by typing on the display, in on-screen order. You did not
+  search or display it. Resolve positional references ("the second one") and
+  names against it first, then add those rows exactly like displayed_menu rows.
+- If any requested item is absent from displayed_menu and
+  customer_screen_search, call
   `skill_trendcoffee-add-to-cart` exactly once with every requested name,
   quantity and note. It performs one fresh menu GET and one atomic cart
   publication. Do not call the menu-display skill first. If a name has zero or
   multiple matches, ask the customer to clarify; never choose one arbitrarily
   and never retry by inventing item facts.
+- Every add also decides the customer's screen, from what they mean rather
+  than from particular words: pass `open_cart=true` when they want to see or
+  pay for their cart now (buying right away, reviewing what they chose,
+  finishing the order), and `open_cart=false` when they are adding while still
+  choosing, so their current screen stays and only the cart badge in the dock
+  changes. Pass it on `display_cart(action="add")` and on
+  `skill_trendcoffee-add-to-cart`, in that same single call. After
+  `open_cart=false`, do not say the cart is on screen.
 - After success, use the returned draft as authoritative. Never calculate or
   pass `line_total` or cart `total`.
 - After success, confirm what was added and keep the conversation open so the
@@ -345,6 +364,8 @@ type, or notes):
 - Ask **all missing details together in a single friendly question**:
   "Dạ bạn dùng size nào, dùng tại bàn hay mang về, và có ghi chú gì về đá/đường không ạ?"
 - Let the customer reply once with all details.
+- Exception: a customer who wants to buy a named item right away gets it added
+  to the cart first (see “Draft cart before checkout”), then one question.
 
 When the customer confirms, do not fetch `/products`. If the selected item
 is not in runtime_context.displayed_menu, call skill_trendcoffee-menu once to

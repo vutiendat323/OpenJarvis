@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BillView,
   CartView,
+  type CartTouchControls,
   CustomerDisplayPage,
   MenuView,
   PaymentQrView,
@@ -34,7 +35,95 @@ function renderMenu({
   );
 }
 
+describe('MenuView touch search', () => {
+  const catalog = [
+    { id: 'top', name: 'Coffee Trend', price: 60000, category: 'cà phê', is_top_sell: true, note: '' },
+    { id: 'tea', name: 'Trà đào cam sả', price: 55000, category: 'món trà', note: 'Trà đào tươi' },
+    { id: 'milk-tea', name: 'Trà sữa', price: 45000, category: 'món trà' },
+    { id: 'cake', name: 'Bánh Tiramisu', price: 39000, category: 'món bánh' },
+  ];
+
+  function renderSearch(searchQuery: string, uiLanguage: 'en' | 'vi' = 'en'): string {
+    return renderToStaticMarkup(
+      <MenuView
+        items={catalog}
+        menuItems={catalog}
+        displayMode="browse"
+        resultComplete
+        projectedCount={catalog.length}
+        publishedCount={catalog.length}
+        preview={false}
+        uiLanguage={uiLanguage}
+        onSelectItem={() => {}}
+        searchQuery={searchQuery}
+        onSearchChange={() => {}}
+      />,
+    );
+  }
+
+  const recommendations = (markup: string) => [...markup.matchAll(/data-menu-item[^>]*>.*?<span class="truncate pr-2">([^<]*)<\/span>/g)].map((match) => match[1]);
+
+  it('offers an empty search field over the featured recommendations', () => {
+    const markup = renderSearch('');
+
+    expect(markup).toContain('placeholder="Search menu..."');
+    expect(markup).toContain('autoComplete="off"');
+    expect(markup).not.toContain('data-testid="menu-search-clear"');
+    expect(recommendations(markup)).toEqual(['Coffee Trend']);
+  });
+
+  it('shows every live match with its price and note in place of the recommendations', () => {
+    const markup = renderSearch('tra');
+
+    expect(recommendations(markup)).toEqual(['Trà đào cam sả', 'Trà sữa']);
+    expect(markup).toContain('Trà đào tươi');
+    expect(markup).toMatch(/Trà sữa<\/span><span[^>]*>45<\/span>/);
+    expect(markup).toContain('data-testid="menu-search-clear"');
+    expect(markup.match(/data-catalog-item/g)).toHaveLength(catalog.length);
+  });
+
+  it('says so when nothing matches the typed words', () => {
+    const markup = renderSearch('matcha', 'vi');
+
+    expect(markup).toContain('placeholder="Tìm kiếm sản phẩm..."');
+    expect(markup).toContain('Không có kết quả phù hợp.');
+    expect(recommendations(markup)).toEqual([]);
+  });
+
+  it('treats a blank query as no search', () => {
+    expect(recommendations(renderSearch('   '))).toEqual(['Coffee Trend']);
+  });
+
+  it('keeps the read-only display without a search field', () => {
+    const markup = renderMenu({ items: catalog, menuItems: catalog, displayMode: 'browse' });
+
+    expect(markup).not.toContain('<input');
+  });
+});
+
 describe('MenuView', () => {
+  it('makes every catalog row and recommendation a touch target', () => {
+    const menuItems = [
+      { id: 'top', name: 'Top Seller', price: 60000, category: 'cà phê', is_top_sell: true },
+      { id: 'regular', name: 'Regular Dish', price: 65000, category: 'món ăn' },
+    ];
+    const markup = renderToStaticMarkup(
+      <MenuView
+        items={menuItems}
+        menuItems={menuItems}
+        displayMode="browse"
+        resultComplete
+        projectedCount={2}
+        publishedCount={2}
+        preview={false}
+        onSelectItem={() => {}}
+      />,
+    );
+
+    expect(markup.match(/<button type="button"[^>]*data-catalog-item/g)).toHaveLength(2);
+    expect(markup.match(/<button type="button"[^>]*data-menu-item/g)).toHaveLength(1);
+  });
+
   it('renders every filtered result without a recommendation limit', () => {
     const items = Array.from({ length: 100 }, (_, index) => ({
       id: `item-${index}`,
@@ -251,6 +340,119 @@ describe('MenuView', () => {
   });
 });
 
+const noop = () => {};
+
+function touchControls(overrides: Partial<CartTouchControls> = {}): CartTouchControls {
+  return {
+    busy: false,
+    error: null,
+    tables: [
+      { slug: 't1', name: '1', status: 'available' },
+      { slug: 't2', name: '2', status: 'reserved' },
+    ],
+    onQuantity: noop,
+    onRemove: noop,
+    onClear: noop,
+    onOrderType: noop,
+    onTable: noop,
+    onRefreshTables: noop,
+    onPickup: noop,
+    onCheckout: noop,
+    ...overrides,
+  };
+}
+
+const cola = {
+  line_id: 'line-1',
+  name: 'Coca Cola',
+  size: 'tiêu chuẩn',
+  quantity: 1,
+  unit_price: 35000,
+  line_total: 35000,
+};
+
+function renderTouchCart(props: Partial<Parameters<typeof CartView>[0]> = {}): string {
+  return renderToStaticMarkup(
+    <CartView
+      lines={[cola]}
+      total={35000}
+      order_note=""
+      order_type="at-table"
+      table="t2"
+      table_name="2"
+      pickup_minutes={0}
+      controls={touchControls()}
+      {...props}
+    />,
+  );
+}
+
+function tagFor(markup: string, testId: string): string {
+  return markup.match(new RegExp(`<[a-z]+[^>]*data-testid="${testId}"[^>]*>`))?.[0] ?? '';
+}
+
+describe('CartView touch controls', () => {
+  it('edits each line and checks out a dine-in draft for its total', () => {
+    const markup = renderTouchCart();
+
+    expect(tagFor(markup, 'cart-line-decrease')).toContain('disabled=""');
+    expect(tagFor(markup, 'cart-line-increase')).not.toContain('disabled=""');
+    expect(markup).toContain('data-testid="cart-line-remove"');
+    expect(markup).toContain('data-testid="cart-clear"');
+    expect(markup).toContain('data-testid="cart-order-type"');
+    expect(markup).toMatch(/<option value="t2" selected="">2 · RESERVED<\/option>/);
+    expect(markup).toContain('<option value="t1">1 · AVAILABLE</option>');
+    expect(markup).not.toContain('data-testid="cart-pickup-time"');
+    expect(tagFor(markup, 'cart-checkout')).not.toContain('disabled=""');
+    expect(markup).toContain('CHECKOUT');
+  });
+
+  it('asks for the missing order choice before checkout', () => {
+    const noTable = renderTouchCart({ table: '', table_name: '' });
+    const noType = renderTouchCart({ order_type: '', table: '', table_name: '' });
+    const empty = renderTouchCart({ lines: [], total: 0 });
+
+    expect(tagFor(noTable, 'cart-checkout')).toContain('disabled=""');
+    expect(noTable).toContain('SELECT A TABLE TO CHECK OUT');
+    expect(tagFor(noType, 'cart-checkout')).toContain('disabled=""');
+    expect(noType).not.toContain('CHOOSE DINE-IN OR TAKE-OUT TO CHECK OUT');
+    expect(noType).not.toContain('data-testid="cart-table"');
+    expect(tagFor(empty, 'cart-checkout')).toContain('disabled=""');
+  });
+
+  it('offers the merchant pickup times instead of tables for take-out', () => {
+    const markup = renderTouchCart({ order_type: 'take-out', table: '', table_name: '', pickup_minutes: 15 });
+
+    expect(markup).not.toContain('data-testid="cart-table"');
+    expect(markup.match(/<option value="(0|5|10|15|30|45|60)"/g)).toHaveLength(7);
+    expect(markup).toContain('<option value="0">IMMEDIATELY</option>');
+    expect(markup).toContain('<option value="15" selected="">15 MINUTES</option>');
+    expect(tagFor(markup, 'cart-checkout')).not.toContain('disabled=""');
+  });
+
+  it('locks every control while a tap is saved and shows the refusal', () => {
+    const markup = renderTouchCart({
+      lines: [{ ...cola, quantity: 2, line_total: 70000 }],
+      controls: touchControls({ busy: true, error: 'voice_session_required' }),
+    });
+
+    for (const id of ['cart-line-decrease', 'cart-line-increase', 'cart-line-remove', 'cart-clear', 'cart-order-type', 'cart-table', 'cart-checkout']) {
+      expect(tagFor(markup, id)).toContain('disabled=""');
+    }
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain('Start a chat with the assistant to order.');
+  });
+
+  it('labels the touch receipt in Vietnamese', () => {
+    const markup = renderTouchCart({ uiLanguage: 'vi', order_type: 'take-out', table: '', table_name: '' });
+
+    expect(markup).toContain('THANH TOÁN');
+    expect(markup).toContain('MANG VỀ');
+    expect(markup).toContain('NGAY LẬP TỨC');
+    expect(markup).toContain('XÓA TẤT CẢ');
+  });
+});
+
 describe('CartView', () => {
   it('renders only the local cart facts and never invents an order', () => {
     const markup = renderToStaticMarkup(
@@ -272,6 +474,8 @@ describe('CartView', () => {
     );
 
     expect(markup).toContain('CART');
+    expect(markup).not.toContain('<button');
+    expect(markup).not.toContain('<select');
     expect(markup).toContain('ORDER NOT CREATED');
     expect(markup).toContain('Cà phê sữa');
     expect(markup).toContain('ít đá');
@@ -352,8 +556,8 @@ describe('CartView', () => {
       />,
     );
 
-    expect(markup).toContain('Giỏ hàng đang trống.');
-    expect(markup).not.toContain('Cart is empty.');
+    expect(markup).toContain('GIỎ HÀNG ĐANG TRỐNG.');
+    expect(markup).not.toContain('CART IS EMPTY.');
   });
 });
 
@@ -541,4 +745,76 @@ describe('CustomerDisplayPage language sync', () => {
     expect(markup).toContain('HELP');
     expect(markup).toContain('RECOMMENDATIONS');
   });
+
+  it('initializes language from URL query parameter ?lang=en', () => {
+    const markup = renderToStaticMarkup(
+      <MemoryRouter initialEntries={['/customer-display?preview=menu&lang=en']}>
+        <CustomerDisplayPage />
+      </MemoryRouter>,
+    );
+
+    expect(markup).toContain('CART');
+    expect(markup).toContain('MENU');
+    expect(markup).toContain('HELP');
+  });
+
+  it('initializes language from URL query parameter ?lang=vi', () => {
+    const markup = renderToStaticMarkup(
+      <MemoryRouter initialEntries={['/customer-display?preview=menu&lang=vi']}>
+        <CustomerDisplayPage />
+      </MemoryRouter>,
+    );
+
+    expect(markup).toContain('GIỎ HÀNG');
+    expect(markup).toContain('THỰC ĐƠN');
+    expect(markup).toContain('TRỢ GIÚP');
+  });
 });
+
+describe('PaymentQrView payment window', () => {
+  const qr = 'data:image/png;base64,iVBORw0KGgo=';
+
+  it('counts down the fifteen minutes the merchant allows', () => {
+    const markup = renderToStaticMarkup(
+      <PaymentQrView
+        qr_code={qr}
+        order_id="order-1"
+        status="pending"
+        total={45000}
+        created_at={new Date(Date.now() - 5 * 60_000).toString()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="payment-countdown"');
+    expect(markup).toMatch(/(10:00|09:5\d)/);
+    expect(markup).toContain('<img');
+  });
+
+  it('withdraws an expired QR so nobody pays a cancelled order', () => {
+    const markup = renderToStaticMarkup(
+      <PaymentQrView
+        qr_code={qr}
+        order_id="order-1"
+        status="pending"
+        total={45000}
+        uiLanguage="vi"
+        created_at={new Date(Date.now() - 20 * 60_000).toString()}
+      />,
+    );
+
+    expect(markup).toContain('HẾT THỜI GIAN THANH TOÁN');
+    expect(markup).not.toContain('<img');
+  });
+});
+
+describe('BillView paid order', () => {
+  it('shows the order code with a paid status in Vietnamese', () => {
+    const markup = renderToStaticMarkup(
+      <BillView order_id="ORD-77" branch="ba9355f797" order_type="take-out" status="paid" lines={[]} total={45000} uiLanguage="vi" />,
+    );
+
+    expect(markup).toContain('ORD-77');
+    expect(markup).toContain('TRẠNG THÁI: ĐÃ THANH TOÁN');
+  });
+});
+

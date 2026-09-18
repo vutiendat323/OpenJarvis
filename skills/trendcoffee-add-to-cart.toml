@@ -1,6 +1,6 @@
 [skill]
 name = "trendcoffee-add-to-cart"
-description = "Resolve one or more requested TrendCoffee items from one fresh complete menu read and add the verified batch to the local draft cart. Each contains value must match exactly one current product; otherwise nothing is added."
+description = "Resolve one or more requested TrendCoffee items from one fresh complete menu read and add the verified batch to the local draft cart. Each contains value must match exactly one current product; otherwise nothing is added. open_cart=true switches the customer's screen to the cart (they want to review or pay now); false keeps their current screen and only updates the cart badge (they are still choosing)."
 required_capabilities = ["network:fetch"]
 input_schema_json = '''
 {
@@ -19,9 +19,10 @@ input_schema_json = '''
         "additionalProperties":false
       }
     },
+    "open_cart":{"type":"boolean"},
     "customer_message":{"type":"string","minLength":1}
   },
-  "required":["items","customer_message"],
+  "required":["items","open_cart","customer_message"],
   "additionalProperties":false
 }
 '''
@@ -45,6 +46,7 @@ tool_name = "display_cart"
 arguments_template = '''
 {
   "action":"add",
+  "open_cart":"{open_cart}",
   "items":{
     "$map":"{items}",
     "as":"request",

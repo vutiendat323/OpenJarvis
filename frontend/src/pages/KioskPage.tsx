@@ -12,8 +12,9 @@ import { currentVoiceTurnRows } from '@/components/Chat/voiceTurnRows';
 import { useKioskState, type KioskState } from '@/hooks/useKioskState';
 import { usePipecatVoiceMode } from '@/hooks/usePipecatVoiceMode';
 import { useScreenShare } from '@/hooks/useScreenShare';
-import { useUiLanguage } from '@/hooks/useUiLanguage';
+import { useUiLanguage, type UiLanguage } from '@/hooks/useUiLanguage';
 import { shouldShimmerVoiceStatus, voiceStatusLabel } from '@/hooks/voiceUiText';
+import { apiFetch } from '@/lib/api';
 import { useAppStore } from '@/lib/store';
 import {
   createKioskPresentationLifecycle,
@@ -148,16 +149,13 @@ export function KioskPage() {
   const modelsLoading = useAppStore((state) => state.modelsLoading);
   const setVoiceSessionActive = useAppStore((state) => state.setVoiceSessionActive);
   const voiceOwnerRef = useRef<KioskVoiceOwner | null>(null);
+  const policyGrantConsumedRef = useRef(false);
   const presentationLifecycleRef = useRef<ReturnType<typeof createKioskPresentationLifecycle> | null>(null);
   if (presentationLifecycleRef.current === null) {
     presentationLifecycleRef.current = createKioskPresentationLifecycle();
   }
   const presentationLifecycle = presentationLifecycleRef.current;
   const resetPresentation = presentationLifecycle.requestReset;
-  const micEnabledRef = useRef(micEnabled);
-
-  micEnabledRef.current = micEnabled;
-
   const isVoiceActive = !['idle', 'ended', 'error', 'busy'].includes(voice.status);
 
   useEffect(() => {
@@ -165,11 +163,11 @@ export function KioskPage() {
     return () => setVoiceSessionActive(false);
   }, [isVoiceActive, setVoiceSessionActive]);
 
-  const startVoice = useCallback((owner: KioskVoiceOwner = 'manual') => {
+  const startPolicyVoice = useCallback(() => {
     if (modelsLoading || !selectedModel) return;
     const threadId = threadIdRef.current || createConversation(selectedModel);
     threadIdRef.current = threadId;
-    voiceOwnerRef.current = owner;
+    voiceOwnerRef.current = 'policy';
     presentationLifecycle.markActive(threadId);
     void voice.start(threadId, selectedModel).catch(() => {});
   }, [createConversation, modelsLoading, presentationLifecycle, selectedModel, voice.start]);
@@ -178,14 +176,6 @@ export function KioskPage() {
     voiceOwnerRef.current = null;
     return presentationLifecycle.endVoiceThenReset(voice.end);
   }, [presentationLifecycle, voice.end]);
-
-  const toggleVoice = useCallback(() => {
-    if (isVoiceActive) {
-      void endVoice().catch(() => {});
-    } else {
-      startVoice('manual');
-    }
-  }, [endVoice, isVoiceActive, startVoice]);
 
   const toggleScreenShare = useCallback(() => {
     if (share.status === 'live') {
@@ -196,10 +186,27 @@ export function KioskPage() {
   }, [share]);
 
   const ensurePresentation = useCallback(() => {
-    void ensurePresentationSession(window.location.origin).then((sessionId) => {
+    void ensurePresentationSession(window.location.origin, uiLanguage).then((sessionId) => {
       presentationLifecycle.setSessionId(sessionId);
     }).catch(() => {});
-  }, [presentationLifecycle]);
+  }, [presentationLifecycle, uiLanguage]);
+
+  const handleUiLanguageChange = useCallback((nextLanguage: UiLanguage) => {
+    setUiLanguage(nextLanguage);
+    void apiFetch('/api/kiosk/language', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language: nextLanguage }),
+    }).catch(() => {});
+  }, [setUiLanguage]);
+
+  useEffect(() => {
+    void apiFetch('/api/kiosk/language', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language: uiLanguage }),
+    }).catch(() => {});
+  }, [uiLanguage]);
 
   useEffect(() => {
     ensurePresentation();
@@ -210,31 +217,20 @@ export function KioskPage() {
   }, [ensurePresentation, kioskState]);
 
   useEffect(() => {
-    const command = kioskVoiceCommand({
+    const decision = kioskVoiceCommand({
       micEnabled,
-      voiceEnabled: voice.enabled,
+      voiceEnabled: voice.enabled && !modelsLoading && selectedModel !== null,
       owner: voiceOwnerRef.current,
+      grantConsumed: policyGrantConsumedRef.current,
     });
+    policyGrantConsumedRef.current = decision.grantConsumed;
 
-    if (command === 'unavailable') {
-      return;
-    }
-    if (command === 'end') {
+    if (decision.command === 'end') {
       void endVoice().catch(() => {});
-      return;
+    } else if (decision.command === 'start') {
+      startPolicyVoice();
     }
-    if (command !== 'start' || modelsLoading || !selectedModel) return;
-
-    const threadId = createConversation(selectedModel);
-    threadIdRef.current = threadId;
-    voiceOwnerRef.current = 'policy';
-    presentationLifecycle.markActive(threadId);
-    void voice.start(threadId, selectedModel).then(() => {
-      if (voiceOwnerRef.current === 'policy' && !micEnabledRef.current) {
-        void endVoice().catch(() => {});
-      }
-    }).catch(() => {});
-  }, [createConversation, endVoice, micEnabled, modelsLoading, presentationLifecycle, resetPresentation, selectedModel, voice.enabled, voice.start]);
+  }, [endVoice, micEnabled, modelsLoading, selectedModel, startPolicyVoice, voice.enabled]);
 
   useEffect(() => () => {
     if (voiceOwnerRef.current !== null) {
@@ -259,9 +255,7 @@ export function KioskPage() {
 
       {settings.style === 'screen' && share.status !== 'live' && (
         <ScreenShareHero
-          onStartVoice={toggleVoice}
           onStartScreenShare={share.start}
-          isVoiceActive={isVoiceActive}
           isShareUnavailable={share.unavailable}
           uiLanguage={uiLanguage}
         />
@@ -270,10 +264,8 @@ export function KioskPage() {
       {settings.style === 'screen' && (
         <ScreenShareDock
           voiceStatus={voice.status}
-          isVoiceActive={isVoiceActive}
           shareStatus={share.status}
           isShareUnavailable={share.unavailable}
-          onToggleVoice={toggleVoice}
           onToggleScreenShare={toggleScreenShare}
           getFrequencyData={voice.getFrequencyData}
         />
@@ -310,7 +302,7 @@ export function KioskPage() {
         onSettingsChange={handleSettingsChange}
         status={PANEL_STATUS[voice.status]}
         uiLanguage={uiLanguage}
-        onUiLanguageChange={setUiLanguage}
+        onUiLanguageChange={handleUiLanguageChange}
       />
 
       {settings.showPet && (
@@ -341,10 +333,7 @@ export function KioskPage() {
             </p>
             <div className="flex justify-center gap-3">
               <button
-                onClick={() => {
-                  startVoice('manual');
-                  void respond(true);
-                }}
+                onClick={() => void respond(true)}
                 className="cursor-pointer rounded-xl bg-[var(--color-accent)] px-6 py-2.5 text-sm font-semibold text-white transition-transform hover:scale-105"
               >
                 {uiLanguage === 'vi' ? 'Bắt đầu trò chuyện' : 'Start chatting'}

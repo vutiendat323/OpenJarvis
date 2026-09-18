@@ -117,3 +117,55 @@ def test_builder_wires_recipe_declared_initial_display_inputs() -> None:
         )
     finally:
         system.close()
+
+
+def test_builder_wires_the_recipe_checkout_for_touch_ordering() -> None:
+    """Would fail if a tap checkout could bypass the guarded merchant recipe."""
+    import openjarvis.tools.display as display
+
+    importlib.reload(display)
+    config = JarvisConfig()
+    config.telemetry.enabled = False
+    config.traces.enabled = False
+    config.agent_manager.enabled = False
+    config.tools.enabled = [
+        "http_request",
+        "display_cart",
+        "display_bill",
+        "display_payment_qr",
+    ]
+    config.skills.enabled = True
+    config.skills.active = "trendcoffee-checkout"
+    config.tools.mcp.enabled = True
+    config.tools.mcp.servers = json.dumps(
+        [{"name": "playwright", "url": "http://localhost:8080/mcp"}]
+    )
+    engine = MagicMock(spec=["health", "list_models", "close"])
+    engine.health.return_value = True
+    client = _FakePlaywrightClient()
+    builder = SystemBuilder(config).engine_instance(engine).speech(False)
+
+    def _discover(_server_config):
+        builder._mcp_clients.append(client)
+        return []
+
+    with (
+        patch.object(builder, "_discover_external_mcp", side_effect=_discover),
+        patch.object(builder, "_resolve_memory", return_value=None),
+    ):
+        system = builder.build()
+
+    try:
+        touch = system.presentation_session_manager.touch_checkout
+        checkout = system.tool_executor.get_tool("skill_trendcoffee-checkout")
+
+        assert touch is not None
+        assert touch.run == checkout.execute
+        assert touch.tables_url == (
+            "https://trendcoffee.net/api/latest/tables?branch=ba9355f797"
+        )
+        assert touch.order_url == (
+            "https://trendcoffee.net/api/latest/orders/{order_id}"
+        )
+    finally:
+        system.close()

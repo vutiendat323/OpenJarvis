@@ -284,6 +284,7 @@ class SystemBuilder:
                             tool_list, bus, capability_policy=sec.capability_policy
                         )
                     self._configure_initial_display(presentation, tool_list)
+                    self._configure_touch_checkout(presentation, tool_list)
                     skill_few_shot_examples = skill_manager.get_few_shot_examples()
             except Exception as exc:
                 if config.skills.enabled and config.skills.active != "*":
@@ -637,6 +638,31 @@ class SystemBuilder:
                 lambda tool=tool, inputs=dict(inputs): tool.execute(**inputs)
             )
             return
+
+    @staticmethod
+    def _configure_touch_checkout(presentation, tools) -> None:
+        """Bind the guarded checkout recipe that declares its kiosk reads."""
+        from openjarvis.kiosk.presentation import TouchCheckout
+
+        for tool in tools:
+            manifest = getattr(tool, "_manifest", None)
+            if not getattr(manifest, "checkout", False):
+                continue
+            openjarvis = manifest.metadata.get("openjarvis", {})
+            kiosk = openjarvis.get("kiosk") if isinstance(openjarvis, dict) else None
+            if not isinstance(kiosk, dict):
+                continue
+            tables_url = kiosk.get("tables_url")
+            order_url = kiosk.get("order_url")
+            if isinstance(tables_url, str) and isinstance(order_url, str):
+                presentation.configure_touch_checkout(
+                    TouchCheckout(
+                        run=tool.execute,
+                        tables_url=tables_url,
+                        order_url=order_url,
+                    )
+                )
+                return
 
     @staticmethod
     def _model_visible_tools(tools, hidden: str):

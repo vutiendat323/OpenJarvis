@@ -1,8 +1,14 @@
 [skill]
 name = "trendcoffee-checkout"
-description = "Checkout a freshly confirmed take-out or at-table order in one call, show the verified bill, and display its payment QR. Pass order_type and order_note matching the saved draft, with table empty for take-out or the available table slug already selected from a fresh table read for at-table, plus either cart_revision or cart_lines, turn_nonce, and customer_message. Delivery is not supported."
+description = "Checkout a freshly confirmed take-out or at-table order in one call, show the verified bill, and display its payment QR. Pass order_type and order_note matching the saved draft, with table empty for take-out or the table slug already selected from a fresh table read for at-table (a reserved table is allowed only after the customer confirms sharing it), plus either cart_revision or cart_lines, turn_nonce, and customer_message. Delivery is not supported."
 checkout = true
 accepts_cart_lines = true
+
+# Read-only merchant endpoints the customer display uses around this checkout:
+# the live table list for the touch picker and the order it polls for payment.
+[skill.metadata.openjarvis.kiosk]
+tables_url = "https://trendcoffee.net/api/latest/tables?branch=ba9355f797"
+order_url = "https://trendcoffee.net/api/latest/orders/{order_id}"
 
 [[skill.steps]]
 tool_name = "http_request"
@@ -60,8 +66,7 @@ assertions_json = '''[
         "as":"fresh_table",
         "where":{
           "all":[
-            {"equals":["{fresh_table.slug}","{table}"]},
-            {"equals":["{fresh_table.status}","available"]}
+            {"equals":["{fresh_table.slug}","{table}"]}
           ]
         }
       },
@@ -79,7 +84,7 @@ assertions_json = '''[
 [[skill.steps]]
 tool_name = "http_request"
 output_key = "created"
-arguments_template = '''{"url":"https://trendcoffee.net/api/latest/orders/public","method":"POST","body":{"$json":{"type":"{order_type}","branch":"ba9355f797","timeLeftTakeOut":0,"deliveryTo":"","deliveryPhone":"","table":"{table}","owner":"","approvalBy":"","orderItems":{"$map":"{draft_cart.lines}","as":"line","value":{"quantity":"{line.quantity}","variant":"{line.variant_id}","promotion":null,"note":"{line.note}"}},"voucher":null,"description":"{order_note}"}}}'''
+arguments_template = '''{"url":"https://trendcoffee.net/api/latest/orders/public","method":"POST","body":{"$json":{"type":"{order_type}","branch":"ba9355f797","timeLeftTakeOut":"{draft_cart.pickup_minutes}","deliveryTo":"","deliveryPhone":"","table":"{table}","owner":"","approvalBy":"","orderItems":{"$map":"{draft_cart.lines}","as":"line","value":{"quantity":"{line.quantity}","variant":"{line.variant_id}","promotion":null,"note":"{line.note}"}},"voucher":null,"description":"{order_note}"}}}'''
 assertions_json = '''[{"actual":"{created.result.subtotal}","equals":"{draft_cart.total}"},{"actual":"{created.result.type}","equals":"{order_type}"},{"actual":"{created.result.description}","equals":"{order_note}"},{"actual":{"$coalesce":["{created.result.table.slug}",""]},"equals":"{table}"},{"actual":{"$map":"{created.result.orderItems}","as":"line","value":{"variant":"{line.variant.slug}","quantity":"{line.quantity}","note":"{line.note}","unit_price":"{line.variant.price}","promotion":"{line.promotion}"}},"equals":{"$map":"{draft_cart.lines}","as":"line","value":{"variant":"{line.variant_id}","quantity":"{line.quantity}","note":"{line.note}","unit_price":"{line.unit_price}","promotion":null}}}]'''
 
 [[skill.steps]]
@@ -94,4 +99,4 @@ assertions_json = '''[{"actual":"{payment.result.amount}","equals":"{created.res
 
 [[skill.steps]]
 tool_name = "display_payment_qr"
-arguments_template = '''{"order_id":"{created.result.slug}","payment_slug":"{payment.result.slug}","status":"{payment.result.statusCode}","order_type":"{created.result.type}","branch":"ba9355f797","table_name":{"$coalesce":["{created.result.table.name}",""]},"lines":{"$map":"{created.result.orderItems}","as":"line","value":{"line_id":"{line.variant.slug}","name":"{line.variant.product.name}","size":"{line.variant.size.name}","note":"{line.note}","quantity":"{line.quantity}","unit_price":"{line.variant.price}","line_total":{"$multiply":["{line.variant.price}","{line.quantity}"]}}},"total":"{payment.result.amount}","customer_message":"{customer_message}"}'''
+arguments_template = '''{"order_id":"{created.result.slug}","payment_slug":"{payment.result.slug}","status":"{payment.result.statusCode}","order_type":"{created.result.type}","branch":"ba9355f797","table_name":{"$coalesce":["{created.result.table.name}",""]},"lines":{"$map":"{created.result.orderItems}","as":"line","value":{"line_id":"{line.variant.slug}","name":"{line.variant.product.name}","size":"{line.variant.size.name}","note":"{line.note}","quantity":"{line.quantity}","unit_price":"{line.variant.price}","line_total":{"$multiply":["{line.variant.price}","{line.quantity}"]}}},"total":"{payment.result.amount}","created_at":{"$coalesce":["{created.result.createdAt}",""]},"customer_message":"{customer_message}"}'''

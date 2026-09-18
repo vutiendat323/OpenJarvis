@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  checkoutTouchCart,
   createKioskPresentationLifecycle,
+  editTouchCart,
+  fetchTouchPaymentStatus,
+  fetchTouchTables,
+  shareScreenSearch,
   ensurePresentationSession,
   shouldEnsurePresentationSession,
   resetPresentationSession,
@@ -140,3 +145,107 @@ describe('kiosk presentation lifecycle', () => {
     expect(reset).not.toHaveBeenCalled();
   });
 });
+
+describe('touch cart API', () => {
+  it('adds a tapped portion and returns the verified draft cart', async () => {
+    const line = { line_id: 'l1', name: 'Latte', size: 'lớn', note: '', quantity: 2, unit_price: 55000, line_total: 110000 };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        cart: {
+          revision: 3,
+          lines: [{ ...line, variant_id: 'v-latte-l' }],
+          total: 110000,
+          order_note: '',
+          order_type: '',
+          table: '',
+          table_name: '',
+          pickup_minutes: 0,
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const edit = { action: 'add', variant_id: 'v-latte-l', quantity: 2, note: '' } as const;
+
+    await expect(editTouchCart('customer/1', edit))
+      .resolves.toEqual({
+        view: 'cart',
+        lines: [line],
+        total: 110000,
+        order_note: '',
+        order_type: '',
+        table: '',
+        table_name: '',
+        pickup_minutes: 0,
+      });
+    expect(fetchMock).toHaveBeenCalledWith('/api/kiosk/presentation/customer%2F1/cart', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(edit),
+    });
+  });
+
+  it('surfaces the reason the server refused the order', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ detail: 'voice_session_required' }),
+    }));
+
+    await expect(editTouchCart('s', { action: 'clear' }))
+      .rejects.toThrow('voice_session_required');
+  });
+
+  it('lists only well-formed live tables', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        tables: [
+          { slug: 't1', name: '1', status: 'available' },
+          { slug: 't2', name: '2', status: 'reserved' },
+          { slug: 7, name: 'broken', status: 'available' },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchTouchTables('s/1')).resolves.toEqual([
+      { slug: 't1', name: '1', status: 'available' },
+      { slug: 't2', name: '2', status: 'reserved' },
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith('/api/kiosk/presentation/s%2F1/tables', { headers: {} });
+  });
+
+  it('places the saved draft and surfaces a refusal', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({ detail: 'table_required' }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(checkoutTouchCart('s')).resolves.toBeUndefined();
+    await expect(checkoutTouchCart('s')).rejects.toThrow('table_required');
+    expect(fetchMock).toHaveBeenCalledWith('/api/kiosk/presentation/s/checkout', { method: 'POST', headers: {} });
+  });
+
+  it('reads the payment status of the order on screen', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'paid' }) }));
+
+    await expect(fetchTouchPaymentStatus('s')).resolves.toBe('paid');
+  });
+});
+
+describe('screen search sharing', () => {
+  it('sends only the ids of the items the search shows, in screen order', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ items: 2 }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await shareScreenSearch('s/1', ['v-3', 'v-2']);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/kiosk/presentation/s%2F1/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_ids: ['v-3', 'v-2'] }),
+    });
+  });
+});
+

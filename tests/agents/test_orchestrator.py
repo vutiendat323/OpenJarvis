@@ -514,6 +514,7 @@ class TestOrchestratorAgent:
                 "order_type": "",
                 "table": "",
                 "table_name": "",
+                "pickup_minutes": 0,
             },
         }
         assert current_turn_nonce() == ""

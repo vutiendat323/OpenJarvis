@@ -39,17 +39,9 @@ const mockLifecycle = {
   markActive: vi.fn(),
 };
 
-let latestHeroProps: {
-  onStartVoice: () => void;
-  onStartScreenShare: () => void;
-  isVoiceActive?: boolean;
-} | null = null;
-
 let latestDockProps: {
   voiceStatus: LocalVoiceStatus;
-  isVoiceActive: boolean;
   shareStatus: ScreenShareStatus;
-  onToggleVoice: () => void;
   onToggleScreenShare: () => void;
 } | null = null;
 
@@ -83,7 +75,6 @@ beforeEach(() => {
     end: vi.fn().mockResolvedValue(undefined),
   };
 
-  latestHeroProps = null;
   latestDockProps = null;
   mockCreateConversation.mockClear();
   mockLifecycle.markActive.mockClear();
@@ -129,16 +120,12 @@ vi.mock('@/components/Chat/voiceTurnRows', () => ({ currentVoiceTurnRows: () => 
 
 vi.mock('@/components/Kiosk/ScreenShareHero', () => ({
   ScreenShareHero: (props: {
-    onStartVoice: () => void;
     onStartScreenShare: () => void;
-    isVoiceActive?: boolean;
     isShareUnavailable?: boolean;
     uiLanguage?: string;
   }) => {
-    latestHeroProps = props;
     return (
       <div data-testid="screen-share-hero" data-unavailable={String(props.isShareUnavailable)}>
-        <button data-testid="hero-talk-btn" onClick={props.onStartVoice}>Talk</button>
         <button data-testid="hero-share-btn" onClick={props.onStartScreenShare}>Share Screen</button>
       </div>
     );
@@ -148,16 +135,13 @@ vi.mock('@/components/Kiosk/ScreenShareHero', () => ({
 vi.mock('@/components/Kiosk/ScreenShareDock', () => ({
   ScreenShareDock: (props: {
     voiceStatus: LocalVoiceStatus;
-    isVoiceActive: boolean;
     shareStatus: ScreenShareStatus;
     isShareUnavailable?: boolean;
-    onToggleVoice: () => void;
     onToggleScreenShare: () => void;
   }) => {
     latestDockProps = props;
     return (
       <div data-testid="screen-share-dock" data-unavailable={String(props.isShareUnavailable)}>
-        <button data-testid="dock-mic-btn" onClick={props.onToggleVoice}>Mic</button>
         <button data-testid="dock-share-btn" onClick={props.onToggleScreenShare}>Share</button>
       </div>
     );
@@ -339,46 +323,6 @@ describe('KioskPage', () => {
       expect(markup).not.toContain('data-testid="screen-share-hero"');
       expect(markup).not.toContain('data-testid="screen-share-dock"');
       expect(markup).toContain('title="Share Screen"');
-    });
-
-    it('triggers voice start when onStartVoice is called in ScreenShareHero', () => {
-      renderToStaticMarkup(
-        <MemoryRouter>
-          <KioskPage />
-        </MemoryRouter>,
-      );
-
-      expect(latestHeroProps).not.toBeNull();
-      latestHeroProps!.onStartVoice();
-
-      expect(mockCreateConversation).toHaveBeenCalledWith('gpt-5.6-luna');
-      expect(mockLifecycle.markActive).toHaveBeenCalledWith('thread-123');
-      expect(mockVoiceState.start).toHaveBeenCalledWith('thread-123', 'gpt-5.6-luna');
-    });
-
-    it('toggles voice on and off via ScreenShareDock', () => {
-      renderToStaticMarkup(
-        <MemoryRouter>
-          <KioskPage />
-        </MemoryRouter>,
-      );
-
-      expect(latestDockProps).not.toBeNull();
-
-      // When voice is inactive, toggle starts voice
-      latestDockProps!.onToggleVoice();
-      expect(mockVoiceState.start).toHaveBeenCalledWith('thread-123', 'gpt-5.6-luna');
-
-      // Re-render with speaking voice status
-      mockVoiceState.status = 'speaking';
-      renderToStaticMarkup(
-        <MemoryRouter>
-          <KioskPage />
-        </MemoryRouter>,
-      );
-
-      latestDockProps!.onToggleVoice();
-      expect(mockLifecycle.endVoiceThenReset).toHaveBeenCalledWith(mockVoiceState.end);
     });
 
     it('toggles screen share via ScreenShareDock', () => {

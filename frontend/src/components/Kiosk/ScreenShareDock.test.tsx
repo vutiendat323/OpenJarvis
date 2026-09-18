@@ -4,30 +4,26 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ScreenShareDock, computeWaveformHeights } from './ScreenShareDock';
 
 describe('ScreenShareDock', () => {
-  it('renders floating dock with mic pill and screen share toggle button', () => {
+  it('renders waveform and screen share without a manual Voice control', () => {
     const markup = renderToStaticMarkup(
       React.createElement(ScreenShareDock, {
         voiceStatus: 'idle',
-        isVoiceActive: false,
         shareStatus: 'idle',
-        onToggleVoice: vi.fn(),
         onToggleScreenShare: vi.fn(),
       })
     );
 
     expect(markup).toContain('data-testid="screen-share-dock"');
-    expect(markup).toContain('data-testid="dock-mic-btn"');
+    expect(markup).not.toContain('data-testid="dock-mic-btn"');
     expect(markup).toContain('data-testid="dock-waveform"');
     expect(markup).toContain('data-testid="dock-share-btn"');
   });
 
-  it('renders reactive waveform bars when voice is speaking or listening', () => {
+  it('renders reactive waveform bars when the assistant is speaking', () => {
     const speakingMarkup = renderToStaticMarkup(
       React.createElement(ScreenShareDock, {
         voiceStatus: 'speaking',
-        isVoiceActive: true,
         shareStatus: 'idle',
-        onToggleVoice: vi.fn(),
         onToggleScreenShare: vi.fn(),
       })
     );
@@ -38,7 +34,20 @@ describe('ScreenShareDock', () => {
     expect(speakingMarkup).toContain('bg-[var(--color-accent)]');
   });
 
-  it('computes idle bar heights when not speaking or listening', () => {
+  it('keeps waveform idle while Voice is listening', () => {
+    const listeningMarkup = renderToStaticMarkup(
+      React.createElement(ScreenShareDock, {
+        voiceStatus: 'listening',
+        shareStatus: 'idle',
+        onToggleScreenShare: vi.fn(),
+      })
+    );
+
+    expect(listeningMarkup).toContain('height:4px');
+    expect(listeningMarkup).not.toContain('height:14px');
+  });
+
+  it('computes idle bar heights when the assistant is not speaking', () => {
     expect(computeWaveformHeights(new Uint8Array([255, 255]), false)).toEqual([4, 8, 4]);
   });
 
@@ -59,9 +68,7 @@ describe('ScreenShareDock', () => {
     const liveMarkup = renderToStaticMarkup(
       React.createElement(ScreenShareDock, {
         voiceStatus: 'idle',
-        isVoiceActive: false,
         shareStatus: 'live',
-        onToggleVoice: vi.fn(),
         onToggleScreenShare: vi.fn(),
       })
     );
@@ -75,9 +82,7 @@ describe('ScreenShareDock', () => {
     const markup = renderToStaticMarkup(
       React.createElement(ScreenShareDock, {
         voiceStatus: 'idle',
-        isVoiceActive: false,
         shareStatus: 'idle',
-        onToggleVoice: vi.fn(),
         onToggleScreenShare: vi.fn(),
       })
     );
@@ -90,10 +95,8 @@ describe('ScreenShareDock', () => {
     const markup = renderToStaticMarkup(
       React.createElement(ScreenShareDock, {
         voiceStatus: 'idle',
-        isVoiceActive: false,
         shareStatus: 'idle',
         isShareUnavailable: true,
-        onToggleVoice: vi.fn(),
         onToggleScreenShare: vi.fn(),
       })
     );

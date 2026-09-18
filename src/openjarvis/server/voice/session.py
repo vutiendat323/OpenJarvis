@@ -107,6 +107,12 @@ class VoiceSessionService:
     def get_session(self, voice_session_id: str) -> VoiceSession:
         return self._sessions[voice_session_id]
 
+    def active_session(self) -> VoiceSession | None:
+        """Return the Voice session holding the lease, if one is live."""
+        if self._lease_session_id is None:
+            return None
+        return self._sessions[self._lease_session_id]
+
     def issue_gated_websocket_ticket(self, voice_session_id: str) -> str:
         self.get_session(voice_session_id)
         ticket = secrets.token_urlsafe(32)

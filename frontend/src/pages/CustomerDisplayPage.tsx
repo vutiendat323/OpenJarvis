@@ -1,11 +1,30 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
 import { CustomerDock, type DockTab } from '@/components/Kiosk/CustomerDock';
+import { ProductCard, type ProductCardIntent } from '@/components/Kiosk/ProductCard';
 import { useUiLanguage, type UiLanguage } from '@/hooks/useUiLanguage';
+import { apiFetch } from '@/lib/api';
+import { cn } from '@/lib/utils';
+import {
+  PICKUP_MINUTES,
+  checkoutTouchCart,
+  editTouchCart,
+  fetchTouchPaymentStatus,
+  fetchTouchTables,
+  shareScreenSearch,
+  type PickupMinutes,
+  type TouchCartEdit,
+  type TouchCartOrder,
+  type TouchTable,
+} from '@/lib/kioskPresentation';
 import { useAgentEvents, type AgentEvent } from '@/lib/useAgentEvents';
 import {
+  backgroundCart,
   isSafeQrImageSource,
+  menuItemDetails,
+  searchMenuItems,
+  paymentDeadline,
   reduceCustomerDisplay,
   waitingState,
   type CustomerDisplayLine,
@@ -26,7 +45,13 @@ const emptyCartState: CartDisplayState = {
   order_type: '',
   table: '',
   table_name: '',
+  pickup_minutes: 0,
 };
+
+function remainingClock(ms: number): string {
+  const seconds = Math.max(0, Math.ceil(ms / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+}
 
 function dockTabForState(state: CustomerDisplayState): DockTab {
   return state.view === 'menu' || state.view === 'waiting' ? 'menu' : 'cart';
@@ -153,21 +178,21 @@ function EditorialFooter({ showInfo = true }: { showInfo?: boolean }) {
 
 function ReceiptFooter({ isVi = false }: { isVi?: boolean }) {
   return (
-    <footer className="mt-6 flex flex-wrap items-center justify-between gap-5 border-t-[1.5px] border-[#783820] pt-4 text-[#783820]">
+    <footer className="mt-6 flex flex-wrap items-center justify-between gap-5 border-t-[1.5px] border-[#783820] pt-4 sm:pt-5 text-[#783820]">
       <div className="flex items-center gap-3 font-['Josefin_Sans',sans-serif] uppercase">
-        <svg className="h-8 w-8 shrink-0" viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.25" aria-hidden="true">
+        <svg className="h-8 w-8 sm:h-9 sm:w-9 lg:h-10 lg:w-10 shrink-0" viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.25" aria-hidden="true">
           <path d="M16 3 3 29h26L16 3Z" />
           <path d="M16 3v26M10 29l6-26 6 26" />
         </svg>
         <div
           aria-label="TREND COFFEE & RESTAURANT"
-          className="text-[11px] font-bold tracking-[0.24em] leading-tight"
+          className="text-[11px] sm:text-[12px] lg:text-[13px] font-bold tracking-[0.24em] leading-tight"
         >
           <div>TREND</div>
-          <div className="text-[8px] font-semibold tracking-[0.34em]">COFFEE &amp; RESTAURANT</div>
+          <div className="text-[8px] sm:text-[9px] lg:text-[10px] font-semibold tracking-[0.34em]">COFFEE &amp; RESTAURANT</div>
         </div>
       </div>
-      <div className="font-['Playfair_Display',serif] text-[14px] tracking-wide uppercase">
+      <div className="font-['Playfair_Display',serif] text-[14px] sm:text-[16px] lg:text-[18px] tracking-wide uppercase">
         {isVi ? 'CẢM ƠN QUÝ KHÁCH ĐÃ GHÉ THĂM.' : 'THANK YOU FOR DINING WITH US.'}
       </div>
     </footer>
@@ -223,6 +248,9 @@ export function MenuView({
   publishedCount,
   preview,
   uiLanguage = 'en',
+  onSelectItem,
+  searchQuery = '',
+  onSearchChange,
 }: {
   items: CustomerMenuItem[];
   menuItems: CustomerMenuItem[];
@@ -232,20 +260,28 @@ export function MenuView({
   publishedCount: number;
   preview: boolean;
   uiLanguage?: UiLanguage;
+  onSelectItem?: (item: CustomerMenuItem) => void;
+  /** Typed on the display; filters the live catalog locally, never the agent's. */
+  searchQuery?: string;
+  /** Present on the live display: shows the touch search field. */
+  onSearchChange?: (query: string) => void;
 }) {
   const isVi = uiLanguage === 'vi';
   const demoMenuItems: CustomerMenuItem[] = [
     {
+      id: 'demo-minced-beef',
       name: 'MINCED BEEF SPAGHETTI',
       price: 107000,
       note: 'Special gourmet recipe prepared fresh daily with premium ingredients.',
     },
     {
+      id: 'demo-carbonara',
       name: 'SPAGHETTI CARBONARA',
       price: 150000,
       note: 'Special gourmet recipe prepared fresh daily with premium ingredients.',
     },
     {
+      id: 'demo-shrimp',
       name: 'SHRIMP SPAGHETTI',
       price: 172000,
       note: 'Special gourmet recipe prepared fresh daily with premium ingredients.',
@@ -253,11 +289,17 @@ export function MenuView({
   ];
   const menuSections = groupMenuItems(menuItems);
   const menuRows = arrangeMenuSections(menuSections);
-  const mainDishes = preview
-    ? demoMenuItems
-    : displayMode === 'browse'
-      ? menuItems.filter((item) => item.is_top_sell === true || item.is_new === true)
-      : items;
+  const searching = searchQuery.trim() !== '';
+  const mainDishes = searching
+    ? searchMenuItems(menuItems, searchQuery)
+    : preview
+      ? demoMenuItems
+      : displayMode === 'browse'
+        ? menuItems.filter((item) => item.is_top_sell === true || item.is_new === true)
+        : items;
+  const noMatches = searching
+    ? mainDishes.length === 0
+    : resultComplete && !preview && displayMode === 'filtered' && items.length === 0;
 
   return (
     <div
@@ -289,14 +331,16 @@ export function MenuView({
                     </h3>
                     <div className="flex min-w-0 flex-col space-y-2">
                       {section.items.map((it) => (
-                        <div
+                        <button
+                          type="button"
                           key={it.id ?? it.name}
                           data-catalog-item
-                          className="flex min-w-0 items-baseline justify-between text-[15px] font-semibold leading-tight tracking-[0.03em] text-[#8c6239] sm:text-[16px]"
+                          onClick={() => onSelectItem?.(it)}
+                          className="flex w-full min-w-0 touch-manipulation items-baseline justify-between text-left text-[15px] font-bold leading-tight tracking-[0.12em] uppercase text-[#8c6239] transition-colors active:text-[#5c2912] sm:text-[16px]"
                         >
-                          <span className="truncate pr-1">{it.name}</span>
-                          <span className="shrink-0 tabular-nums font-bold">{menuPrice(it.price)}</span>
-                        </div>
+                          <span className="truncate pr-1 uppercase">{it.name}</span>
+                          <span className="shrink-0 tabular-nums font-bold ml-2">{menuPrice(it.price)}</span>
+                        </button>
                       ))}
                     </div>
                   </div>
@@ -309,11 +353,63 @@ export function MenuView({
         {/* RIGHT COLUMN: RECOMMENDATIONS */}
         <div className="flex min-h-0 w-full min-w-0 flex-col">
           <ColumnRibbon title={isVi ? 'GỢI Ý HÔM NAY' : 'RECOMMENDATIONS'} dotsLeft={true} dotsRight={true} />
+          {onSearchChange && (
+            <div
+              className="relative mb-5 flex h-[44px] sm:h-[46px] w-full items-center pl-3 sm:pl-3.5 pr-1.5 sm:pr-2 drop-shadow-[0_2px_4px_rgba(61,24,6,0.18)]"
+              style={{
+                background: [
+                  'radial-gradient(circle 16px at 0 0, transparent 16px, #8c6239 16.5px) top left',
+                  'radial-gradient(circle 16px at 100% 0, transparent 16px, #8c6239 16.5px) top right',
+                  'radial-gradient(circle 16px at 0 100%, transparent 16px, #8c6239 16.5px) bottom left',
+                  'radial-gradient(circle 16px at 100% 100%, transparent 16px, #8c6239 16.5px) bottom right',
+                ].join(','),
+                backgroundSize: '51% 51%',
+                backgroundRepeat: 'no-repeat',
+              }}
+            >
+              {/* Inner vintage capsule / pill synced with menu background */}
+              <div className="flex h-[32px] sm:h-[34px] flex-1 items-center rounded-full border border-[#8c6239]/30 bg-[#fae7cd] px-3.5 shadow-inner transition-colors">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(event) => onSearchChange(event.target.value)}
+                  placeholder={isVi ? 'Tìm kiếm sản phẩm...' : 'Search menu...'}
+                  aria-label={isVi ? 'Tìm kiếm sản phẩm' : 'Search menu'}
+                  autoComplete="off"
+                  spellCheck={false}
+                  enterKeyHint="search"
+                  maxLength={60}
+                  className="w-full bg-transparent font-['Josefin_Sans',sans-serif] text-[13.5px] sm:text-[14px] font-normal italic tracking-wide text-[#3a1d0f] outline-none placeholder:font-['Josefin_Sans',sans-serif] placeholder:italic placeholder:text-[#9b7352]"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    data-testid="menu-search-clear"
+                    aria-label={isVi ? 'Xóa tìm kiếm' : 'Clear search'}
+                    onClick={() => onSearchChange('')}
+                    className="ml-1 mr-[-4px] grid h-6 w-6 shrink-0 place-items-center rounded-full text-[#8c6239] transition-colors hover:bg-[#8c6239]/15 active:scale-95"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+                      <path d="M18 6L6 18M6 6l12 12" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+
+              {/* Vintage Magnifying Glass Icon inside Brown Plaque */}
+              <div className="flex h-full w-8 sm:w-9 shrink-0 items-center justify-center text-white" aria-hidden="true">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="M21 21l-4.35-4.35" />
+                </svg>
+              </div>
+            </div>
+          )}
           <div
             className="flex w-full min-w-0 flex-col space-y-4"
             data-recommendations-layout="compact"
           >
-            {resultComplete && !preview && displayMode === 'filtered' && items.length === 0 && (
+            {noMatches && (
               <p className="py-12 text-center font-['Josefin_Sans',sans-serif] text-[15px] font-semibold leading-tight tracking-[0.03em] sm:text-[16px]">
                 {isVi ? 'Không có kết quả phù hợp.' : 'No matching items found.'}
               </p>
@@ -326,19 +422,21 @@ export function MenuView({
                     : item.price
                   : '10';
               return (
-                <div
+                <button
+                  type="button"
                   key={item.id ?? `${item.name}-${index}`}
-                  className="flex min-w-0 flex-col"
+                  className="flex w-full min-w-0 touch-manipulation flex-col text-left transition-opacity active:opacity-70"
                   data-menu-item
+                  onClick={() => onSelectItem?.(item)}
                 >
-                  <div className="flex items-center justify-between font-bold text-[15px] sm:text-[16px] tracking-[0.12em] uppercase text-[#8c6239] min-w-0">
+                  <span className="flex items-center justify-between font-bold text-[15px] sm:text-[16px] tracking-[0.12em] uppercase text-[#8c6239] min-w-0">
                     <span className="truncate pr-2">{item.name}</span>
                     <span className="tabular-nums font-bold shrink-0 ml-4">{displayPrice}</span>
-                  </div>
-                  <p className="mt-0.5 font-['Cormorant_Garamond',serif] text-[14px] sm:text-[14.5px] italic leading-tight text-[#9b7352]">
+                  </span>
+                  <span className="mt-0.5 block font-['Josefin_Sans',sans-serif] text-[13.5px] sm:text-[14px] font-normal italic leading-snug tracking-wide text-[#9b7352]">
                     {item.note || 'Special gourmet recipe prepared fresh daily with premium ingredients.'}
-                  </p>
-                </div>
+                  </span>
+                </button>
               );
             })}
           </div>
@@ -360,30 +458,130 @@ function englishOrderTypeLabel(orderType: string): string {
   return 'NOT SELECTED';
 }
 
+export interface CartTouchControls {
+  busy: boolean;
+  /** The server's refusal code for the last tap, if any. */
+  error: string | null;
+  /** The last live table read; null while loading or unavailable. */
+  tables: TouchTable[] | null;
+  onQuantity: (lineId: string, quantity: number) => void;
+  onRemove: (lineId: string) => void;
+  onClear: () => void;
+  onOrderType: (orderType: 'at-table' | 'take-out') => void;
+  onTable: (slug: string) => void;
+  onRefreshTables: () => void;
+  onPickup: (minutes: PickupMinutes) => void;
+  onCheckout: () => void;
+}
+
+const MAX_LINE_QUANTITY = 99;
+
+const TOUCH_REFUSALS: Record<string, [en: string, vi: string]> = {
+  voice_session_required: ['Start a chat with the assistant to order.', 'Hãy bắt đầu trò chuyện với trợ lý để đặt món.'],
+  checkout_in_progress: ['Your order is being placed. Please wait a moment.', 'Đơn đang được xử lý, vui lòng chờ một chút.'],
+  cart_line_not_found: ['That item just changed. Please check your cart again.', 'Món vừa thay đổi, vui lòng kiểm tra lại giỏ hàng.'],
+  table_not_found: ['That table is no longer listed. Please pick another one.', 'Bàn này không còn trong danh sách, vui lòng chọn bàn khác.'],
+  tables_unavailable: ['Tables could not be loaded. Please try again.', 'Chưa tải được danh sách bàn, vui lòng thử lại.'],
+  cart_empty: ['Your cart is empty.', 'Giỏ hàng đang trống.'],
+  order_type_required: ['Choose dine-in or take-out first.', 'Vui lòng chọn tại bàn hoặc mang về.'],
+  table_required: ['Select a table first.', 'Vui lòng chọn bàn trước.'],
+  checkout_failed: ['The order could not be placed. Please try again or ask the assistant.', 'Chưa đặt được đơn, vui lòng thử lại hoặc nhờ trợ lý.'],
+};
+
+function touchRefusal(code: string, isVi: boolean): string {
+  const text = TOUCH_REFUSALS[code];
+  if (text) return text[isVi ? 1 : 0];
+  return isVi ? 'Chưa thực hiện được, vui lòng thử lại.' : 'That did not go through. Please try again.';
+}
+
+function tableStatusLabel(status: string, isVi: boolean): string {
+  if (status === 'available') return isVi ? 'TRỐNG' : 'AVAILABLE';
+  if (status === 'reserved') return isVi ? 'ĐÃ ĐẶT' : 'RESERVED';
+  return status.toUpperCase();
+}
+
+function pickupLabel(minutes: number, isVi: boolean): string {
+  if (minutes === 0) return isVi ? 'NGAY LẬP TỨC' : 'IMMEDIATELY';
+  return isVi ? `${minutes} PHÚT` : `${minutes} MINUTES`;
+}
+
+
+const receiptStep = "grid h-7 w-7 sm:h-8 sm:w-8 shrink-0 place-items-center rounded-full border-[1.5px] border-[#783820]/70 text-[15px] sm:text-[16px] font-bold leading-none text-[#783820] transition-all hover:bg-[#783820]/10 hover:border-[#783820] active:scale-90 disabled:opacity-30 disabled:cursor-not-allowed";
+
 // VIEW 2: LOCAL CART DRAFT
 export function CartView({
   lines,
   total,
   order_note,
   order_type,
+  table = '',
   table_name,
+  pickup_minutes = 0,
   uiLanguage = 'en',
+  controls,
 }: {
   lines: CustomerDisplayLine[];
   total: number;
   order_note: string;
   order_type: string;
+  table?: string;
   table_name: string;
+  pickup_minutes?: number;
   uiLanguage?: UiLanguage;
+  /** Present on the live display: the receipt becomes the customer's cart editor. */
+  controls?: CartTouchControls;
 }) {
   const isVi = uiLanguage === 'vi';
+  const [reservedTable, setReservedTable] = useState<TouchTable | null>(null);
+  const [openDropdown, setOpenDropdown] = useState<'order_type' | 'table' | 'pickup' | null>(null);
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!openDropdown) return;
+    const handlePointerDown = (e: MouseEvent | TouchEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setOpenDropdown(null);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenDropdown(null);
+    };
+    document.addEventListener('pointerdown', handlePointerDown as EventListener);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown as EventListener);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [openDropdown]);
+
+  const busy = controls?.busy ?? false;
+  const missingChoice = order_type === 'at-table' && !table
+    ? (isVi ? 'CHỌN BÀN ĐỂ THANH TOÁN' : 'SELECT A TABLE TO CHECK OUT')
+    : null;
+  const canCheckout = !busy && lines.length > 0 && (order_type === 'at-table' || order_type === 'take-out') && missingChoice === null;
+  const knownTable = controls?.tables?.some((row) => row.slug === table) ?? false;
+  const currentOrderType = order_type === 'at-table' || order_type === 'take-out' ? order_type : '';
+  const currentOrderTypeLabel = orderTypeLabel(currentOrderType, isVi);
+  const matchedTable = controls?.tables?.find((row) => row.slug === table);
+  const currentTableLabel = matchedTable
+    ? `${matchedTable.name} · ${tableStatusLabel(matchedTable.status, isVi)}`
+    : (table && !knownTable ? (table_name || table) : (isVi ? 'CHỌN BÀN' : 'SELECT'));
+  const currentPickupLabel = pickupLabel(pickup_minutes, isVi);
+
+  const chooseTable = (slug: string) => {
+    const row = controls?.tables?.find((candidate) => candidate.slug === slug);
+    if (!row || !controls) return;
+    if (row.status === 'reserved') setReservedTable(row);
+    else controls.onTable(row.slug);
+  };
+
   return (
-    <div className="mx-auto flex w-full max-w-[680px] flex-1 flex-col px-10 py-8 text-left font-['Josefin_Sans',sans-serif] text-[#783820]">
-      <div className="flex items-baseline justify-between border-b-[1.5px] border-[#783820] pb-2">
-        <h1 className="font-['Playfair_Display',serif] text-4xl font-normal tracking-wide uppercase sm:text-5xl">
+    <div className="mx-auto flex w-full max-w-[680px] lg:max-w-[880px] xl:max-w-[960px] flex-1 flex-col px-6 sm:px-10 py-6 sm:py-8 text-left font-['Josefin_Sans',sans-serif] text-[#783820]">
+      <div className="flex items-baseline justify-between border-b-[1.5px] border-[#783820] pb-2 sm:pb-3">
+        <h1 className="font-['Playfair_Display',serif] text-4xl font-normal tracking-wide uppercase sm:text-5xl lg:text-6xl">
           {isVi ? 'GIỎ HÀNG' : 'CART'}
         </h1>
-        <div className="text-right text-[11px] font-semibold tracking-wider uppercase leading-tight">
+        <div className="text-right text-[11px] sm:text-[12px] lg:text-[13px] font-semibold tracking-wider uppercase leading-tight">
           {isVi ? 'CHƯA TẠO ĐƠN' : 'ORDER NOT CREATED'}
         </div>
       </div>
@@ -394,13 +592,280 @@ export function CartView({
           <div>ORDER@TRENDCOFFEE.VN | +84 90 123 4567</div>
           <div>WWW.TRENDCOFFEE.NET</div>
         </div>
-        <div className="flex flex-wrap gap-x-8 gap-y-1 text-[11px]">
-          <div>{isVi ? 'LOẠI ĐƠN' : 'ORDER TYPE'}: {orderTypeLabel(order_type, isVi)}</div>
-          {order_type === 'at-table' && table_name && <div>{isVi ? 'BÀN' : 'TABLE'}: {table_name}</div>}
-        </div>
+        {controls ? (
+          <div ref={dropdownRef} className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-1 text-[11px]">
+            {/* 1. ORDER TYPE DROPDOWN */}
+            <div className="relative inline-block">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setOpenDropdown((cur) => (cur === 'order_type' ? null : 'order_type'))}
+                className="relative inline-flex items-center gap-1 cursor-pointer hover:text-[#5c2912] focus:outline-none disabled:cursor-default disabled:opacity-50"
+              >
+                <span className="shrink-0">{isVi ? 'LOẠI ĐƠN' : 'ORDER TYPE'}:</span>
+                <span className="font-semibold uppercase tracking-wider text-[#783820]">
+                  {currentOrderTypeLabel}
+                </span>
+                <svg
+                  className={cn(
+                    "h-2.5 w-2.5 shrink-0 stroke-current text-[#783820] transition-transform duration-150",
+                    openDropdown === 'order_type' && "rotate-180"
+                  )}
+                  viewBox="0 0 14 14"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <path d="M3 5l4 4 4-4" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+              <select
+                data-testid="cart-order-type"
+                value={currentOrderType}
+                disabled={busy}
+                onChange={(event) => controls.onOrderType(event.target.value as 'at-table' | 'take-out')}
+                className="sr-only"
+                tabIndex={-1}
+                aria-hidden="true"
+              >
+                <option value="" disabled>{orderTypeLabel('', isVi)}</option>
+                <option value="at-table">{orderTypeLabel('at-table', isVi)}</option>
+                <option value="take-out">{orderTypeLabel('take-out', isVi)}</option>
+              </select>
+
+              {openDropdown === 'order_type' && (
+                <div
+                  className="absolute left-0 top-full z-50 mt-1 min-w-[170px] border border-[#8c6239] bg-[#fae7cd] shadow-[0_6px_20px_rgba(90,27,0,0.12)] animate-in fade-in duration-100"
+                >
+                  <div>
+                    {(['at-table', 'take-out'] as const).map((ot, idx, arr) => {
+                      const isSelected = currentOrderType === ot;
+                      return (
+                        <button
+                          key={ot}
+                          type="button"
+                          onClick={() => {
+                            controls.onOrderType(ot);
+                            setOpenDropdown(null);
+                          }}
+                          className={cn(
+                            "flex w-full items-center justify-between px-3 py-2 text-left font-['Josefin_Sans',sans-serif] text-[11px] font-semibold uppercase tracking-wider transition-colors",
+                            idx < arr.length - 1 && "border-b border-[#8c6239]/20",
+                            isSelected
+                              ? "bg-[#8c6239]/20 text-[#5c2912]"
+                              : "text-[#783820] hover:bg-[#8c6239]/10 hover:text-[#5c2912]"
+                          )}
+                        >
+                          <span>{orderTypeLabel(ot, isVi)}</span>
+                          {isSelected && (
+                            <svg className="ml-2 h-3.5 w-3.5 shrink-0 stroke-current text-[#783820]" viewBox="0 0 16 16" fill="none">
+                              <path d="M3 8.5l3.5 3.5 6.5-7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 2. TABLE DROPDOWN */}
+            {order_type === 'at-table' && (
+              <div className="relative inline-block">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    if (openDropdown === 'table') {
+                      setOpenDropdown(null);
+                    } else {
+                      controls.onRefreshTables();
+                      setOpenDropdown('table');
+                    }
+                  }}
+                  className="relative inline-flex items-center gap-1 cursor-pointer hover:text-[#5c2912] focus:outline-none disabled:cursor-default disabled:opacity-50"
+                >
+                  <span className="shrink-0">{isVi ? 'BÀN' : 'TABLE'}:</span>
+                  <span className={cn(
+                    "font-semibold uppercase tracking-wider",
+                    matchedTable?.status === 'reserved' ? "text-[#b91c1c]" : "text-[#783820]"
+                  )}>
+                    {currentTableLabel}
+                  </span>
+                  <svg
+                    className={cn(
+                      "h-2.5 w-2.5 shrink-0 stroke-current transition-transform duration-150",
+                      matchedTable?.status === 'reserved' ? "text-[#b91c1c]" : "text-[#783820]",
+                      openDropdown === 'table' && "rotate-180"
+                    )}
+                    viewBox="0 0 14 14"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 5l4 4 4-4" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+                <select
+                  data-testid="cart-table"
+                  value={table}
+                  disabled={busy}
+                  onFocus={controls.onRefreshTables}
+                  onChange={(event) => chooseTable(event.target.value)}
+                  className="sr-only"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                >
+                  <option value="" disabled>{isVi ? 'CHỌN BÀN' : 'SELECT'}</option>
+                  {table && !knownTable && <option value={table}>{table_name || table}</option>}
+                  {controls.tables?.map((row) => (
+                    <option key={row.slug} value={row.slug}>{`${row.name} · ${tableStatusLabel(row.status, isVi)}`}</option>
+                  ))}
+                </select>
+
+                {openDropdown === 'table' && (
+                  <div
+                    className="absolute left-0 top-full z-50 mt-1 min-w-[190px] border border-[#8c6239] bg-[#fae7cd] shadow-[0_6px_20px_rgba(90,27,0,0.12)] animate-in fade-in duration-100"
+                  >
+                    <div className="max-h-60 overflow-y-auto overscroll-contain scrollbar-thin scrollbar-thumb-[#8c6239]/40 scrollbar-track-transparent">
+                      {(!controls.tables || controls.tables.length === 0) ? (
+                        <div className="px-3 py-2 text-center text-[11px] text-[#9b7352] italic font-['Josefin_Sans',sans-serif]">
+                          {isVi ? 'Đang tải danh sách bàn...' : 'Loading tables...'}
+                        </div>
+                      ) : (
+                        controls.tables.map((row, idx, arr) => {
+                          const isSelected = row.slug === table;
+                          const isReserved = row.status === 'reserved';
+                          const label = `${row.name} · ${tableStatusLabel(row.status, isVi)}`;
+                          return (
+                            <button
+                              key={row.slug}
+                              type="button"
+                              onClick={() => {
+                                chooseTable(row.slug);
+                                setOpenDropdown(null);
+                              }}
+                              className={cn(
+                                "flex w-full items-center justify-between px-3 py-2 text-left font-['Josefin_Sans',sans-serif] text-[11px] font-semibold uppercase tracking-wider transition-colors",
+                                idx < arr.length - 1 && "border-b border-[#8c6239]/20",
+                                isReserved
+                                  ? (isSelected ? "bg-[#8c6239]/20 text-[#b91c1c]" : "text-[#b91c1c] hover:bg-[#8c6239]/10 hover:text-[#991b1b]")
+                                  : (isSelected ? "bg-[#8c6239]/20 text-[#5c2912]" : "text-[#783820] hover:bg-[#8c6239]/10 hover:text-[#5c2912]")
+                              )}
+                            >
+                              <span>{label}</span>
+                              {isSelected && (
+                                <svg className={cn("ml-2 h-3.5 w-3.5 shrink-0 stroke-current", isReserved ? "text-[#b91c1c]" : "text-[#783820]")} viewBox="0 0 16 16" fill="none">
+                                  <path d="M3 8.5l3.5 3.5 6.5-7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                              )}
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 3. PICKUP DROPDOWN */}
+            {order_type === 'take-out' && (
+              <div className="relative inline-block">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setOpenDropdown((cur) => (cur === 'pickup' ? null : 'pickup'))}
+                  className="relative inline-flex items-center gap-1 cursor-pointer hover:text-[#5c2912] focus:outline-none disabled:cursor-default disabled:opacity-50"
+                >
+                  <span className="shrink-0">{isVi ? 'GIỜ LẤY MÓN' : 'PICKUP'}:</span>
+                  <span className="font-semibold uppercase tracking-wider text-[#783820]">
+                    {currentPickupLabel}
+                  </span>
+                  <svg
+                    className={cn(
+                      "h-2.5 w-2.5 shrink-0 stroke-current text-[#783820] transition-transform duration-150",
+                      openDropdown === 'pickup' && "rotate-180"
+                    )}
+                    viewBox="0 0 14 14"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 5l4 4 4-4" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+                <select
+                  data-testid="cart-pickup-time"
+                  value={pickup_minutes}
+                  disabled={busy}
+                  onChange={(event) => controls.onPickup(Number(event.target.value) as PickupMinutes)}
+                  className="sr-only"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                >
+                  {PICKUP_MINUTES.map((minutes) => (
+                    <option key={minutes} value={minutes}>{pickupLabel(minutes, isVi)}</option>
+                  ))}
+                </select>
+
+                {openDropdown === 'pickup' && (
+                  <div
+                    className="absolute left-0 top-full z-50 mt-1 min-w-[170px] border border-[#8c6239] bg-[#fae7cd] shadow-[0_6px_20px_rgba(90,27,0,0.12)] animate-in fade-in duration-100"
+                  >
+                    <div className="max-h-60 overflow-y-auto overscroll-contain scrollbar-thin scrollbar-thumb-[#8c6239]/40 scrollbar-track-transparent">
+                      {PICKUP_MINUTES.map((minutes, idx, arr) => {
+                        const isSelected = pickup_minutes === minutes;
+                        return (
+                          <button
+                            key={minutes}
+                            type="button"
+                            onClick={() => {
+                              controls.onPickup(minutes);
+                              setOpenDropdown(null);
+                            }}
+                            className={cn(
+                              "flex w-full items-center justify-between px-3 py-2 text-left font-['Josefin_Sans',sans-serif] text-[11px] font-semibold uppercase tracking-wider transition-colors",
+                              idx < arr.length - 1 && "border-b border-[#8c6239]/20",
+                              isSelected
+                                ? "bg-[#8c6239]/20 text-[#5c2912]"
+                                : "text-[#783820] hover:bg-[#8c6239]/10 hover:text-[#5c2912]"
+                            )}
+                          >
+                            <span>{pickupLabel(minutes, isVi)}</span>
+                            {isSelected && (
+                              <svg className="ml-2 h-3.5 w-3.5 shrink-0 stroke-current text-[#783820]" viewBox="0 0 16 16" fill="none">
+                                <path d="M3 8.5l3.5 3.5 6.5-7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {lines.length > 0 && (
+              <button
+                type="button"
+                data-testid="cart-clear"
+                disabled={busy}
+                onClick={controls.onClear}
+                className="ml-auto py-0.5 text-[11px] font-semibold tracking-wider uppercase text-[#783820] hover:text-[#5c2912] disabled:opacity-40"
+              >
+                {isVi ? 'XÓA TẤT CẢ' : 'CLEAR CART'}
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-x-8 gap-y-1 text-[11px]">
+            <div>{isVi ? 'LOẠI ĐƠN' : 'ORDER TYPE'}: {orderTypeLabel(order_type, isVi)}</div>
+            {order_type === 'at-table' && table_name && <div>{isVi ? 'BÀN' : 'TABLE'}: {table_name}</div>}
+          </div>
+        )}
       </div>
 
-      <div className="grid grid-cols-12 border-b-[1.5px] border-[#783820] pb-1.5 text-[12px] font-bold tracking-widest uppercase">
+      <div className="grid grid-cols-12 items-end border-b-[1.5px] border-[#783820] pb-1.5 text-[12px] font-bold tracking-widest uppercase">
         <div className="col-span-6">{isVi ? 'MÓN' : 'ITEM'}</div>
         <div className="col-span-2 text-center">{isVi ? 'SL' : 'QTY'}</div>
         <div className="col-span-2 text-right">{isVi ? 'ĐƠN GIÁ' : 'UNIT PRICE'}</div>
@@ -413,54 +878,118 @@ export function CartView({
             const qty = line.quantity ?? 1;
             const lineTotal = line.line_total ?? ((line.unit_price ?? 0) * qty);
             const unitPrice = line.unit_price ?? (qty > 0 ? Math.round(lineTotal / qty) : 0);
+            const lineId = line.line_id;
             return (
               <div
-                key={line.line_id ?? `${line.name}-${index}`}
-                className="grid grid-cols-12 items-start"
-                data-cart-line={line.line_id ?? ''}
+                key={lineId ?? `${line.name}-${index}`}
+                className="grid grid-cols-12 items-center"
+                data-cart-line={lineId ?? ''}
               >
                 <div className="col-span-6 font-semibold uppercase">
-                  <div>{line.name}{line.size ? ` (${line.size})` : ''}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span>{line.name}{line.size ? ` (${line.size})` : ''}</span>
+                    {controls && lineId && (
+                      <button
+                        type="button"
+                        data-testid="cart-line-remove"
+                        aria-label={isVi ? `Xóa ${line.name}` : `Remove ${line.name}`}
+                        disabled={busy}
+                        onClick={() => controls.onRemove(lineId)}
+                        className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-transparent text-[11px] leading-none text-[#783820] transition-transform hover:text-[#5c2912] active:scale-90 disabled:opacity-35"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
                   {line.note && (
                     <div className="mt-1 text-[10px] font-normal normal-case tracking-normal text-[#9b7352]">
                       {isVi ? 'Ghi chú' : 'Note'}: {line.note}
                     </div>
                   )}
                 </div>
-                <div className="col-span-2 text-center font-normal">{qty}</div>
+                {controls && lineId ? (
+                  <div className="col-span-2 flex items-center justify-center gap-1 sm:gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="cart-line-decrease"
+                      aria-label="−"
+                      disabled={busy || qty <= 1}
+                      onClick={() => controls.onQuantity(lineId, qty - 1)}
+                      className={receiptStep}
+                    >
+                      −
+                    </button>
+                    <span className="min-w-6 text-center text-[13px] sm:text-[14px] font-bold tabular-nums">{qty}</span>
+                    <button
+                      type="button"
+                      data-testid="cart-line-increase"
+                      aria-label="+"
+                      disabled={busy || qty >= MAX_LINE_QUANTITY}
+                      onClick={() => controls.onQuantity(lineId, qty + 1)}
+                      className={receiptStep}
+                    >
+                      +
+                    </button>
+                  </div>
+                ) : (
+                  <div className="col-span-2 text-center font-normal">{qty}</div>
+                )}
                 <div className="col-span-2 text-right tabular-nums">{money(unitPrice)}</div>
                 <div className="col-span-2 text-right font-semibold tabular-nums">{money(lineTotal)}</div>
               </div>
             );
           })
         ) : (
-          <div className="py-4 text-center text-sm normal-case tracking-normal text-[#9b7352]">
-            {isVi ? 'Giỏ hàng đang trống.' : 'Cart is empty.'}
+          <div className="py-4 text-center text-sm font-semibold uppercase tracking-wider text-[#9b7352]">
+            {isVi ? 'GIỎ HÀNG ĐANG TRỐNG.' : 'CART IS EMPTY.'}
           </div>
         )}
       </div>
 
       <div className="border-t-[1.5px] border-[#783820] pt-3 pb-6">
-        <div className="ml-auto w-full max-w-64 space-y-1.5 text-[12px] font-semibold tracking-wider uppercase">
+        <div className="ml-auto w-full max-w-80 space-y-1.5 text-[12px] font-semibold tracking-wider uppercase">
           <div className="flex justify-between text-[10px]">
             <span>{isVi ? 'TẠM TÍNH' : 'SUBTOTAL'}</span>
-            <span className="tabular-nums">{money(total)}</span>
+            <span className="tabular-nums whitespace-nowrap">{money(total)}</span>
           </div>
           <div className="flex justify-between text-[10px]">
             <span>{isVi ? 'PHÍ DỊCH VỤ (10%)' : 'SERVICE CHARGE (10%)'}</span>
-            <span className="tabular-nums">{money(0)}</span>
+            <span className="tabular-nums whitespace-nowrap">{money(0)}</span>
           </div>
-          <div className="flex justify-between border-t border-[#783820] pt-2 text-[14px] font-bold">
-            <span>{isVi ? 'TỔNG CỘNG (TẠM TÍNH)' : 'TOTAL ESTIMATED'}</span>
-            <span className="text-[15px] font-extrabold tabular-nums">{money(total)}</span>
+          <div className="flex items-baseline justify-between border-t border-[#783820] pt-2 text-[14px] font-bold">
+            <span className="whitespace-nowrap">{isVi ? 'TỔNG CỘNG (TẠM TÍNH)' : 'TOTAL ESTIMATED'}</span>
+            <span className="text-[15px] font-extrabold tabular-nums whitespace-nowrap shrink-0 ml-4">{money(total)}</span>
           </div>
         </div>
-        <div className="mt-8 max-w-[440px] space-y-1 text-[10px] font-medium tracking-wider uppercase leading-relaxed">
-          <div>{isVi ? 'THẺ TÍN DỤNG & GHI NỢ: VISA, MASTERCARD, NAPAS' : 'CREDIT & DEBIT CARDS: VISA, MASTERCARD, NAPAS'}</div>
-          <div className="pt-2">{isVi ? 'CHUYỂN KHOẢN:' : 'BANK TRANSFER:'}</div>
-          <div>{isVi ? 'TÊN TÀI KHOẢN: CONG TY CO PHAN TREND COFFEE' : 'ACCOUNT NAME: CONG TY CO PHAN TREND COFFEE'}</div>
-          <div>MB BANK: 9999.8888.68</div>
-          <div className="pt-2">{isVi ? 'TRẠNG THÁI: ĐANG XỬ LÝ ĐƠN HÀNG (VUI LÒNG KIỂM TRA MÓN).' : 'STATUS: ORDER IN PROGRESS (PLEASE CHECK YOUR ITEMS).'}</div>
+        <div className={controls ? 'mt-8 flex flex-wrap items-start justify-between gap-6' : ''}>
+          <div className={`${controls ? '' : 'mt-8 '}max-w-[440px] space-y-1 text-[10px] font-medium tracking-wider uppercase leading-relaxed`}>
+            <div>{isVi ? 'THẺ TÍN DỤNG & GHI NỢ: VISA, MASTERCARD, NAPAS' : 'CREDIT & DEBIT CARDS: VISA, MASTERCARD, NAPAS'}</div>
+            <div className="pt-2">{isVi ? 'CHUYỂN KHOẢN:' : 'BANK TRANSFER:'}</div>
+            <div>{isVi ? 'TÊN TÀI KHOẢN: CONG TY CO PHAN TREND COFFEE' : 'ACCOUNT NAME: CONG TY CO PHAN TREND COFFEE'}</div>
+            <div>MB BANK: 9999.8888.68</div>
+            <div className="pt-2">{isVi ? 'TRẠNG THÁI: ĐANG XỬ LÝ ĐƠN HÀNG (VUI LÒNG KIỂM TRA MÓN).' : 'STATUS: ORDER IN PROGRESS (PLEASE CHECK YOUR ITEMS).'}</div>
+          </div>
+          {controls && (
+            <div className="flex w-full max-w-60 flex-col items-stretch gap-2">
+              <button
+                type="button"
+                data-testid="cart-checkout"
+                disabled={!canCheckout}
+                onClick={controls.onCheckout}
+                className="flex h-[48px] sm:h-[52px] w-full max-w-60 items-center justify-center rounded-none bg-[#5c2912] hover:bg-[#4d220e] text-[#fae7cd] font-['Josefin_Sans',sans-serif] text-[12px] font-bold tracking-[0.2em] uppercase shadow-md transition-all active:scale-[0.98] disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer focus:outline-none"
+              >
+                {busy ? '…' : (isVi ? 'THANH TOÁN' : 'CHECKOUT')}
+              </button>
+              {missingChoice && lines.length > 0 && (
+                <p className="text-right text-[9.5px] font-semibold tracking-wider text-[#9b7352]">{missingChoice}</p>
+              )}
+              {controls.error && (
+                <p role="alert" className="text-right text-[11px] font-semibold normal-case tracking-normal text-[#9a2b12]">
+                  {touchRefusal(controls.error, isVi)}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -472,8 +1001,48 @@ export function CartView({
       )}
 
       <ReceiptFooter isVi={isVi} />
+
+      {reservedTable && controls && (
+        <div role="alertdialog" aria-modal="true" className="fixed inset-0 z-40 flex items-center justify-center bg-[#3d1b0c]/35 p-6">
+          <div className="w-full max-w-sm border-2 border-[#68341a] bg-[#fae7cd] p-7 text-center shadow-[0_18px_40px_rgba(60,25,10,0.28)]">
+            <div className="font-['Playfair_Display',serif] text-2xl text-[#68341a]">
+              {isVi ? `Bàn ${reservedTable.name} đã được đặt` : `Table ${reservedTable.name} is reserved`}
+            </div>
+            <p className="mt-3 text-sm font-semibold text-[#783820]">
+              {isVi ? 'Bạn vẫn muốn chọn bàn này và ngồi chung chứ?' : 'Do you still want this table and share it?'}
+            </p>
+            <div className="mt-6 flex justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => setReservedTable(null)}
+                className="min-h-11 border border-[#68341a] px-5 text-[12px] font-bold tracking-[0.18em] text-[#68341a] uppercase active:scale-95"
+              >
+                {isVi ? 'HỦY' : 'CANCEL'}
+              </button>
+              <button
+                type="button"
+                data-testid="cart-reserved-confirm"
+                onClick={() => {
+                  controls.onTable(reservedTable.slug);
+                  setReservedTable(null);
+                }}
+                className="min-h-11 bg-[#5c2912] px-5 text-[12px] font-bold tracking-[0.18em] text-[#fae7cd] uppercase active:scale-95"
+              >
+                {isVi ? 'XÁC NHẬN CHỌN' : 'USE THIS TABLE'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function billStatusLabel(status: string, isVi: boolean): string {
+  const key = status.toLowerCase();
+  if (isVi && key === 'pending') return 'CHỜ XỬ LÝ';
+  if (isVi && key === 'paid') return 'ĐÃ THANH TOÁN';
+  return status.toUpperCase();
 }
 
 // VIEW 3: BILL (INVOICE LUXURY INVOICE)
@@ -496,14 +1065,14 @@ export function BillView({
 }) {
   const isVi = uiLanguage === 'vi';
   return (
-    <div className="mx-auto flex w-full max-w-[680px] flex-1 flex-col px-10 py-8 text-left font-['Josefin_Sans',sans-serif] text-[#783820]">
-      <div className="flex items-baseline justify-between border-b-[1.5px] border-[#783820] pb-2">
-        <h1 className="font-['Playfair_Display',serif] text-4xl font-normal tracking-wide uppercase sm:text-5xl">
+    <div className="mx-auto flex w-full max-w-[680px] lg:max-w-[880px] xl:max-w-[960px] flex-1 flex-col px-6 sm:px-10 py-6 sm:py-8 text-left font-['Josefin_Sans',sans-serif] text-[#783820]">
+      <div className="flex items-baseline justify-between border-b-[1.5px] border-[#783820] pb-2 sm:pb-3">
+        <h1 className="font-['Playfair_Display',serif] text-4xl font-normal tracking-wide uppercase sm:text-5xl lg:text-6xl">
           {isVi ? 'HÓA ĐƠN' : 'INVOICE'}
         </h1>
-        <div className="text-right text-[11px] font-semibold tracking-wider uppercase leading-tight">
+        <div className="text-right text-[11px] sm:text-[12px] lg:text-[13px] font-semibold tracking-wider uppercase leading-tight">
           <div>{isVi ? 'MÃ HÓA ĐƠN' : 'INVOICE NO.'}: {order_id}</div>
-          <div>{isVi ? 'TRẠNG THÁI' : 'STATUS'}: {isVi && status.toLowerCase() === 'pending' ? 'CHỜ XỬ LÝ' : status.toUpperCase()}</div>
+          <div>{isVi ? 'TRẠNG THÁI' : 'STATUS'}: {billStatusLabel(status, isVi)}</div>
         </div>
       </div>
 
@@ -555,18 +1124,20 @@ export function BillView({
       </div>
 
       <div className="border-t-[1.5px] border-[#783820] pt-3 pb-6">
-        <div className="ml-auto w-full max-w-64 space-y-1.5 text-[12px] font-semibold tracking-wider uppercase">
-          <div className="flex justify-between text-[10px]">
-            <span>{isVi ? 'TẠM TÍNH' : 'SUBTOTAL'}</span>
-            <span className="tabular-nums">{money(total)}</span>
-          </div>
+        <div className="ml-auto w-full max-w-80 space-y-1.5 text-[12px] font-semibold tracking-wider uppercase">
+          {total !== undefined && (
+            <div className="flex justify-between text-[10px]">
+              <span>{isVi ? 'TẠM TÍNH' : 'SUBTOTAL'}</span>
+              <span className="tabular-nums whitespace-nowrap">{money(total)}</span>
+            </div>
+          )}
           <div className="flex justify-between text-[10px]">
             <span>{isVi ? 'PHÍ DỊCH VỤ (10%)' : 'SERVICE CHARGE (10%)'}</span>
-            <span className="tabular-nums">{money(0)}</span>
+            <span className="tabular-nums whitespace-nowrap">{money(0)}</span>
           </div>
-          <div className="flex justify-between border-t border-[#783820] pt-2 text-[14px] font-bold">
-            <span>{isVi ? 'TỔNG TIỀN THANH TOÁN' : 'TOTAL AMOUNT DUE'}</span>
-            <span className="text-[15px] font-extrabold tabular-nums">{money(total)}</span>
+          <div className="flex items-baseline justify-between border-t border-[#783820] pt-2 text-[14px] font-bold">
+            <span className="whitespace-nowrap">{isVi ? 'TỔNG TIỀN THANH TOÁN' : 'TOTAL AMOUNT DUE'}</span>
+            <span className="text-[15px] font-extrabold tabular-nums whitespace-nowrap shrink-0 ml-4">{money(total)}</span>
           </div>
         </div>
         <div className="mt-8 max-w-[440px] space-y-1 text-[10px] font-medium tracking-wider uppercase leading-relaxed">
@@ -594,6 +1165,7 @@ export function PaymentQrView({
   table_name,
   lines = [],
   uiLanguage = 'en',
+  created_at,
 }: {
   qr_code: string;
   total?: number;
@@ -604,27 +1176,37 @@ export function PaymentQrView({
   table_name?: string;
   lines?: CustomerDisplayLine[];
   uiLanguage?: UiLanguage;
+  created_at?: string;
 }) {
   const isVi = uiLanguage === 'vi';
   const isImage = isSafeQrImageSource(qr_code);
+  const [shownAt] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  const deadline = paymentDeadline(created_at, shownAt);
+  const expired = now >= deadline;
+  useEffect(() => {
+    if (expired) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [expired]);
   const statusLabel = status?.toLowerCase() === 'pending'
     ? (isVi ? 'CHỜ THANH TOÁN' : 'PENDING PAYMENT')
     : (status?.toUpperCase() ?? (isVi ? 'KHÔNG CÓ TRẠNG THÁI' : 'PAYMENT STATUS UNAVAILABLE'));
 
   return (
-    <div className="mx-auto flex w-full max-w-[680px] flex-1 flex-col px-10 py-8 text-left font-['Josefin_Sans',sans-serif] text-[#783820]">
-      <div className="flex items-baseline justify-between border-b-[1.5px] border-[#783820] pb-2">
-        <h1 className="font-['Playfair_Display',serif] text-4xl font-normal tracking-wide uppercase sm:text-5xl">
+    <div className="mx-auto flex w-full max-w-[680px] lg:max-w-[880px] xl:max-w-[960px] flex-1 flex-col px-6 sm:px-10 py-6 sm:py-8 text-left font-['Josefin_Sans',sans-serif] text-[#783820]">
+      <div className="flex items-baseline justify-between border-b-[1.5px] border-[#783820] pb-2 sm:pb-3">
+        <h1 className="font-['Playfair_Display',serif] text-4xl font-normal tracking-wide uppercase sm:text-5xl lg:text-6xl">
           {isVi ? 'HÓA ĐƠN' : 'INVOICE'}
         </h1>
-        <div className="text-right text-[11px] font-semibold tracking-wider uppercase leading-tight">
+        <div className="text-right text-[11px] sm:text-[12px] lg:text-[13px] font-semibold tracking-wider uppercase leading-tight">
           <div>{isVi ? 'MÃ HÓA ĐƠN' : 'INVOICE NO.'}: {order_id}</div>
           <div>{isVi ? 'TRẠNG THÁI' : 'STATUS'}: {statusLabel}</div>
         </div>
       </div>
 
-      <div className="space-y-2 pt-3 pb-6 text-[10px] font-semibold tracking-wider uppercase leading-relaxed">
-        <div className="flex flex-wrap gap-x-8 gap-y-1 text-[11px]">
+      <div className="space-y-2 sm:space-y-2.5 pt-3 pb-6 text-[10px] sm:text-[11px] lg:text-[12px] font-semibold tracking-wider uppercase leading-relaxed">
+        <div className="flex flex-wrap gap-x-8 gap-y-1 text-[11px] sm:text-[12px] lg:text-[13px]">
           {branch && <div>{isVi ? 'CHI NHÁNH' : 'BRANCH'}: {branch}</div>}
           {order_type && <div>{isVi ? 'LOẠI ĐƠN' : 'ORDER TYPE'}: {orderTypeLabel(order_type, isVi)}</div>}
           {order_type === 'at-table' && table_name && <div>{isVi ? 'BÀN' : 'TABLE'}: {table_name}</div>}
@@ -636,14 +1218,14 @@ export function PaymentQrView({
         </div>
       </div>
 
-      <div className="grid grid-cols-12 border-b-[1.5px] border-[#783820] pb-1.5 text-[12px] font-bold tracking-widest uppercase">
+      <div className="grid grid-cols-12 border-b-[1.5px] border-[#783820] pb-1.5 text-[12px] sm:text-[13px] lg:text-[14px] font-bold tracking-widest uppercase">
         <div className="col-span-6">{isVi ? 'MÓN' : 'ITEM'}</div>
         <div className="col-span-2 text-center">{isVi ? 'SL' : 'QTY'}</div>
         <div className="col-span-2 text-right">{isVi ? 'ĐƠN GIÁ' : 'UNIT PRICE'}</div>
         <div className="col-span-2 text-right">{isVi ? 'TẠM TÍNH' : 'SUBTOTAL'}</div>
       </div>
 
-      <div className="space-y-2.5 py-3 text-[12.5px] font-medium tracking-wide">
+      <div className="space-y-2.5 sm:space-y-3 py-3 text-[12.5px] sm:text-[13.5px] lg:text-[15px] font-medium tracking-wide">
         {lines.length > 0 ? lines.map((line, index) => {
           const qty = line.quantity ?? 1;
           const lineTotal = line.line_total ?? ((line.unit_price ?? 0) * qty);
@@ -653,7 +1235,7 @@ export function PaymentQrView({
               <div className="col-span-6 font-semibold uppercase">
                 <div>{line.name}{line.size ? ` (${line.size})` : ''}</div>
                 {line.note && (
-                  <div className="mt-1 text-[10px] font-normal normal-case tracking-normal text-[#9b7352]">
+                  <div className="mt-1 text-[10px] sm:text-[11px] font-normal normal-case tracking-normal text-[#9b7352]">
                     {isVi ? 'Ghi chú' : 'Note'}: {line.note}
                   </div>
                 )}
@@ -664,51 +1246,61 @@ export function PaymentQrView({
             </div>
           );
         }) : (
-          <div className="py-3 text-center text-[11px] font-semibold tracking-wider uppercase text-[#9b7352]">
+          <div className="py-3 text-center text-[11px] sm:text-[12px] font-semibold tracking-wider uppercase text-[#9b7352]">
             {isVi ? 'KHÔNG CÓ CHI TIẾT ĐƠN HÀNG.' : 'ORDER DETAILS UNAVAILABLE.'}
           </div>
         )}
       </div>
 
       <div className="border-t-[1.5px] border-[#783820] pt-3">
-        <div className="ml-auto w-full max-w-64 space-y-1.5 font-semibold tracking-wider uppercase">
+        <div className="ml-auto w-full max-w-80 sm:max-w-96 space-y-1.5 sm:space-y-2 text-[12px] sm:text-[13px] lg:text-[14px] font-semibold tracking-wider uppercase">
           {total !== undefined && (
-            <div className="flex justify-between text-[10px]">
+            <div className="flex justify-between text-[10px] sm:text-[11px] lg:text-[12px]">
               <span>{isVi ? 'TẠM TÍNH' : 'SUBTOTAL'}</span>
-              <span className="tabular-nums">{money(total)}</span>
+              <span className="tabular-nums whitespace-nowrap">{money(total)}</span>
             </div>
           )}
-          <div className="flex justify-between text-[10px]">
+          <div className="flex justify-between text-[10px] sm:text-[11px] lg:text-[12px]">
             <span>{isVi ? 'PHÍ DỊCH VỤ (10%)' : 'SERVICE CHARGE (10%)'}</span>
-            <span className="tabular-nums">{money(0)}</span>
+            <span className="tabular-nums whitespace-nowrap">{money(0)}</span>
           </div>
-          <div className="flex justify-between border-t border-[#783820] pt-2 text-[14px] font-bold">
-            <span>{isVi ? 'TỔNG TIỀN THANH TOÁN' : 'TOTAL AMOUNT DUE'}</span>
-            <span className="text-[15px] font-extrabold tabular-nums">
+          <div className="flex items-baseline justify-between border-t border-[#783820] pt-2 text-[14px] sm:text-[16px] lg:text-[17px] font-bold">
+            <span className="whitespace-nowrap">{isVi ? 'TỔNG TIỀN THANH TOÁN' : 'TOTAL AMOUNT DUE'}</span>
+            <span className="text-[15px] sm:text-[17px] lg:text-[19px] font-extrabold tabular-nums whitespace-nowrap shrink-0 ml-4">
               {total !== undefined ? money(total) : '—'}
             </span>
           </div>
         </div>
 
-        <div className="mt-7 grid grid-cols-12 items-end gap-6">
-          <div className="col-span-7 space-y-1 text-[9.5px] font-medium tracking-wider uppercase leading-relaxed">
+        <div className="mt-5 sm:mt-6 grid grid-cols-12 items-end gap-6 sm:gap-8">
+          <div className="col-span-7 space-y-1 sm:space-y-1.5 text-[9.5px] sm:text-[11px] lg:text-[12px] font-medium tracking-wider uppercase leading-relaxed">
             <div>{isVi ? 'THẺ TÍN DỤNG & GHI NỢ: VISA, MASTERCARD, AMERICAN EXPRESS, NAPAS' : 'CREDIT & DEBIT CARDS: VISA, MASTERCARD, AMERICAN EXPRESS, NAPAS'}</div>
             <div className="pt-2">{isVi ? 'CHUYỂN KHOẢN:' : 'BANK TRANSFER:'}</div>
             <div>{isVi ? 'TÊN TÀI KHOẢN: CONG TY CO PHAN TREND COFFEE' : 'ACCOUNT NAME: CONG TY CO PHAN TREND COFFEE'}</div>
             <div>MB BANK: 9999.8888.68</div>
           </div>
-          <div className="col-span-5 flex justify-end">
-            {isImage ? (
-              <img
-                src={qr_code}
-                alt="Verified payment QR code"
-                className="h-36 w-36 object-contain mix-blend-multiply"
-              />
-            ) : (
-              <div className="max-w-36 border border-[#c4ab91] px-3 py-5 text-center text-[9px] font-semibold tracking-wider uppercase">
-                {isVi ? 'KHÔNG THỂ HIỂN THỊ MÃ QR XÁC THỰC.' : 'UNABLE TO DISPLAY A VERIFIED QR CODE.'}
+          <div className="col-span-5 flex flex-col items-end">
+            <div className="flex flex-col items-center gap-1">
+              <div
+                data-testid="payment-countdown"
+                className={`text-center text-[10px] sm:text-[11px] lg:text-[12px] font-bold tracking-wider uppercase ${expired ? 'text-[#9a2b12]' : 'whitespace-nowrap'}`}
+              >
+                {expired
+                  ? (isVi ? 'HẾT THỜI GIAN THANH TOÁN. VUI LÒNG NHỜ TRỢ LÝ HỖ TRỢ.' : 'PAYMENT TIME EXPIRED. PLEASE ASK THE ASSISTANT.')
+                  : `${isVi ? 'THỜI GIAN THANH TOÁN CÒN LẠI' : 'PAY WITHIN'}: ${remainingClock(deadline - now)}`}
               </div>
-            )}
+              {expired ? null : isImage ? (
+                <img
+                  src={qr_code}
+                  alt="Verified payment QR code"
+                  className="h-36 w-36 sm:h-44 sm:w-44 lg:h-52 lg:w-52 object-contain mix-blend-multiply"
+                />
+              ) : (
+                <div className="w-36 sm:w-44 lg:w-52 border border-[#c4ab91] px-3 py-5 text-center text-[9px] sm:text-[10px] lg:text-[11px] font-semibold tracking-wider uppercase">
+                  {isVi ? 'KHÔNG THỂ HIỂN THỊ MÃ QR XÁC THỰC.' : 'UNABLE TO DISPLAY A VERIFIED QR CODE.'}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -800,10 +1392,14 @@ export function CustomerDisplayPage({
 }: {
   uiLanguage?: UiLanguage;
 } = {}) {
-  const { language: storedLanguage } = useUiLanguage();
-  const uiLanguage = forcedLanguage ?? storedLanguage;
-  const isVi = uiLanguage === 'vi';
+  const { language: storedLanguage, setLanguage: setStoredLanguage } = useUiLanguage();
   const [searchParams] = useSearchParams();
+  const [urlLanguage, setUrlLanguage] = useState<UiLanguage | null>(() => {
+    const raw = searchParams.get('lang')?.trim().toLowerCase();
+    return raw === 'vi' || raw === 'en' ? (raw as UiLanguage) : null;
+  });
+  const uiLanguage = forcedLanguage ?? urlLanguage ?? storedLanguage;
+  const isVi = uiLanguage === 'vi';
   const sessionId = searchParams.get('session')?.trim() || undefined;
   const preview = searchParams.get('preview')?.trim();
   const [state, setState] = useState<CustomerDisplayState>(() => {
@@ -817,12 +1413,62 @@ export function CustomerDisplayPage({
       publishedCount: 0,
       preview: true,
     };
+    if (preview === 'cart') return {
+      view: 'cart',
+      lines: [
+        { line_id: 'line-demo-1', name: 'Tiramisu choco đá xay (tiêu chuẩn)', quantity: 1, unit_price: 65000, line_total: 65000 },
+      ],
+      total: 65000,
+      order_note: '',
+      order_type: 'at-table',
+      table: 'table-8',
+      table_name: '8',
+      pickup_minutes: 0,
+    };
     if (preview === 'waiting') return { view: 'waiting' };
     return waitingState;
   });
   const [menuSnapshot, setMenuSnapshot] = useState<MenuDisplayState | null>(null);
   const [cartSnapshot, setCartSnapshot] = useState<CartDisplayState | null>(null);
   const [manualTab, setManualTab] = useState<DockTab | null>(null);
+  const [selectedItem, setSelectedItem] = useState<CustomerMenuItem | null>(null);
+  const [menuSearch, setMenuSearch] = useState('');
+  const [touchBusy, setTouchBusy] = useState(false);
+  const [touchError, setTouchError] = useState<string | null>(null);
+  const [tables, setTables] = useState<TouchTable[] | null>(() =>
+    preview === 'cart'
+      ? Array.from({ length: 19 }, (_, i) => {
+          const num = i + 1;
+          const status = num <= 5 || num === 10 ? 'reserved' : 'available';
+          return { slug: `table-${num}`, name: `${num}`, status: status as 'reserved' | 'available' };
+        })
+      : null,
+  );
+
+  useEffect(() => {
+    let active = true;
+    const fetchLanguage = async () => {
+      try {
+        const res = await apiFetch('/api/kiosk/language');
+        if (res.ok) {
+          const payload = (await res.json()) as { language?: string };
+          if (active && (payload.language === 'en' || payload.language === 'vi')) {
+            const nextLang = payload.language as UiLanguage;
+            setUrlLanguage(null);
+            setStoredLanguage(nextLang);
+          }
+        }
+      } catch {
+        // Safe to ignore in test or offline environments
+      }
+    };
+    void fetchLanguage();
+    const interval = setInterval(fetchLanguage, 1500);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [setStoredLanguage]);
 
   useEffect(() => {
     if (preview === 'menu') {
@@ -836,10 +1482,34 @@ export function CustomerDisplayPage({
         publishedCount: 0,
         preview: true,
       });
+    } else if (preview === 'cart') {
+      setState({
+        view: 'cart',
+        lines: [
+          { line_id: 'line-demo-1', name: 'Tiramisu choco đá xay (tiêu chuẩn)', quantity: 1, unit_price: 65000, line_total: 65000 },
+        ],
+        total: 65000,
+        order_note: '',
+        order_type: 'at-table',
+        table: 'table-8',
+        table_name: '8',
+        pickup_minutes: 0,
+      });
+      setTables(
+        Array.from({ length: 19 }, (_, i) => {
+          const num = i + 1;
+          const status = num <= 5 || num === 10 ? 'reserved' : 'available';
+          return { slug: `table-${num}`, name: `${num}`, status: status as 'reserved' | 'available' };
+        }),
+      );
     } else {
       setState(waitingState);
     }
     setManualTab(null);
+    setSelectedItem(null);
+    setMenuSearch('');
+    if (preview !== 'cart') setTables(null);
+    setTouchError(null);
   }, [sessionId, preview]);
 
   useEffect(() => {
@@ -849,11 +1519,122 @@ export function CustomerDisplayPage({
 
   const handleEvent = useCallback((event: AgentEvent) => {
     if (!sessionId) return;
+    // "Add to cart" while browsing: only the dock badge (or an open receipt)
+    // changes; the screen, tab and any open product card stay put.
+    const savedCart = backgroundCart(event, sessionId);
+    if (savedCart) {
+      setCartSnapshot(savedCart);
+      setState((current) => reduceCustomerDisplay(current, event, sessionId));
+      return;
+    }
     setManualTab(null);
+    if (event.type === 'display_update' && event.data) {
+      const data = event.data as Record<string, unknown>;
+      if (data.ui_language === 'en' || data.ui_language === 'vi') {
+        const nextLang = data.ui_language as UiLanguage;
+        setUrlLanguage(null);
+        setStoredLanguage(nextLang);
+      }
+      if (data.presentation_session_id === sessionId && typeof data.view === 'string') {
+        // The product card belongs to the menu; any other screen replaces it.
+        if (data.view !== 'menu') setSelectedItem(null);
+        // Voice stays primary: a new spoken search (or the next customer)
+        // replaces whatever was typed, so the screen matches the agent again.
+        if (data.view === 'menu' || data.view === 'none') setMenuSearch('');
+        // A reset starts the next customer: forget the previous one's cart.
+        if (data.view === 'none') {
+          setMenuSnapshot(null);
+          setCartSnapshot(null);
+          setTables(null);
+        }
+        // Showing the payment QR settles the draft on the server.
+        if (data.view === 'payment_qr') setCartSnapshot(null);
+        setTouchError(null);
+      }
+    }
     setState((current) => reduceCustomerDisplay(current, event, sessionId));
-  }, [sessionId]);
+  }, [sessionId, setStoredLanguage]);
 
   useAgentEvents(undefined, handleEvent, ['display_update'], sessionId);
+
+  const closeProductCard = useCallback(() => setSelectedItem(null), []);
+
+  const applyCart = useCallback((cart: CartDisplayState) => {
+    setCartSnapshot(cart);
+    setState((current) => (current.view === 'cart' ? cart : current));
+  }, []);
+
+  const submitTouchOrder = useCallback(async (order: TouchCartOrder, intent: ProductCardIntent) => {
+    if (!sessionId) throw new Error('presentation_session_not_found');
+    applyCart(await editTouchCart(sessionId, { action: 'add', ...order }));
+    setSelectedItem(null);
+    if (intent === 'buy') setManualTab('cart');
+  }, [sessionId, applyCart]);
+
+  // One tap at a time: the receipt locks until the server answers.
+  const runTouch = useCallback(async (task: (session: string) => Promise<void>) => {
+    if (!sessionId) return;
+    setTouchBusy(true);
+    setTouchError(null);
+    try {
+      await task(sessionId);
+    } catch (error) {
+      setTouchError(error instanceof Error ? error.message : 'touch_unavailable');
+    } finally {
+      setTouchBusy(false);
+    }
+  }, [sessionId]);
+
+  const editCart = useCallback((edit: TouchCartEdit) => {
+    void runTouch(async (session) => applyCart(await editTouchCart(session, edit)));
+  }, [runTouch, applyCart]);
+
+  const refreshTables = useCallback(() => {
+    if (!sessionId || preview === 'cart') return;
+    fetchTouchTables(sessionId).then(setTables).catch(() => setTouchError('tables_unavailable'));
+  }, [sessionId, preview]);
+
+  const cartControls = useMemo<CartTouchControls>(() => ({
+    busy: touchBusy,
+    error: touchError,
+    tables,
+    onQuantity: (lineId, quantity) => editCart({ action: 'update', line_id: lineId, quantity }),
+    onRemove: (lineId) => editCart({ action: 'remove', line_id: lineId }),
+    onClear: () => editCart({ action: 'clear' }),
+    onOrderType: (orderType) => editCart({ action: 'set_order_type', order_type: orderType }),
+    onTable: (table) => editCart({ action: 'set_table', table }),
+    onRefreshTables: refreshTables,
+    onPickup: (minutes) => editCart({ action: 'set_pickup_time', pickup_minutes: minutes }),
+    onCheckout: () => {
+      void runTouch(async (session) => {
+        await checkoutTouchCart(session);
+        // The recipe has published the bill and QR; follow them.
+        setManualTab(null);
+      });
+    },
+  }), [touchBusy, touchError, tables, editCart, refreshTables, runTouch]);
+
+  // Poll the merchant like its own payment page does; the server shows the
+  // paid bill, which ends this polling.
+  const paymentOrder = state.view === 'payment_qr' ? state.order_id : null;
+  const paymentCreatedAt = state.view === 'payment_qr' ? state.created_at : undefined;
+  useEffect(() => {
+    if (!sessionId || !paymentOrder) return;
+    const deadline = paymentDeadline(paymentCreatedAt, Date.now());
+    const timer = setInterval(() => {
+      if (Date.now() >= deadline) {
+        clearInterval(timer);
+        return;
+      }
+      fetchTouchPaymentStatus(sessionId).catch(() => {});
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [sessionId, paymentOrder, paymentCreatedAt]);
+
+  const changeTab = useCallback((tab: DockTab) => {
+    setSelectedItem(null);
+    setManualTab(tab);
+  }, []);
 
   const activeTab = manualTab ?? dockTabForState(state);
   const visibleState = manualTab === 'menu' && menuSnapshot
@@ -862,6 +1643,26 @@ export function CustomerDisplayPage({
       ? (cartSnapshot ?? emptyCartState)
       : state;
   const cartLines = state.view === 'cart' ? state.lines : (cartSnapshot?.lines ?? []);
+  const tablesNeeded = visibleState.view === 'cart' && visibleState.order_type === 'at-table';
+
+  useEffect(() => {
+    if (tablesNeeded) refreshTables();
+  }, [tablesNeeded, refreshTables]);
+
+  // Tell the Voice agent which rows a typed search shows, so "the second one"
+  // means what the customer sees. Sent once typing pauses; [] when none shows.
+  const searchKey = visibleState.view === 'menu' && menuSearch.trim()
+    ? searchMenuItems(visibleState.menuItems, menuSearch).flatMap((item) => (item.id ? [item.id] : [])).join('\n')
+    : '';
+  const sharedSearchKey = useRef('');
+  useEffect(() => {
+    if (!sessionId || searchKey === sharedSearchKey.current) return;
+    const timer = setTimeout(() => {
+      sharedSearchKey.current = searchKey;
+      shareScreenSearch(sessionId, searchKey ? searchKey.split('\n') : []).catch(() => {});
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [sessionId, searchKey]);
 
   return (
     <div className="h-screen w-full bg-[#fae7cd] text-[#8c6239] font-['Josefin_Sans',sans-serif] flex flex-col justify-between overflow-x-hidden overflow-y-auto selection:bg-[#8c6239] selection:text-white">
@@ -891,6 +1692,9 @@ export function CustomerDisplayPage({
                   publishedCount={visibleState.publishedCount}
                   preview={visibleState.preview}
                   uiLanguage={uiLanguage}
+                  onSelectItem={(item) => setSelectedItem(menuItemDetails(item, visibleState.menuItems))}
+                  searchQuery={menuSearch}
+                  onSearchChange={sessionId ? setMenuSearch : undefined}
                 />
               </>
             )}
@@ -901,8 +1705,11 @@ export function CustomerDisplayPage({
                 total={visibleState.total}
                 order_note={visibleState.order_note}
                 order_type={visibleState.order_type}
+                table={visibleState.table}
                 table_name={visibleState.table_name}
+                pickup_minutes={visibleState.pickup_minutes}
                 uiLanguage={uiLanguage}
+                controls={sessionId ? cartControls : undefined}
               />
             )}
 
@@ -929,6 +1736,7 @@ export function CustomerDisplayPage({
                 table_name={visibleState.table_name}
                 lines={visibleState.lines}
                 uiLanguage={uiLanguage}
+                created_at={visibleState.created_at}
               />
             )}
 
@@ -949,10 +1757,20 @@ export function CustomerDisplayPage({
         </div>
       )}
 
+      {selectedItem && visibleState.view === 'menu' && (
+        <ProductCard
+          key={selectedItem.id ?? selectedItem.name}
+          item={selectedItem}
+          uiLanguage={uiLanguage}
+          onClose={closeProductCard}
+          onSubmit={submitTouchOrder}
+        />
+      )}
+
       <CustomerDock
         activeTab={activeTab}
         cartCount={cartQuantity(cartLines)}
-        onTabChange={setManualTab}
+        onTabChange={changeTab}
         uiLanguage={uiLanguage}
       />
 

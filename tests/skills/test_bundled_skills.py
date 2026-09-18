@@ -142,7 +142,9 @@ class _SequenceRecording(BaseTool):
         return self.results[len(self.calls) - 1]
 
 
-def _run_batch_add(menu_items: list[dict], requests: list[dict]):
+def _run_batch_add(
+    menu_items: list[dict], requests: list[dict], *, open_cart: bool | None = False
+):
     response = ToolResult(
         tool_name="http_request",
         content=json.dumps(
@@ -166,8 +168,11 @@ def _run_batch_add(menu_items: list[dict], requests: list[dict]):
     )
     events = []
     bus.subscribe("display_update", events.append)
+    choice = {} if open_cart is None else {"open_cart": open_cart}
     with conversation_scope("trendcoffee-batch-add"):
-        result = tool.execute(items=requests, customer_message="Đã thêm vào giỏ.")
+        result = tool.execute(
+            items=requests, customer_message="Đã thêm vào giỏ.", **choice
+        )
         snapshot = cart.current_snapshot()
     return tool, result, http, snapshot, events
 
@@ -210,7 +215,12 @@ def test_workspace_batch_add_reads_once_and_mutates_the_cart_once() -> None:
         ],
     )
 
-    assert set(tool.spec.parameters["properties"]) == {"items", "customer_message"}
+    assert set(tool.spec.parameters["properties"]) == {
+        "items",
+        "open_cart",
+        "customer_message",
+    }
+    assert "open_cart" in tool.spec.parameters["required"]
     assert result.success
     assert len(http.calls) == 1
     assert http.calls[0]["method"] == "GET"
@@ -223,6 +233,44 @@ def test_workspace_batch_add_reads_once_and_mutates_the_cart_once() -> None:
         ("coconut-standard", 2, "ít đá"),
     ]
     assert len(events) == 1
+
+
+@pytest.mark.parametrize(("open_cart", "navigate"), [(False, False), (True, True)])
+def test_workspace_batch_add_opens_the_cart_only_when_the_agent_says_so(
+    open_cart: bool, navigate: bool
+) -> None:
+    """Would fail if "add to cart" left the menu, or "buy now" stayed on it."""
+    menu_items = [
+        {
+            "product": {
+                "name": "Coca Cola",
+                "isActive": True,
+                "variants": [{"slug": "cola", "price": 25_000, "size": {"name": ""}}],
+            }
+        }
+    ]
+
+    _tool, result, _http, _snapshot, events = _run_batch_add(
+        menu_items,
+        [{"contains": "coca", "quantity": 1, "note": ""}],
+        open_cart=open_cart,
+    )
+
+    assert result.success
+    [event] = events
+    assert event.data.get("navigate", True) is navigate
+
+
+def test_workspace_batch_add_requires_the_agent_to_choose_the_screen() -> None:
+    """Would fail if a missing choice silently picked a screen for the customer."""
+    _tool, result, http, _snapshot, events = _run_batch_add(
+        [], [{"contains": "coca", "quantity": 1, "note": ""}], open_cart=None
+    )
+
+    assert result.success is False
+    assert result.content.startswith("invalid_skill_arguments")
+    assert http.calls == []
+    assert events == []
 
 
 def test_workspace_batch_add_rejects_an_ambiguous_match_before_cart_mutation() -> None:
@@ -302,6 +350,7 @@ def _run_checkout(
     fresh_table_status: str = "available",
     provider_name: str | None = "Merchant Coffee",
     provider_promotion: dict | None = None,
+    pickup_minutes: int | None = None,
 ):
     cart_line = {
         "variant_id": "coffee-standard",
@@ -377,6 +426,7 @@ def _run_checkout(
                 "result": {
                     "slug": "order-1",
                     "status": "pending",
+                    "createdAt": "Thu Sep 17 2026 19:00:00 GMT+0700 (Indochina Time)",
                     "subtotal": 200_000,
                     "type": response_type,
                     "description": requested_order_note,
@@ -437,6 +487,16 @@ def _run_checkout(
     with conversation_scope(
         f"checkout-{requested_type}-{requested_table}-{response_type}-{response_table}"
     ):
+        cart_source: dict = {"cart_lines": [cart_line]}
+        if pickup_minutes is not None:
+            # The saved-draft path: what a touch checkout or a voice revision uses.
+            for action, params in (
+                ("add", {"item": cart_line}),
+                ("set_pickup_time", {"pickup_minutes": pickup_minutes}),
+                ("set_order_note", {"order_note": requested_order_note}),
+            ):
+                assert cart.edit_without_display(action, params).success
+            cart_source = {"cart_revision": cart.current_snapshot()["revision"]}
         with agent_turn_scope() as nonce:
             result = tool.execute(
                 order_type=requested_type,
@@ -444,7 +504,7 @@ def _run_checkout(
                 table=requested_table,
                 customer_message="Payment ready",
                 turn_nonce=nonce,
-                cart_lines=[cart_line],
+                **cart_source,
             )
     return tool, result, http, bill, display
 
@@ -485,6 +545,7 @@ def test_workspace_checkout_sends_selected_at_table_type_and_slug() -> None:
     create_body = json.loads(http.calls[2]["body"])
     assert create_body["type"] == "at-table"
     assert create_body["table"] == "table-73"
+    assert create_body["timeLeftTakeOut"] == 0
     assert create_body["description"] == "Làm nhanh giúp mình"
     assert create_body["orderItems"] == [
         {
@@ -524,6 +585,7 @@ def test_workspace_checkout_sends_selected_at_table_type_and_slug() -> None:
             "table_name": "73",
             "lines": bill.calls[0]["lines"],
             "total": 200_000,
+            "created_at": "Thu Sep 17 2026 19:00:00 GMT+0700 (Indochina Time)",
             "customer_message": "Payment ready",
         }
     ]
@@ -584,17 +646,44 @@ def test_workspace_checkout_rejects_stale_or_unavailable_menu_before_order_write
     assert display.calls == []
 
 
-def test_workspace_checkout_rejects_unavailable_table_before_order_write() -> None:
+def test_workspace_checkout_accepts_a_reserved_table_like_the_merchant_site() -> None:
+    """Would fail if a confirmed shared table still blocked the order."""
     _tool, result, http, bill, display = _run_checkout(
         response_type="at-table",
         fresh_table_status="reserved",
     )
 
+    assert result.success is True
+    assert json.loads(http.calls[2]["body"])["table"] == "table-73"
+    assert len(display.calls) == 1
+
+
+def test_workspace_checkout_rejects_a_table_missing_from_the_fresh_read() -> None:
+    _tool, result, http, bill, display = _run_checkout(
+        response_type="at-table",
+        requested_table="table-404",
+        response_table="table-404",
+    )
+
     assert result.success is False
-    assert len(http.calls) == 2
     assert [call["method"] for call in http.calls] == ["GET", "GET"]
     assert bill.calls == []
     assert display.calls == []
+
+
+def test_workspace_take_out_checkout_sends_the_saved_pickup_time() -> None:
+    """Would fail if the customer's chosen pickup delay never reached the order."""
+    _tool, result, http, _bill, _display = _run_checkout(
+        response_type="take-out",
+        response_table=None,
+        requested_type="take-out",
+        requested_table="",
+        pickup_minutes=15,
+    )
+
+    assert result.success is True
+    create_body = json.loads(http.calls[2]["body"])
+    assert (create_body["type"], create_body["timeLeftTakeOut"]) == ("take-out", 15)
 
 
 def test_workspace_checkout_fails_closed_when_provider_receipt_is_incomplete() -> None:
@@ -722,11 +811,15 @@ _MENU_ENTRIES = [
         "product": {
             "name": "Bánh mì",
             "description": "Nhân KHOAI lang",
+            "image": "bánh mì.jpg",
             "catalog": {"name": "món bánh"},
             "isActive": True,
             "isTopSell": False,
             "isNew": True,
-            "variants": [{"slug": "v-bread", "price": 30000}],
+            "variants": [
+                {"slug": "v-bread", "price": 30000, "size": {"name": "tiêu chuẩn"}},
+                {"slug": "v-bread-l", "price": 36000, "size": {"name": "lớn"}},
+            ],
         }
     },
     {
@@ -1010,6 +1103,9 @@ def test_menu_recipe_binds_native_price_and_filters_text_locally() -> None:
                 "category": "món trà",
                 "is_top_sell": True,
                 "is_new": False,
+                "note": "",
+                "image_url": "",
+                "variants": [{"id": "v-taro", "size": "", "price": 45000}],
             },
             {
                 "id": "v-bread",
@@ -1019,6 +1115,14 @@ def test_menu_recipe_binds_native_price_and_filters_text_locally() -> None:
                 "category": "món bánh",
                 "is_top_sell": False,
                 "is_new": True,
+                "note": "Nhân KHOAI lang",
+                "image_url": (
+                    "https://trendcoffee.net/api/latest/file/b%C3%A1nh%20m%C3%AC.jpg"
+                ),
+                "variants": [
+                    {"id": "v-bread", "size": "tiêu chuẩn", "price": 30000},
+                    {"id": "v-bread-l", "size": "lớn", "price": 36000},
+                ],
             },
             {
                 "id": "v-coffee",
@@ -1028,6 +1132,9 @@ def test_menu_recipe_binds_native_price_and_filters_text_locally() -> None:
                 "category": "cà phê",
                 "is_top_sell": False,
                 "is_new": False,
+                "note": "",
+                "image_url": "",
+                "variants": [{"id": "v-coffee", "size": "", "price": 29000}],
             },
         ],
         "display_mode": "filtered",

@@ -1,14 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Mic, MicOff, ScreenShare, ScreenShareOff } from 'lucide-react';
+import { ScreenShare, ScreenShareOff } from 'lucide-react';
 import type { LocalVoiceStatus } from '@/hooks/voiceStatus';
 import type { ScreenShareStatus } from '@/hooks/useScreenShare';
 
 export interface ScreenShareDockProps {
   voiceStatus: LocalVoiceStatus;
-  isVoiceActive: boolean;
   shareStatus: ScreenShareStatus;
   isShareUnavailable?: boolean;
-  onToggleVoice: () => void;
   onToggleScreenShare: () => void;
   getFrequencyData?: () => Uint8Array;
   className?: string;
@@ -16,10 +14,10 @@ export interface ScreenShareDockProps {
 
 export function computeWaveformHeights(
   data: Uint8Array | undefined,
-  isSpeakingOrListening: boolean,
+  isSpeaking: boolean,
   prevHeights: [number, number, number] = [4, 8, 4],
 ): [number, number, number] {
-  if (!isSpeakingOrListening) {
+  if (!isSpeaking) {
     return [4, 8, 4];
   }
   if (!data || data.length === 0) {
@@ -60,16 +58,16 @@ export function computeWaveformHeights(
 
 export function useDockWaveform(
   getFrequencyData?: () => Uint8Array,
-  isSpeakingOrListening: boolean = false,
+  isSpeaking: boolean = false,
 ): [number, number, number] {
   const [heights, setHeights] = useState<[number, number, number]>(() =>
-    isSpeakingOrListening ? [8, 14, 8] : [4, 8, 4]
+    isSpeaking ? [8, 14, 8] : [4, 8, 4]
   );
   const heightsRef = useRef<[number, number, number]>(heights);
   heightsRef.current = heights;
 
   useEffect(() => {
-    if (!isSpeakingOrListening) {
+    if (!isSpeaking) {
       setHeights([4, 8, 4]);
       return;
     }
@@ -77,7 +75,7 @@ export function useDockWaveform(
     let animId: number;
     const tick = () => {
       const data = getFrequencyData ? getFrequencyData() : undefined;
-      const next = computeWaveformHeights(data, isSpeakingOrListening, heightsRef.current);
+      const next = computeWaveformHeights(data, isSpeaking, heightsRef.current);
       if (
         next[0] !== heightsRef.current[0] ||
         next[1] !== heightsRef.current[1] ||
@@ -92,24 +90,22 @@ export function useDockWaveform(
     return () => {
       if (animId) cancelAnimationFrame(animId);
     };
-  }, [getFrequencyData, isSpeakingOrListening]);
+  }, [getFrequencyData, isSpeaking]);
 
   return heights;
 }
 
 export function ScreenShareDock({
   voiceStatus,
-  isVoiceActive,
   shareStatus,
   isShareUnavailable = false,
-  onToggleVoice,
   onToggleScreenShare,
   getFrequencyData,
   className = '',
 }: ScreenShareDockProps) {
-  const isSpeakingOrListening = voiceStatus === 'listening' || voiceStatus === 'speaking';
+  const isAssistantSpeaking = voiceStatus === 'speaking';
   const isLive = shareStatus === 'live';
-  const heights = useDockWaveform(getFrequencyData, isSpeakingOrListening);
+  const heights = useDockWaveform(getFrequencyData, isAssistantSpeaking);
 
   return (
     <div
@@ -125,9 +121,9 @@ export function ScreenShareDock({
           boxShadow: '0 20px 40px -10px rgba(0,0,0,0.25)',
         }}
       >
-        {/* 1. Mic + Audio Waveform Pill */}
+        {/* 1. Assistant Audio Waveform */}
         <div
-          className="flex items-center gap-2 pl-3 pr-1 py-1 rounded-full transition-colors"
+          className="flex items-center px-3 py-1 rounded-full transition-colors"
           style={{
             background: 'var(--color-bg-secondary)',
           }}
@@ -141,7 +137,7 @@ export function ScreenShareDock({
             <span
               data-testid="dock-waveform-bar-0"
               className={`w-1 rounded-full transition-all duration-75 ${
-                isSpeakingOrListening
+                isAssistantSpeaking
                   ? 'bg-[var(--color-accent)]'
                   : 'bg-[var(--color-text-tertiary)]'
               }`}
@@ -150,7 +146,7 @@ export function ScreenShareDock({
             <span
               data-testid="dock-waveform-bar-1"
               className={`w-1 rounded-full transition-all duration-75 ${
-                isSpeakingOrListening
+                isAssistantSpeaking
                   ? 'bg-[var(--color-accent)]'
                   : 'bg-[var(--color-accent)]'
               }`}
@@ -159,7 +155,7 @@ export function ScreenShareDock({
             <span
               data-testid="dock-waveform-bar-2"
               className={`w-1 rounded-full transition-all duration-75 ${
-                isSpeakingOrListening
+                isAssistantSpeaking
                   ? 'bg-[var(--color-accent)]'
                   : 'bg-[var(--color-text-tertiary)]'
               }`}
@@ -167,23 +163,6 @@ export function ScreenShareDock({
             />
           </div>
 
-          {/* Mic action button */}
-          <button
-            type="button"
-            data-testid="dock-mic-btn"
-            onClick={onToggleVoice}
-            aria-pressed={isVoiceActive}
-            title={isVoiceActive ? 'Stop voice (Dừng hội thoại)' : 'Start voice (Bật hội thoại)'}
-            aria-label={isVoiceActive ? 'Stop voice' : 'Start voice'}
-            className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer transition-all duration-200 hover:scale-105 active:scale-95"
-            style={{
-              background: isVoiceActive ? 'var(--color-accent)' : 'var(--color-surface)',
-              color: isVoiceActive ? 'var(--color-text-inverse, #ffffff)' : 'var(--color-text)',
-              border: isVoiceActive ? 'none' : '1px solid var(--color-border)',
-            }}
-          >
-            {isVoiceActive ? <Mic size={15} /> : <MicOff size={15} />}
-          </button>
         </div>
 
         {/* 2. Screen Share Toggle Button */}

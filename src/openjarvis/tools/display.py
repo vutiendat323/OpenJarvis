@@ -43,6 +43,7 @@ _ITEM_FIELDS = (
     "category",
     "is_top_sell",
     "is_new",
+    "variants",
 )
 _LINE_FIELDS = (
     "line_id",
@@ -64,8 +65,11 @@ _PAYMENT_QR_FIELDS = (
     "table_name",
     "lines",
     "total",
+    "created_at",
 )
 _REQUIRED_PAYMENT_QR_FIELDS = ("order_id", "payment_slug", "status", "qr_code")
+# The merchant's own take-out choices; 0 means "immediately".
+_PICKUP_MINUTES = (0, 5, 10, 15, 30, 45, 60)
 
 
 class _DisplayTool(BaseTool):
@@ -105,6 +109,24 @@ def _picked(row: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     if not isinstance(row, dict):
         return {}
     return {key: row[key] for key in fields if key in row}
+
+
+def _menu_row(row: Any) -> dict[str, Any]:
+    item = _picked(row, _ITEM_FIELDS)
+    if "variants" not in item:
+        return item
+    variants = item.pop("variants")
+    if isinstance(variants, list):
+        item["variants"] = [
+            {"id": v["id"], "size": v.get("size", ""), "price": v["price"]}
+            for v in variants
+            if isinstance(v, dict)
+            and isinstance(v.get("id"), str)
+            and v["id"].strip()
+            and isinstance(v.get("size", ""), str)
+            and type(v.get("price")) is int
+        ]
+    return item
 
 
 def _menu_items_from_latest_http() -> list[dict[str, Any]]:
@@ -185,11 +207,23 @@ class DisplayMenuTool(_DisplayTool):
         self._displayed_lock = RLock()
 
     def agent_context(self) -> dict[str, Any]:
-        """Hand the verified on-screen rows to later turns without a tool round."""
+        """Hand the verified on-screen rows to later turns without a tool round.
+
+        A search the customer typed on the display travels under its own key:
+        those rows are on screen, but the agent never displayed them.
+        """
         conversation_id = current_conversation_id()
+        if not conversation_id:
+            return {}
+        context: dict[str, Any] = {}
         with self._displayed_lock:
-            rows = self._displayed.get(conversation_id) if conversation_id else None
-            return {"displayed_menu": [dict(row) for row in rows]} if rows else {}
+            rows = self._displayed.get(conversation_id)
+            if rows:
+                context["displayed_menu"] = [dict(row) for row in rows]
+        typed = self._presentation.screen_search() if self._presentation else []
+        if typed:
+            context["customer_screen_search"] = {"visible_items": typed}
+        return context
 
     @property
     def spec(self) -> ToolSpec:
@@ -244,12 +278,12 @@ class DisplayMenuTool(_DisplayTool):
         from_http = bool(params.get("all_from_latest_http")) and not rows
         if from_http:
             rows = _menu_items_from_latest_http()
-        items = [_picked(row, _ITEM_FIELDS) for row in rows]
+        items = [_menu_row(row) for row in rows]
         picked = [i for i in items if i]
         menu_rows = params.get("menu_items")
         if menu_rows is None:
             menu_rows = rows
-        menu_items = [_picked(row, _ITEM_FIELDS) for row in menu_rows]
+        menu_items = [_menu_row(row) for row in menu_rows]
         picked_menu = [item for item in menu_items if item]
         display_mode = params.get("display_mode", "filtered")
         if display_mode not in {"browse", "filtered"}:
@@ -346,6 +380,7 @@ class DisplayCartTool(_DisplayTool):
         self._order_types: dict[str, str] = {}
         self._tables: dict[str, str] = {}
         self._table_names: dict[str, str] = {}
+        self._pickup_minutes: dict[str, int] = {}
         self._cart_revisions: dict[str, int] = {}
         self._revision_sequence = 0
         self._checkout_claims: dict[str, int] = {}
@@ -384,8 +419,8 @@ class DisplayCartTool(_DisplayTool):
                 "absolute quantities/notes on several lines at once with update "
                 "and updates; every targeted line goes in this one atomic call "
                 "(line_id alone edits a single line). Save the whole-order "
-                "note, at-table/take-out choice, and a verified table selection "
-                "separately. Adding does not place "
+                "note, at-table/take-out choice, a verified table selection, and "
+                "a take-out pickup time separately. Adding does not place "
                 "an order or start payment. A view is fresh state for the agent to "
                 "act on, so it never ends the agent turn by itself. Resolve item "
                 "facts from fresh menu evidence; do not invent them."
@@ -402,6 +437,7 @@ class DisplayCartTool(_DisplayTool):
                             "set_order_note",
                             "set_order_type",
                             "set_table",
+                            "set_pickup_time",
                             "view",
                             "clear",
                         ],
@@ -431,6 +467,21 @@ class DisplayCartTool(_DisplayTool):
                     },
                     "table": {"type": "string"},
                     "table_name": {"type": "string"},
+                    "pickup_minutes": {
+                        "type": "integer",
+                        "enum": list(_PICKUP_MINUTES),
+                        "description": "Take-out pickup delay; 0 means immediately.",
+                    },
+                    "open_cart": {
+                        "type": "boolean",
+                        "description": (
+                            "Whether the customer's screen should switch to the "
+                            "cart. true when they want to review or pay for the "
+                            "cart now; false when they are still choosing, which "
+                            "saves the change and updates the cart badge while "
+                            "their current screen stays. view always opens it."
+                        ),
+                    },
                     "lines": {
                         "type": "array",
                         "description": "Legacy complete cart display payload.",
@@ -470,7 +521,13 @@ class DisplayCartTool(_DisplayTool):
             {"view": "cart", "lines": [line for line in lines if line], "total": total}
         )
 
-    def _manage_draft(self, action: str, params: dict[str, Any]) -> ToolResult:
+    def edit_without_display(self, action: str, params: dict[str, Any]) -> ToolResult:
+        """Apply a customer's touch edit while their current screen stays."""
+        return self._manage_draft(action, params, display=False)
+
+    def _manage_draft(
+        self, action: str, params: dict[str, Any], *, display: bool = True
+    ) -> ToolResult:
         conversation_id = current_conversation_id()
         if not conversation_id:
             return ToolResult(
@@ -485,6 +542,7 @@ class DisplayCartTool(_DisplayTool):
             "set_order_note",
             "set_order_type",
             "set_table",
+            "set_pickup_time",
             "view",
             "clear",
         }:
@@ -493,6 +551,15 @@ class DisplayCartTool(_DisplayTool):
                 content="invalid_cart_action",
                 success=False,
             )
+
+        open_cart = params.get("open_cart", True)
+        if not isinstance(open_cart, bool):
+            return ToolResult(
+                tool_name=self.spec.name,
+                content="invalid_open_cart",
+                success=False,
+            )
+        open_cart = open_cart or action == "view"
 
         with self._cart_lock:
             if action != "view" and conversation_id in self._checkout_pending:
@@ -507,10 +574,12 @@ class DisplayCartTool(_DisplayTool):
             stored_order_type = self._order_types.get(conversation_id, "")
             stored_table = self._tables.get(conversation_id, "")
             stored_table_name = self._table_names.get(conversation_id, "")
+            stored_pickup_minutes = self._pickup_minutes.get(conversation_id, 0)
             order_note = stored_order_note
             order_type = stored_order_type
             table = stored_table
             table_name = stored_table_name
+            pickup_minutes = stored_pickup_minutes
             if action == "add":
                 raw_items = params.get("items")
                 if raw_items is None:
@@ -657,6 +726,8 @@ class DisplayCartTool(_DisplayTool):
                 if order_type == "take-out":
                     table = ""
                     table_name = ""
+                else:
+                    pickup_minutes = 0
             elif action == "set_table":
                 value = params.get("table")
                 name = params.get("table_name")
@@ -674,28 +745,47 @@ class DisplayCartTool(_DisplayTool):
                 table = value.strip()
                 table_name = name.strip()
                 order_type = "at-table"
+                pickup_minutes = 0
+            elif action == "set_pickup_time":
+                value = params.get("pickup_minutes")
+                if type(value) is not int or value not in _PICKUP_MINUTES:
+                    return ToolResult(
+                        tool_name=self.spec.name,
+                        content="invalid_pickup_time",
+                        success=False,
+                    )
+                pickup_minutes = value
+                order_type = "take-out"
+                table = ""
+                table_name = ""
             elif action == "clear":
                 lines = []
                 order_note = ""
                 order_type = ""
                 table = ""
                 table_name = ""
+                pickup_minutes = 0
 
             total = sum(line["line_total"] for line in lines)
-            payload_lines = [_picked(line, _LINE_FIELDS) for line in lines]
-            published = self._publish(
-                {
-                    "view": "cart",
-                    "lines": payload_lines,
-                    "total": total,
-                    "order_note": order_note,
-                    "order_type": order_type,
-                    "table": table,
-                    "table_name": table_name,
-                }
-            )
-            if not published.success:
-                return published
+            metadata: dict[str, Any] = {}
+            if display:
+                published = self._publish(
+                    {
+                        "view": "cart",
+                        "lines": [_picked(line, _LINE_FIELDS) for line in lines],
+                        "total": total,
+                        "order_note": order_note,
+                        "order_type": order_type,
+                        "table": table,
+                        "table_name": table_name,
+                        "pickup_minutes": pickup_minutes,
+                        # Saved in the background: only the dock badge moves.
+                        **({} if open_cart else {"navigate": False}),
+                    }
+                )
+                if not published.success:
+                    return published
+                metadata = dict(published.metadata or {})
 
             self._carts[conversation_id] = lines
             self._carts.move_to_end(conversation_id)
@@ -703,6 +793,7 @@ class DisplayCartTool(_DisplayTool):
             self._order_types[conversation_id] = order_type
             self._tables[conversation_id] = table
             self._table_names[conversation_id] = table_name
+            self._pickup_minutes[conversation_id] = pickup_minutes
             revision = self._cart_revisions.get(conversation_id, 0)
             if (
                 lines != stored_lines
@@ -710,6 +801,7 @@ class DisplayCartTool(_DisplayTool):
                 or order_type != stored_order_type
                 or table != stored_table
                 or table_name != stored_table_name
+                or pickup_minutes != stored_pickup_minutes
             ):
                 self._revision_sequence += 1
                 revision = self._revision_sequence
@@ -723,6 +815,7 @@ class DisplayCartTool(_DisplayTool):
                 self._order_types.pop(stale_id, None)
                 self._tables.pop(stale_id, None)
                 self._table_names.pop(stale_id, None)
+                self._pickup_minutes.pop(stale_id, None)
 
             cart = {
                 "lines": lines,
@@ -731,13 +824,16 @@ class DisplayCartTool(_DisplayTool):
                 "order_type": order_type,
                 "table": table,
                 "table_name": table_name,
+                "pickup_minutes": pickup_minutes,
             }
-            metadata = dict(published.metadata or {})
             metadata["cart_revision"] = revision
             metadata["continue_agent"] = True
             return ToolResult(
                 tool_name=self.spec.name,
-                content=json.dumps({"cart": cart, "shown": "cart"}, ensure_ascii=False),
+                content=json.dumps(
+                    {"cart": cart, "shown": "cart" if open_cart else "cart_badge"},
+                    ensure_ascii=False,
+                ),
                 success=True,
                 metadata=metadata,
             )
@@ -757,6 +853,7 @@ class DisplayCartTool(_DisplayTool):
                 "order_type": self._order_types.get(conversation_id, ""),
                 "table": self._tables.get(conversation_id, ""),
                 "table_name": self._table_names.get(conversation_id, ""),
+                "pickup_minutes": self._pickup_minutes.get(conversation_id, 0),
             }
 
     def begin_checkout(
@@ -857,6 +954,8 @@ class DisplayCartTool(_DisplayTool):
                 self._order_notes[owner] = normalized_order_note or ""
                 self._tables[owner] = normalized_table or ""
                 self._table_names[owner] = ""
+                if normalized_order_type != "take-out":
+                    self._pickup_minutes[owner] = 0
                 snapshot = {
                     "revision": revision,
                     "lines": [dict(line) for line in normalized_lines],
@@ -865,6 +964,7 @@ class DisplayCartTool(_DisplayTool):
                     "order_type": self._order_types[owner],
                     "table": self._tables[owner],
                     "table_name": self._table_names[owner],
+                    "pickup_minutes": self._pickup_minutes.get(owner, 0),
                 }
             self._checkout_claims[owner] = revision
             self._checkout_pending.add(owner)
@@ -914,6 +1014,7 @@ class DisplayCartTool(_DisplayTool):
             self._order_types.pop(conversation_id, None)
             self._tables.pop(conversation_id, None)
             self._table_names.pop(conversation_id, None)
+            self._pickup_minutes.pop(conversation_id, None)
             return removed
 
     @staticmethod
@@ -1033,6 +1134,12 @@ class DisplayPaymentQrTool(_DisplayTool):
                     "total": {
                         "type": "integer",
                         "description": "Payment amount in VND.",
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "description": (
+                            "Merchant order creation time; starts the payment window."
+                        ),
                     },
                     "customer_message": {
                         "type": "string",

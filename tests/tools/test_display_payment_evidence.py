@@ -137,6 +137,7 @@ def test_verified_payment_settles_the_current_conversation_cart(display_availabl
         "order_type": "",
         "table": "",
         "table_name": "",
+        "pickup_minutes": 0,
     }
 
 

@@ -1028,6 +1028,7 @@ class TestSkillExecutor:
                 "order_type": "",
                 "table": "",
                 "table_name": "",
+                "pickup_minutes": 0,
             }
 
     def test_failed_response_assertion_stops_before_next_step(self):

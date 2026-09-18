@@ -1,5 +1,11 @@
 import type { AgentEvent } from '@/lib/useAgentEvents';
 
+export interface CustomerMenuVariant {
+  id: string;
+  size: string;
+  price: number;
+}
+
 export interface CustomerMenuItem {
   id?: string;
   name: string;
@@ -10,6 +16,7 @@ export interface CustomerMenuItem {
   category?: string;
   is_top_sell?: boolean;
   is_new?: boolean;
+  variants?: CustomerMenuVariant[];
 }
 
 export type CustomerMenuDisplayMode = 'browse' | 'filtered';
@@ -44,6 +51,7 @@ export type CustomerDisplayState =
       order_type: string;
       table: string;
       table_name: string;
+      pickup_minutes: number;
     }
   | {
       view: 'bill';
@@ -65,9 +73,19 @@ export type CustomerDisplayState =
       table_name?: string;
       lines?: CustomerDisplayLine[];
       total?: number;
+      created_at?: string;
     };
 
 export const waitingState: CustomerDisplayState = { view: 'waiting' };
+
+/** The merchant cancels an unpaid transfer fifteen minutes after ordering. */
+export const PAYMENT_WINDOW_MS = 15 * 60_000;
+
+/** When the payment QR stops being payable; `shownAt` covers an unreadable time. */
+export function paymentDeadline(createdAt: string | undefined, shownAt: number): number {
+  const created = createdAt ? Date.parse(createdAt) : Number.NaN;
+  return (Number.isFinite(created) ? created : shownAt) + PAYMENT_WINDOW_MS;
+}
 
 export function isSafeQrImageSource(value: string): boolean {
   if (value.startsWith('data:image/')) return true;
@@ -95,8 +113,21 @@ function optionalBoolean(row: Record<string, unknown>, field: string): boolean |
   return typeof row[field] === 'boolean' ? row[field] : undefined;
 }
 
+function pickVariants(value: unknown): CustomerMenuVariant[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.flatMap((row) => (
+    isRecord(row)
+    && typeof row.id === 'string'
+    && row.id.trim()
+    && optionalNumber(row, 'price') !== undefined
+      ? [{ id: row.id, size: optionalString(row, 'size') ?? '', price: row.price as number }]
+      : []
+  ));
+}
+
 function pickMenuItem(value: unknown): CustomerMenuItem | null {
   if (!isRecord(value) || typeof value.name !== 'string') return null;
+  const variants = pickVariants(value.variants);
   return {
     ...(optionalString(value, 'id') !== undefined ? { id: optionalString(value, 'id') } : {}),
     name: value.name,
@@ -107,7 +138,43 @@ function pickMenuItem(value: unknown): CustomerMenuItem | null {
     ...(optionalString(value, 'category') !== undefined ? { category: optionalString(value, 'category') } : {}),
     ...(optionalBoolean(value, 'is_top_sell') !== undefined ? { is_top_sell: optionalBoolean(value, 'is_top_sell') } : {}),
     ...(optionalBoolean(value, 'is_new') !== undefined ? { is_new: optionalBoolean(value, 'is_new') } : {}),
+    ...(variants !== undefined ? { variants } : {}),
   };
+}
+
+/** The orderable portions of a menu item, as the live menu published them. */
+export function menuItemPortions(item: CustomerMenuItem): CustomerMenuVariant[] {
+  if (item.variants?.length) return item.variants;
+  return item.id && item.price !== undefined ? [{ id: item.id, size: '', price: item.price }] : [];
+}
+
+/** Recommendations are slim rows; the catalog row carries photo and portions. */
+export function menuItemDetails(item: CustomerMenuItem, catalog: CustomerMenuItem[]): CustomerMenuItem {
+  return catalog.find((row) => item.id !== undefined && row.id === item.id) ?? item;
+}
+
+/** Lowercased words without Vietnamese accents, so "Cà Phê" and "ca phe" meet. */
+function searchWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/đ/g, 'd')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+}
+
+/**
+ * Items whose name, category or description has a word starting with every
+ * typed word, in live catalog order. Prefixes keep results useful mid-typing.
+ */
+export function searchMenuItems(items: CustomerMenuItem[], query: string): CustomerMenuItem[] {
+  const terms = searchWords(query);
+  if (terms.length === 0) return [];
+  return items.filter((item) => {
+    const words = searchWords([item.name, item.category ?? '', item.note ?? ''].join(' '));
+    return terms.every((term) => words.some((word) => word.startsWith(term)));
+  });
 }
 
 function pickLine(value: unknown): CustomerDisplayLine | null {
@@ -143,6 +210,31 @@ function matchingData(event: AgentEvent, sessionId: string): Record<string, unkn
     return null;
   }
   return event.data;
+}
+
+type CartState = Extract<CustomerDisplayState, { view: 'cart' }>;
+
+function pickCart(data: Record<string, unknown>): CartState | null {
+  const lines = pickRows(data.lines, pickLine);
+  const total = optionalNumber(data, 'total');
+  if (lines === null || total === undefined) return null;
+  return {
+    view: 'cart',
+    lines,
+    total,
+    order_note: optionalString(data, 'order_note') ?? '',
+    order_type: optionalString(data, 'order_type') ?? '',
+    table: optionalString(data, 'table') ?? '',
+    table_name: optionalString(data, 'table_name') ?? '',
+    pickup_minutes: optionalNumber(data, 'pickup_minutes') ?? 0,
+  };
+}
+
+/** A cart saved without navigating ("add to cart" while browsing), or null. */
+export function backgroundCart(event: AgentEvent, sessionId: string): CartState | null {
+  const data = matchingData(event, sessionId);
+  if (!data || data.view !== 'cart' || data.navigate !== false) return null;
+  return pickCart(data);
 }
 
 export function reduceCustomerDisplay(
@@ -182,19 +274,10 @@ export function reduceCustomerDisplay(
   }
 
   if (data.view === 'cart') {
-    const lines = pickRows(data.lines, pickLine);
-    const total = optionalNumber(data, 'total');
-    return lines === null || total === undefined
-      ? state
-      : {
-          view: 'cart',
-          lines,
-          total,
-          order_note: optionalString(data, 'order_note') ?? '',
-          order_type: optionalString(data, 'order_type') ?? '',
-          table: optionalString(data, 'table') ?? '',
-          table_name: optionalString(data, 'table_name') ?? '',
-        };
+    const cart = pickCart(data);
+    // A background save updates a receipt already on screen, never the screen.
+    if (cart === null || (data.navigate === false && state.view !== 'cart')) return state;
+    return cart;
   }
 
   if (data.view === 'bill') {
@@ -247,6 +330,7 @@ export function reduceCustomerDisplay(
         : {}),
       ...(lines !== undefined ? { lines } : {}),
       ...(incomingTotal !== undefined ? { total: incomingTotal } : {}),
+      ...(optionalString(data, 'created_at') ? { created_at: optionalString(data, 'created_at') } : {}),
     };
   }
 
