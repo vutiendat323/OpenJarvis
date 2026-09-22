@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { X, ScreenShare, ScreenShareOff } from 'lucide-react';
+import { X, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 
 import { AudioVisualizer } from '@/components/Visualizer/AudioVisualizer';
 import { VisualizerControls } from '@/components/Visualizer/VisualizerControls';
 import { FloatingCodexPet } from '@/components/Kiosk/Pet/FloatingCodexPet';
-import { ScreenShareView } from '@/components/Kiosk/ScreenShareView';
-import { ScreenShareHero } from '@/components/Kiosk/ScreenShareHero';
-import { ScreenShareDock } from '@/components/Kiosk/ScreenShareDock';
+import { SharedBrowserPane } from '@/components/Kiosk/SharedBrowserPane';
+import { VoiceWaveform } from '@/components/Kiosk/VoiceWaveform';
 import { currentVoiceTurnRows } from '@/components/Chat/voiceTurnRows';
 import { useKioskState, type KioskState } from '@/hooks/useKioskState';
 import { usePipecatVoiceMode } from '@/hooks/usePipecatVoiceMode';
-import { useScreenShare } from '@/hooks/useScreenShare';
+import { useSharedBrowser } from '@/hooks/useSharedBrowser';
 import { useUiLanguage, type UiLanguage } from '@/hooks/useUiLanguage';
 import { shouldShimmerVoiceStatus, voiceStatusLabel } from '@/hooks/voiceUiText';
 import { apiFetch } from '@/lib/api';
@@ -141,7 +140,7 @@ export function KioskPage() {
     [voice.status, settings.glow]
   );
   const { state: kioskState, micEnabled, respond } = useKioskState();
-  const share = useScreenShare();
+  const [voiceCollapsed, setVoiceCollapsed] = useState(false);
   const { language: uiLanguage, setLanguage: setUiLanguage } = useUiLanguage();
   const navigate = useNavigate();
   const createConversation = useAppStore((state) => state.createConversation);
@@ -176,14 +175,6 @@ export function KioskPage() {
     voiceOwnerRef.current = null;
     return presentationLifecycle.endVoiceThenReset(voice.end);
   }, [presentationLifecycle, voice.end]);
-
-  const toggleScreenShare = useCallback(() => {
-    if (share.status === 'live') {
-      share.stop();
-    } else {
-      void share.start().catch(() => {});
-    }
-  }, [share]);
 
   const ensurePresentation = useCallback(() => {
     void ensurePresentationSession(window.location.origin, uiLanguage).then((sessionId) => {
@@ -244,32 +235,12 @@ export function KioskPage() {
   const voiceStatusShimmers = shouldShimmerVoiceStatus(voice.status);
 
   return (
-    <div className="relative flex-1 h-full overflow-hidden select-none" style={{ background: 'var(--color-bg)', color: 'var(--color-text)' }}>
-      {share.status === 'live' && (
-        <ScreenShareView
-          stream={share.stream}
-          floating
-          initialPlacement={settings.style === 'screen' ? 'center' : 'top-right'}
-        />
-      )}
-
-      {settings.style === 'screen' && share.status !== 'live' && (
-        <ScreenShareHero
-          onStartScreenShare={share.start}
-          isShareUnavailable={share.unavailable}
-          uiLanguage={uiLanguage}
-        />
-      )}
-
-      {settings.style === 'screen' && (
-        <ScreenShareDock
-          voiceStatus={voice.status}
-          shareStatus={share.status}
-          isShareUnavailable={share.unavailable}
-          onToggleScreenShare={toggleScreenShare}
-          getFrequencyData={voice.getFrequencyData}
-        />
-      )}
+    <div data-testid="kiosk-shared-layout" className="flex h-full min-h-0 flex-1 flex-col overflow-hidden md:flex-row" style={{ background: 'var(--color-bg)', color: 'var(--color-text)' }}>
+      <aside aria-label="Voice assistant" className={`relative shrink-0 overflow-hidden border-b border-[var(--color-border)] md:border-r md:border-b-0 ${voiceCollapsed ? 'h-14 md:h-full md:w-14' : 'h-[35%] min-h-48 md:h-full md:w-[30%] md:min-w-72 md:max-w-md'}`}>
+      <button aria-label={voiceCollapsed ? 'Expand voice pane' : 'Collapse voice pane'} onClick={() => setVoiceCollapsed(!voiceCollapsed)} className="absolute top-4 left-4 z-40">
+        {voiceCollapsed ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
+      </button>
+      <div className={`relative h-full ${voiceCollapsed ? 'invisible' : ''}`}>
 
       {/* Center ambient glow - intensity dynamically tuned by settings.glow */}
       <div
@@ -294,9 +265,10 @@ export function KioskPage() {
         }}
       />
 
-      {settings.style === '3d' && (
-        <AudioVisualizer getFrequencyData={voice.getFrequencyData} settings={settings} />
-      )}
+      {settings.style === '3d' && !voiceCollapsed && <AudioVisualizer getFrequencyData={voice.getFrequencyData} settings={settings} />}
+      <div className="absolute inset-x-0 bottom-12 z-20">
+        <VoiceWaveform speaking={voice.status === 'speaking' && !voiceCollapsed} getFrequencyData={voice.getFrequencyData} />
+      </div>
       <VisualizerControls
         settings={settings}
         onSettingsChange={handleSettingsChange}
@@ -368,29 +340,6 @@ export function KioskPage() {
         <X size={20} />
       </button>
 
-      {!share.unavailable && settings.style !== 'screen' && (
-        <button
-          onClick={share.status === 'live' ? share.stop : share.start}
-          title={share.status === 'live' ? 'Stop sharing' : 'Share Screen'}
-          className="absolute top-4 left-4 z-30 h-9 px-3 rounded-full flex items-center gap-1.5 cursor-pointer transition-colors text-[12px] font-medium hover:bg-[var(--color-bg-secondary)]"
-          style={{
-            background: 'var(--color-surface)',
-            border: '1px solid var(--color-border)',
-            color: 'var(--color-text-secondary)',
-            boxShadow: 'var(--shadow-sm)',
-          }}
-        >
-          {share.status === 'live' ? <ScreenShareOff size={14} /> : <ScreenShare size={14} />}
-          {share.status === 'live' ? 'Stop sharing' : 'Share Screen'}
-        </button>
-      )}
-
-      {share.status === 'error' && share.error && (
-        <div className="absolute top-16 left-4 z-30 px-3 py-2 rounded-xl text-[12px] max-w-[70%]" style={{ background: 'rgba(255,80,80,.12)', border: '1px solid rgba(255,80,80,.3)', color: '#ffb4b4' }}>
-          {share.error}
-        </div>
-      )}
-
       {kioskState === 'active' && (
         <div
           className={`absolute inset-x-0 bottom-0 z-20 flex flex-col items-center gap-3 px-4 ${
@@ -399,7 +348,7 @@ export function KioskPage() {
         >
           {settings.showCaptions && (
             <div className="w-full max-w-2xl flex flex-col items-center gap-2 text-center">
-              {rows.filter((row) => row.role === 'user').map((row) => (
+              {rows.map((row) => (
                 <p
                   key={row.role}
                   className="text-[13px] leading-snug text-[var(--color-text-secondary)]"
@@ -425,6 +374,14 @@ export function KioskPage() {
           </div>
         </div>
       )}
+      </div>
+      </aside>
+      <KioskBrowser />
     </div>
   );
+}
+
+function KioskBrowser() {
+  const browser = useSharedBrowser();
+  return <SharedBrowserPane browser={browser} />;
 }

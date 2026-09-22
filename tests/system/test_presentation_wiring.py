@@ -69,6 +69,38 @@ def test_builder_injects_its_presentation_manager_into_display_tools() -> None:
     assert client.closed is True
 
 
+def test_builder_marks_presentation_as_shared_when_browser_bridge_is_supplied() -> None:
+    config = JarvisConfig()
+    config.telemetry.enabled = False
+    config.traces.enabled = False
+    config.skills.enabled = False
+    config.agent_manager.enabled = False
+    config.tools.mcp.enabled = True
+    config.tools.mcp.servers = json.dumps(
+        [{"name": "playwright", "url": "http://localhost:8080/mcp"}]
+    )
+    engine = MagicMock(spec=["health", "list_models", "close"])
+    engine.health.return_value = True
+    client = _FakePlaywrightClient()
+    bridge = object()
+    builder = SystemBuilder(config).engine_instance(engine).speech(False)
+
+    def discover(_server_config):
+        builder._mcp_clients.append(client)
+        return []
+
+    with (
+        patch.object(builder, "_discover_external_mcp", side_effect=discover),
+        patch.object(builder, "_resolve_memory", return_value=None),
+    ):
+        system = builder.shared_browser(bridge).build()
+
+    try:
+        assert system.presentation_session_manager._shared_page is True
+    finally:
+        system.close()
+
+
 def test_builder_wires_recipe_declared_initial_display_inputs() -> None:
     config = JarvisConfig()
     config.telemetry.enabled = False

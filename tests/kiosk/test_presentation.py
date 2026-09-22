@@ -82,6 +82,23 @@ def test_ensure_navigates_the_display_tab_without_creating_a_blank_tab(
     ]
 
 
+def test_shared_page_presentation_never_hijacks_external_navigation(bus) -> None:
+    client = _FakeMCPClient(server_name="playwright")
+    manager = PresentationSessionManager(bus, client, shared_page=True)
+    session = manager.ensure("http://127.0.0.1:5173")
+    assert client.calls == [("browser_navigate", {"url": session.display_url})]
+
+    client.calls.clear()
+    manager.ensure("http://127.0.0.1:5173")
+    manager.mark_display_disconnected(session.session_id)
+    manager.publish({"view": "cart", "items": [], "navigate": False})
+
+    assert client.calls == []
+
+    manager.publish({"view": "menu", "items": []})
+    assert client.calls == [("browser_navigate", {"url": session.display_url})]
+
+
 def test_initial_display_loads_once_and_cannot_overwrite_a_new_voice_turn(
     bus: EventBus,
 ) -> None:

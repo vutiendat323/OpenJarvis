@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -26,6 +27,39 @@ from openjarvis.intelligence import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TOOLS = frozenset({"think", "calculator", "web_search"})
+
+
+def _start_shared_browser_for_kiosk(config, profile_dir: Path):
+    """Start one page before Playwright MCP discovers its CDP endpoint."""
+    import json
+    import os
+
+    if os.environ.get("KIOSK_ENABLED", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return None, None
+    if not config.tools.mcp.enabled:
+        return None, None
+    servers = json.loads(config.tools.mcp.servers or "[]")
+    if not any(server.get("name") == "playwright" for server in servers):
+        return None, None
+
+    from openjarvis.kiosk.browser_bridge import BrowserBridge
+    from openjarvis.kiosk.shared_browser import (
+        SharedBrowserProcess,
+        attach_shared_cdp,
+    )
+
+    browser = SharedBrowserProcess(profile_dir)
+    endpoint = browser.start()
+    try:
+        attach_shared_cdp(config, endpoint)
+        return browser, BrowserBridge(endpoint)
+    except BaseException:
+        browser.close()
+        raise
 
 
 def _resolve_allowed_tools(config: object) -> tuple[set[str], bool]:
@@ -269,6 +303,14 @@ def serve(
     # scheduler_store.
     from openjarvis.system import SystemBuilder
 
+    shared_browser_process, shared_browser_bridge = _start_shared_browser_for_kiosk(
+        config, Path(".openjarvis/ordering-kiosk/shared-browser-profile")
+    )
+    if shared_browser_process is not None:
+        import atexit
+
+        atexit.register(shared_browser_process.close)
+
     agent_key = agent_name or config.server.agent
     builder = (
         SystemBuilder(config)
@@ -284,13 +326,20 @@ def serve(
     )
     if agent_key:
         builder = builder.agent(agent_key)
+    if shared_browser_bridge is not None:
+        builder = builder.shared_browser(shared_browser_bridge)
     # The builder resolves no tools at all when nothing is configured; the
     # server has always served a small default set instead.
     _allowed, _tools_configured = _resolve_allowed_tools(config)
     if not _tools_configured:
         builder = builder.tools(sorted(_allowed))
 
-    system = builder.build()
+    try:
+        system = builder.build()
+    except BaseException:
+        if shared_browser_process is not None:
+            shared_browser_process.close()
+        raise
 
     # From here on the system owns them.
     engine = system.engine
@@ -497,6 +546,7 @@ def serve(
         mcp_tools=system.mcp_tools,
         mcp_clients=system._mcp_clients,
         presentation_session_manager=system.presentation_session_manager,
+        shared_browser=shared_browser_bridge,
         trace_store=system.trace_store,
         api_key=api_key,
         webhook_config=webhook_config,
@@ -533,3 +583,5 @@ def serve(
         uvicorn.run(app, host=bind_host, port=bind_port, log_level="info")
     finally:
         system.close()
+        if shared_browser_process is not None:
+            shared_browser_process.close()

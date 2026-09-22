@@ -90,9 +90,18 @@ def find_playwright_client(clients: Iterable[Any]) -> Any | None:
 class PresentationSessionManager:
     """Own the primary customer-display tab and its automation companion."""
 
-    def __init__(self, bus: EventBus, client: Any | None) -> None:
+    def __init__(
+        self,
+        bus: EventBus,
+        client: Any | None,
+        *,
+        shared_page: bool = False,
+        current_page_url: Callable[[], str] | None = None,
+    ) -> None:
         self._bus = bus
         self._client = find_playwright_client([client]) if client is not None else None
+        self._shared_page = shared_page
+        self._current_page_url = current_page_url
         self._lock = RLock()
         self._session: PresentationSession | None = None
         self._active_generation: str | None = None
@@ -315,7 +324,17 @@ class PresentationSessionManager:
                     success=False,
                 )
             if not self._session.display_connected:
-                self.recover_display_tab()
+                if self._shared_page and payload.get("navigate") is not False:
+                    # An explicit display action returns the shared page to the
+                    # receipt/menu; passive ensure/recovery never changes it.
+                    if self._current_page_url is None or (
+                        self._current_page_url() != self._session.display_url
+                    ):
+                        self._call_tool(
+                            "browser_navigate", {"url": self._session.display_url}
+                        )
+                else:
+                    self.recover_display_tab()
             check_agent_cancelled()
             normalized = deepcopy(payload)
             normalized["presentation_session_id"] = self._session.session_id
@@ -410,6 +429,9 @@ class PresentationSessionManager:
     def recover_display_tab(self) -> bool:
         """Recreate a missing customer-display page without foregrounding it."""
         with self._lock:
+            if self._shared_page:
+                # The Human may have intentionally navigated elsewhere.
+                return False
             session = self._session
             if session is None:
                 return False

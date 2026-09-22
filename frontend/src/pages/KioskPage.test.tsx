@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { KioskPage, computeEdgeGlowShadow } from './KioskPage';
 import type { LocalVoiceStatus } from '@/hooks/voiceStatus';
-import type { ScreenShareStatus } from '@/hooks/useScreenShare';
 
 const storageMap = new Map<string, string>();
 let mockUiLanguage = 'vi';
@@ -19,14 +18,6 @@ let mockVoiceState = {
   end: vi.fn().mockResolvedValue(undefined),
 };
 
-let mockScreenShare = {
-  unavailable: false,
-  status: 'idle' as ScreenShareStatus,
-  stream: null as MediaStream | null,
-  error: null as string | null,
-  start: vi.fn().mockResolvedValue(undefined),
-  stop: vi.fn(),
-};
 
 const mockCreateConversation = vi.fn(() => 'thread-123');
 const mockAddMessage = vi.fn();
@@ -39,11 +30,6 @@ const mockLifecycle = {
   markActive: vi.fn(),
 };
 
-let latestDockProps: {
-  voiceStatus: LocalVoiceStatus;
-  shareStatus: ScreenShareStatus;
-  onToggleScreenShare: () => void;
-} | null = null;
 
 beforeEach(() => {
   storageMap.clear();
@@ -56,14 +42,6 @@ beforeEach(() => {
     length: storageMap.size,
   } as unknown as Storage;
 
-  mockScreenShare = {
-    unavailable: false,
-    status: 'idle',
-    stream: null,
-    error: null,
-    start: vi.fn().mockResolvedValue(undefined),
-    stop: vi.fn(),
-  };
 
   mockVoiceState = {
     enabled: true,
@@ -75,7 +53,6 @@ beforeEach(() => {
     end: vi.fn().mockResolvedValue(undefined),
   };
 
-  latestDockProps = null;
   mockCreateConversation.mockClear();
   mockLifecycle.markActive.mockClear();
   mockLifecycle.endVoiceThenReset.mockClear();
@@ -87,8 +64,8 @@ vi.mock('@/hooks/useKioskState', () => ({
 vi.mock('@/hooks/usePipecatVoiceMode', () => ({
   usePipecatVoiceMode: () => mockVoiceState,
 }));
-vi.mock('@/hooks/useScreenShare', () => ({
-  useScreenShare: () => mockScreenShare,
+vi.mock('@/hooks/useSharedBrowser', () => ({
+  useSharedBrowser: () => ({ status: 'connected', url: 'about:blank', send: vi.fn() }),
 }));
 vi.mock('@/hooks/useUiLanguage', () => ({
   useUiLanguage: () => ({ language: mockUiLanguage, setLanguage: (l: string) => { mockUiLanguage = l; } }),
@@ -118,47 +95,8 @@ vi.mock('@/components/Kiosk/Pet/FloatingCodexPet', () => ({
 }));
 vi.mock('@/components/Chat/voiceTurnRows', () => ({ currentVoiceTurnRows: () => [] }));
 
-vi.mock('@/components/Kiosk/ScreenShareHero', () => ({
-  ScreenShareHero: (props: {
-    onStartScreenShare: () => void;
-    isShareUnavailable?: boolean;
-    uiLanguage?: string;
-  }) => {
-    return (
-      <div data-testid="screen-share-hero" data-unavailable={String(props.isShareUnavailable)}>
-        <button data-testid="hero-share-btn" onClick={props.onStartScreenShare}>Share Screen</button>
-      </div>
-    );
-  },
-}));
-
-vi.mock('@/components/Kiosk/ScreenShareDock', () => ({
-  ScreenShareDock: (props: {
-    voiceStatus: LocalVoiceStatus;
-    shareStatus: ScreenShareStatus;
-    isShareUnavailable?: boolean;
-    onToggleScreenShare: () => void;
-  }) => {
-    latestDockProps = props;
-    return (
-      <div data-testid="screen-share-dock" data-unavailable={String(props.isShareUnavailable)}>
-        <button data-testid="dock-share-btn" onClick={props.onToggleScreenShare}>Share</button>
-      </div>
-    );
-  },
-}));
-
-vi.mock('@/components/Kiosk/ScreenShareView', () => ({
-  ScreenShareView: (props: {
-    floating?: boolean;
-    initialPlacement?: 'top-right' | 'center';
-  }) => (
-    <div
-      data-testid="mock-screen-share-view"
-      data-floating={props.floating ? 'true' : 'false'}
-      data-placement={props.initialPlacement}
-    />
-  ),
+vi.mock('@/components/Kiosk/SharedBrowserPane', () => ({
+  SharedBrowserPane: () => <section data-testid="shared-browser-pane" />,
 }));
 
 describe('KioskPage', () => {
@@ -267,100 +205,15 @@ describe('KioskPage', () => {
     localStorage.removeItem('openjarvis_visualizer_settings');
   });
 
-  describe('ScreenShare Hero and Dock integration', () => {
-    it('renders ScreenShareHero and ScreenShareDock when settings.style is screen and share is not live', () => {
-      mockScreenShare.status = 'idle';
-      const markup = renderToStaticMarkup(
-        <MemoryRouter>
-          <KioskPage />
-        </MemoryRouter>,
-      );
-
-      expect(markup).toContain('data-testid="screen-share-hero"');
-      expect(markup).toContain('data-testid="screen-share-dock"');
-      expect(markup).not.toContain('data-testid="mock-screen-share-view"');
-    });
-
-    it('hides top-left redundant screen share button when settings.style is screen', () => {
-      mockScreenShare.unavailable = false;
-      const markup = renderToStaticMarkup(
-        <MemoryRouter>
-          <KioskPage />
-        </MemoryRouter>,
-      );
-
-      expect(markup).not.toContain('title="Share Screen"');
-      expect(markup).not.toContain('title="Stop sharing"');
-    });
-
-    it('renders ScreenShareView and ScreenShareDock (but hides hero) when share.status is live', () => {
-      mockScreenShare.status = 'live';
-      const markup = renderToStaticMarkup(
-        <MemoryRouter>
-          <KioskPage />
-        </MemoryRouter>,
-      );
-
-      expect(markup).toContain('data-testid="mock-screen-share-view"');
-      expect(markup).toContain('data-placement="center"');
-      expect(markup).toContain('data-testid="screen-share-dock"');
-      expect(markup).not.toContain('data-testid="screen-share-hero"');
-    });
-
-    it('does not render ScreenShareHero or ScreenShareDock when settings.style is 3d', () => {
-      localStorage.setItem(
-        'openjarvis_kiosk_visualizer_settings',
-        JSON.stringify({ style: '3d' }),
-      );
-
-      const markup = renderToStaticMarkup(
-        <MemoryRouter>
-          <KioskPage />
-        </MemoryRouter>,
-      );
-
-      expect(markup).toContain('data-testid="mock-audio-visualizer"');
-      expect(markup).not.toContain('data-testid="screen-share-hero"');
-      expect(markup).not.toContain('data-testid="screen-share-dock"');
-      expect(markup).toContain('title="Share Screen"');
-    });
-
-    it('toggles screen share via ScreenShareDock', () => {
-      mockScreenShare.status = 'idle';
-      renderToStaticMarkup(
-        <MemoryRouter>
-          <KioskPage />
-        </MemoryRouter>,
-      );
-
-      expect(latestDockProps).not.toBeNull();
-      latestDockProps!.onToggleScreenShare();
-      expect(mockScreenShare.start).toHaveBeenCalledTimes(1);
-
-      // When live, toggle calls stop
-      mockScreenShare.status = 'live';
-      renderToStaticMarkup(
-        <MemoryRouter>
-          <KioskPage />
-        </MemoryRouter>,
-      );
-
-      latestDockProps!.onToggleScreenShare();
-      expect(mockScreenShare.stop).toHaveBeenCalledTimes(1);
-    });
-
-    it('propagates isShareUnavailable to ScreenShareHero and ScreenShareDock when screen share is unsupported', () => {
-      mockScreenShare.unavailable = true;
-      const markup = renderToStaticMarkup(
-        <MemoryRouter>
-          <KioskPage />
-        </MemoryRouter>,
-      );
-
-      expect(markup).toContain('data-testid="screen-share-hero" data-unavailable="true"');
-      expect(markup).toContain('data-testid="screen-share-dock" data-unavailable="true"');
-      mockScreenShare.unavailable = false;
-    });
+  it('renders a shared browser beside policy voice without screen capture controls', () => {
+    const markup = renderToStaticMarkup(<MemoryRouter><KioskPage /></MemoryRouter>);
+    expect(markup).toContain('data-testid="kiosk-shared-layout"');
+    expect(markup).toContain('data-testid="shared-browser-pane"');
+    expect(markup).toContain('aria-label="Voice assistant"');
+    expect(markup).toContain('Collapse voice pane');
+    expect(markup).not.toContain('Share Screen');
+    expect(markup).not.toContain('hero-talk-btn');
+    expect(markup).not.toContain('dock-mic-btn');
   });
 
   describe('computeEdgeGlowShadow', () => {

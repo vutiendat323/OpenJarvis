@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ScreenShare, AudioLines, Settings, X } from 'lucide-react';
+import { PanelsTopLeft, AudioLines, Settings, X } from 'lucide-react';
 import { VOICE_UI_TEXT } from '@/hooks/voiceUiText';
 import type { UiLanguage } from '@/hooks/useUiLanguage';
 import type { VisualizerSettings, VisualizerStyle, VisualizerTheme, VoiceStatus } from './types';
@@ -14,8 +14,8 @@ const THEMES: { key: VisualizerTheme; label: string; gradient: string }[] = [
   { key: 'sunset', label: 'Sunset', gradient: 'linear-gradient(135deg,#ff0844,#ffb199)' },
 ];
 
-const displayOptions: { value: VisualizerStyle; label: string; icon: typeof ScreenShare }[] = [
-  { value: 'screen', label: 'Screen Share', icon: ScreenShare },
+const displayOptions: { value: VisualizerStyle; label: string; icon: typeof PanelsTopLeft }[] = [
+  { value: 'screen', label: 'Compact', icon: PanelsTopLeft },
   { value: '3d', label: '3D Sphere', icon: AudioLines },
 ];
 
@@ -250,7 +250,7 @@ export function VisualizerControls({
           description={
             settings.style === '3d'
               ? '3D neon sphere reacts to audio'
-              : 'Center screen share display'
+              : 'Compact voice display beside the browser'
           }
         >
           <div className="flex gap-1 p-0.5 rounded-lg shrink-0" style={{ background: 'var(--color-bg-secondary)' }}>

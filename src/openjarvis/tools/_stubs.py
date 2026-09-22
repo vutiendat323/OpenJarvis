@@ -259,12 +259,16 @@ class ToolExecutor:
         # AgentExecutor's trace subscriber (which filters by agent_id) can
         # actually match this event — without it, every tool call is silently
         # dropped from traces.
+        observation_params = params
+        observation_filter = getattr(tool, "observation_arguments", None)
+        if callable(observation_filter):
+            observation_params = observation_filter(params)
         if self._bus:
             self._bus.publish(
                 EventType.TOOL_CALL_START,
                 {
                     "tool": tool_call.name,
-                    "arguments": params,
+                    "arguments": observation_params,
                     "agent": self._agent_id,
                     "invocation_id": invocation_id,
                     "tool_call_id": tool_call.id,
@@ -321,7 +325,7 @@ class ToolExecutor:
             )
         latency = time.time() - t0
         result.latency_seconds = latency
-        result.metadata["arguments"] = params
+        result.metadata["arguments"] = observation_params
 
         if result.success and isinstance(result.content, str):
             status = result.metadata.get("status_code")

@@ -86,7 +86,7 @@ describe('VisualizerControls', () => {
 
     // Setting rows in Visualizer & Display
     expect(markup).toContain('Display mode');
-    expect(markup).toContain('Screen Share');
+    expect(markup).toContain('Compact');
     expect(markup).toContain('3D Sphere');
     expect(markup).toContain('Theme');
     expect(markup).toContain('Size');

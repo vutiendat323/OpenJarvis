@@ -70,12 +70,10 @@ parallel_tools = true
 [tools]
 # The five display_* tools drive the React `/customer-display` route through
 # the WebSocket bridge and are unrelated to the Data Plane; they stay enabled.
-# The default kiosk Agent sees only the HTTP primitive, customer-display tools,
-# and skill replay. Playwright remains connected below for presentation and an
-# explicitly selected browser-agent discovery path, but its schemas do not tax
-# every ordinary kiosk inference. `repl` stays absent (ruling R9: in-process
-# object-graph escape on a public terminal).
-enabled = "http_request,skill_manage,display_menu,display_cart,display_bill,display_payment_qr,display_clear"
+# Shared browsing uses the existing Playwright MCP adapters on the same page.
+# Omit tab/close and redundant verification tools; snapshot supplies grounding.
+# `repl` stays absent (ruling R9: in-process object-graph escape).
+enabled = "http_request,skill_manage,display_menu,display_cart,display_bill,display_payment_qr,display_clear,browser_snapshot,browser_navigate,browser_navigate_back,browser_click,browser_type,browser_fill_form,browser_select_option,browser_hover,browser_press_key,browser_wait_for,browser_handle_dialog,browser_drag,browser_network_requests,browser_console_messages"
 # Draft editing, clearing, and guarded public HTTP reads remain interactive.
 # Terminal menu/payment display primitives execute inside prepared procedures.
 model_hidden = "display_menu,display_bill,display_payment_qr"
@@ -207,4 +205,4 @@ custom_vocabulary = [
 
 [tools.mcp]
 enabled = true
-servers = '''[{"name": "playwright", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.79", "--browser", "chromium", "--user-data-dir", ".openjarvis/ordering-kiosk/browser-profile", "--sandbox", "--caps=testing", "--snapshot-mode", "none"], "include_tools": ["browser_snapshot", "browser_find", "browser_navigate", "browser_navigate_back", "browser_tabs", "browser_click", "browser_type", "browser_fill_form", "browser_select_option", "browser_hover", "browser_press_key", "browser_wait_for", "browser_handle_dialog", "browser_drag", "browser_drop", "browser_resize", "browser_close", "browser_network_requests", "browser_verify_element_visible", "browser_verify_text_visible", "browser_verify_value", "browser_verify_list_visible"]}]'''
+servers = '''[{"name": "playwright", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.79", "--browser", "chromium", "--user-data-dir", ".openjarvis/ordering-kiosk/browser-profile", "--sandbox", "--caps=testing", "--snapshot-mode", "none"], "include_tools": ["browser_snapshot", "browser_find", "browser_navigate", "browser_navigate_back", "browser_click", "browser_type", "browser_fill_form", "browser_select_option", "browser_hover", "browser_press_key", "browser_wait_for", "browser_handle_dialog", "browser_drag", "browser_drop", "browser_resize", "browser_network_requests", "browser_console_messages", "browser_verify_element_visible", "browser_verify_text_visible", "browser_verify_value", "browser_verify_list_visible"]}]'''

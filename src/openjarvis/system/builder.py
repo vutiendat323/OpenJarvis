@@ -51,6 +51,12 @@ class SystemBuilder:
         self._speech: Optional[bool] = None
         self._mcp_clients: List = []
         self._mcp_tools: List[BaseTool] = []
+        self._shared_browser = None
+
+    def shared_browser(self, bridge: Any) -> SystemBuilder:
+        """Use one server-owned browser page for kiosk presentation."""
+        self._shared_browser = bridge
+        return self
 
     def engine(self, key: str) -> SystemBuilder:
         self._engine_key = key
@@ -226,9 +232,21 @@ class SystemBuilder:
         presentation = PresentationSessionManager(
             bus,
             find_playwright_client(self._mcp_clients),
+            shared_page=self._shared_browser is not None,
+            current_page_url=(
+                (lambda bridge=self._shared_browser: bridge.state().get("url", ""))
+                if self._shared_browser is not None
+                else None
+            ),
         )
         for tool in tool_list:
             self._inject_display_presentation(tool, presentation)
+            if self._shared_browser is not None and tool.spec.name.startswith(
+                "browser_"
+            ):
+                bind = getattr(tool, "bind_shared_browser", None)
+                if callable(bind):
+                    bind(self._shared_browser)
         self._inject_draft_cart_settler(tool_list)
         # The policy has to travel with the executor: ToolExecutor.execute()
         # consults it before dispatch, and a None policy silently disables the

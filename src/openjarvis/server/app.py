@@ -247,6 +247,7 @@ def create_app(
     mcp_tools=None,
     mcp_clients=None,
     presentation_session_manager=None,
+    shared_browser=None,
     trace_store=None,
     api_key: str = "",
     bind_host: str | None = None,
@@ -369,6 +370,7 @@ def create_app(
     app.state._mcp_clients_lock = threading.Lock()
     app.state._mcp_clients = list(mcp_clients or [])
     app.state.presentation_session_manager = presentation_session_manager
+    app.state.shared_browser = shared_browser
     app.state._managed_worker_lock = threading.Lock()
     app.state._managed_workers: set[threading.Thread] = set()
     app.state._managed_runtime_stopping = False
@@ -563,6 +565,18 @@ def create_app(
     # --- Kiosk subsystem (proximity-aware voice kiosk) ---
     if os.environ.get("KIOSK_ENABLED", "").strip() in ("1", "true", "yes"):
         _setup_kiosk(app, bus, channel_bridge)
+    if shared_browser is not None:
+        from openjarvis.kiosk.browser_routes import create_browser_router
+
+        app.include_router(create_browser_router(shared_browser))
+
+        @app.on_event("startup")
+        async def _start_shared_browser() -> None:
+            await shared_browser.connect()
+
+        @app.on_event("shutdown")
+        async def _stop_shared_browser() -> None:
+            await shared_browser.close()
 
     app.include_router(research_router)
     app.include_router(analytics_router)
