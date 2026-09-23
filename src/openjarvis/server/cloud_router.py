@@ -172,6 +172,11 @@ async def _stream_openai(
         "max_tokens": max_tokens,
         "stream": True,
     }
+    if model in ("gpt-6-luna", "openai/gpt-6-luna"):
+        payload.pop("temperature")
+        payload.pop("max_tokens")
+        payload["max_completion_tokens"] = max_tokens
+        payload["reasoning_effort"] = "none"
 
     async with httpx.AsyncClient(timeout=180) as client:
         async with client.stream(

@@ -33,16 +33,23 @@ afterEach(() => {
 });
 
 describe('setModels', () => {
-  it('retains the selected Luna model after reloading the store', async () => {
+  it('migrates a saved direct OpenAI Luna selection to GPT-6', async () => {
+    localStorage.setItem('openjarvis-selected-model', 'gpt-5.6-luna');
     const { useAppStore } = await import('./store');
-    useAppStore.getState().setSelectedModel('gpt-5.6-luna');
+    expect(useAppStore.getState().selectedModel).toBe('gpt-6-luna');
+    expect(localStorage.getItem('openjarvis-selected-model')).toBe('gpt-6-luna');
+  });
+
+  it('retains the selected GPT-6 Luna model after reloading the store', async () => {
+    const { useAppStore } = await import('./store');
+    useAppStore.getState().setSelectedModel('gpt-6-luna');
     vi.resetModules();
     const { useAppStore: reloaded } = await import('./store');
-    expect(reloaded.getState().selectedModel).toBe('gpt-5.6-luna');
+    expect(reloaded.getState().selectedModel).toBe('gpt-6-luna');
     // /v1/models can list only the installed engine's models; Cloud Models
     // is a separate picker and Luna need not be in that response.
     reloaded.getState().setModels([model('other-model')]);
-    expect(reloaded.getState().selectedModel).toBe('gpt-5.6-luna');
+    expect(reloaded.getState().selectedModel).toBe('gpt-6-luna');
   });
 
   it('does not replace the bound model during an active Voice session', async () => {

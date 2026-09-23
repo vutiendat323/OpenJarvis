@@ -36,6 +36,17 @@ export interface AgentEvent {
 const CONVERSATIONS_KEY = 'openjarvis-conversations';
 const SETTINGS_KEY = 'openjarvis-settings';
 const SELECTED_MODEL_KEY = 'openjarvis-selected-model';
+
+function loadSelectedModel(): string {
+  const selected = localStorage.getItem(SELECTED_MODEL_KEY) || '';
+  if (selected !== 'gpt-5.6-luna') return selected;
+  try {
+    localStorage.setItem(SELECTED_MODEL_KEY, 'gpt-6-luna');
+  } catch {
+    // Keep the upgraded selection usable even if storage is read-only.
+  }
+  return 'gpt-6-luna';
+}
 const OPTIN_KEY = 'openjarvis-optin';
 const OPTIN_NAME_KEY = 'openjarvis-display-name';
 const OPTIN_EMAIL_KEY = 'openjarvis-email';
@@ -285,7 +296,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
     models: [],
     modelsLoading: true,
-    selectedModel: localStorage.getItem(SELECTED_MODEL_KEY) || '',
+    selectedModel: loadSelectedModel(),
     voiceSessionActive: false,
     serverInfo: null,
     savings: null,

@@ -21,6 +21,9 @@ from openjarvis.engine.cloud import (
 
 
 class TestEstimateCost:
+    def test_gpt_6_luna_pricing(self) -> None:
+        assert estimate_cost("gpt-6-luna", 1_000_000, 1_000_000) == pytest.approx(0.60)
+
     def test_known_model(self) -> None:
         cost = estimate_cost("gpt-4o", 1_000_000, 1_000_000)
         assert cost == pytest.approx(12.50)  # 2.50 + 10.00
@@ -89,8 +92,9 @@ class TestCloudEngineGenerate:
         assert result["content"] == "Hello!"
         assert result["usage"]["prompt_tokens"] == 10
 
-    def test_gpt_5_6_tool_calls_use_responses_with_high_reasoning(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-6-luna"])
+    def test_luna_tool_calls_use_responses_with_high_reasoning(
+        self, monkeypatch: pytest.MonkeyPatch, model: str
     ) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         fake_client = mock.MagicMock()
@@ -124,7 +128,7 @@ class TestCloudEngineGenerate:
                 output_tokens=5,
                 total_tokens=15,
             ),
-            model="gpt-5.6-luna",
+            model=model,
             status="completed",
         )
         engine = CloudEngine()
@@ -132,7 +136,7 @@ class TestCloudEngineGenerate:
 
         engine.generate(
             [Message(role=Role.USER, content="Hi")],
-            model="gpt-5.6-luna",
+            model=model,
             tools=[{"type": "function", "function": {"name": "lookup"}}],
             reasoning_effort="none",
         )
@@ -151,6 +155,52 @@ class TestCloudEngineGenerate:
             }
         ]
         assert sent["store"] is False
+
+    @pytest.mark.asyncio
+    async def test_gpt_6_tool_stream_uses_supported_chat_mode(self) -> None:
+        async def chunks():
+            yield SimpleNamespace(choices=[])
+
+        client = mock.MagicMock()
+        client.chat.completions.create = mock.AsyncMock(return_value=chunks())
+        engine = CloudEngine()
+        engine._openai_async_client = client
+
+        _ = [
+            chunk
+            async for chunk in engine.stream_full(
+                [Message(role=Role.USER, content="Hi")],
+                model="gpt-6-luna",
+                tools=[{"type": "function", "function": {"name": "lookup"}}],
+            )
+        ]
+
+        sent = client.chat.completions.create.call_args.kwargs
+        assert sent["reasoning_effort"] == "none"
+        assert "temperature" not in sent
+        assert sent["max_completion_tokens"] == 1024
+        assert sent["tools"][0]["function"]["name"] == "lookup"
+
+    @pytest.mark.asyncio
+    async def test_gpt_6_text_stream_uses_supported_chat_mode(self) -> None:
+        client = mock.MagicMock()
+        client.chat.completions.create.return_value = iter(
+            [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="OK"))])]
+        )
+        engine = CloudEngine()
+        engine._openai_client = client
+
+        tokens = [
+            token
+            async for token in engine.stream(
+                [Message(role=Role.USER, content="Hi")], model="gpt-6-luna"
+            )
+        ]
+
+        assert tokens == ["OK"]
+        sent = client.chat.completions.create.call_args.kwargs
+        assert sent["reasoning_effort"] == "none"
+        assert "temperature" not in sent
 
     def test_gpt_5_6_replays_response_items_and_tool_output(
         self, monkeypatch: pytest.MonkeyPatch

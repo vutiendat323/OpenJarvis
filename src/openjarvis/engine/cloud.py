@@ -36,6 +36,7 @@ PRICING: Dict[str, tuple[float, float]] = {
     "gpt-5.4": (15.00, 60.00),
     "gpt-5-mini": (0.25, 2.00),
     "gpt-5.6-luna": (0.20, 1.20),
+    "gpt-6-luna": (0.10, 0.50),
     "o3-mini": (1.10, 4.40),
     "claude-sonnet-4-20250514": (3.00, 15.00),
     "claude-opus-4-20250514": (15.00, 75.00),
@@ -67,6 +68,7 @@ _OPENAI_MODELS = [
     "gpt-5.4",
     "gpt-5-mini",
     "gpt-5.6-luna",
+    "gpt-6-luna",
     "o3-mini",
 ]
 _ANTHROPIC_MODELS = [
@@ -178,15 +180,15 @@ def _is_openai_model(model: str) -> bool:
 def _is_openai_reasoning_model(model: str) -> bool:
     """Check if model is an OpenAI reasoning model that restricts temperature."""
     m = model.lower()
-    # o1/o3 series and gpt-5-mini (all variants) are reasoning models
+    # o1/o3, gpt-5-mini, and GPT-6 Luna restrict temperature.
     if m.startswith(("o1", "o3")):
         return True
-    return m == "gpt-5-mini" or m.startswith("gpt-5-mini-")
+    return m == "gpt-5-mini" or m.startswith("gpt-5-mini-") or m == "gpt-6-luna"
 
 
 def _uses_openai_responses(model: str) -> bool:
     """Return whether this OpenAI model requires the Responses API here."""
-    return model.lower().startswith("gpt-5.6-")
+    return model.lower().startswith("gpt-5.6-") or model.lower() == "gpt-6-luna"
 
 
 def _is_unsupported_temperature_error(exc: Exception) -> bool:
@@ -1465,6 +1467,8 @@ class CloudEngine(InferenceEngine):
         }
         if not _is_openai_reasoning_model(model):
             create_kwargs["temperature"] = temperature
+        if model.lower() == "gpt-6-luna":
+            create_kwargs["reasoning_effort"] = "none"
         resp = self._openai_client.chat.completions.create(**create_kwargs)
         for chunk in resp:
             delta = chunk.choices[0].delta if chunk.choices else None
@@ -1854,6 +1858,8 @@ class CloudEngine(InferenceEngine):
             }
             if not _is_openai_reasoning_model(model):
                 create_kwargs["temperature"] = temperature
+            if model.lower() == "gpt-6-luna":
+                create_kwargs["reasoning_effort"] = "none"
         resp = await client.chat.completions.create(**create_kwargs)
         try:
             async for chunk in resp:
