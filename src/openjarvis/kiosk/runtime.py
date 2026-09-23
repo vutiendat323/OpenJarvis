@@ -202,4 +202,7 @@ def _dict_to_vision_event(d: dict):
     ts = d.get("ts", time.time())
     nearest_m = d.get("nearest_m", 0.0)
     track_id = d.get("track_id", -1)
-    return VisionEvent(kind=kind, ts=ts, nearest_m=nearest_m, track_id=track_id)
+    return VisionEvent(
+        kind=kind, ts=ts, nearest_m=nearest_m, track_id=track_id,
+        body_m=d.get("body_m", -1.0), facing=d.get("facing", False),
+    )

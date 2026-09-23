@@ -13,14 +13,21 @@ class VisionEvent:
     Attributes:
         kind: One of no_person, person_unknown, person_near.
         ts: Unix timestamp from the vision server.
-        nearest_m: Distance in meters of the nearest person (0.0 when unknown/absent).
+        nearest_m: Distance in meters of the nearest *face* (0.0 when unknown/absent).
         track_id: Track ID of the nearest person (-1 when absent).
+        body_m: Distance in meters to the nearest *body* (YOLO + Metric3D), -1.0
+            when none is seen. A customer who turns away keeps a body_m while
+            nearest_m disappears, which is how "looked away" is told apart from
+            "walked off".
+        facing: True while a face is being measured.
     """
 
     kind: Literal["no_person", "person_unknown", "person_near"]
     ts: float
     nearest_m: float
     track_id: int
+    body_m: float = -1.0
+    facing: bool = False
 
 
 @dataclass

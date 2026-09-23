@@ -95,7 +95,8 @@ def _evaluate_approaching(
 
     last = history.last_event()
 
-    # Check if person is absent (no_person, far >1m, or depth unknown)
+    # Approaching still watches the face only: a back turned to the kiosk
+    # should not hold the machine in "approaching" forever.
     is_absent = (
         last is None
         or last.kind == "no_person"
@@ -140,12 +141,7 @@ def _evaluate_prompting(
 
     # Person absent: no_person, far away (>1m), or depth lost
     last = history.last_event()
-    is_absent = (
-        last is None
-        or last.kind == "no_person"
-        or last.kind == "person_unknown"
-        or (last.kind == "person_near" and last.nearest_m >= _CFG.approach_threshold_m)
-    )
+    is_absent = not _in_zone(last)
     if is_absent:
         absent = _consecutive_absent_duration(history, now)
         if absent >= _CFG.leave_sustain_seconds_prompting:
@@ -154,15 +150,30 @@ def _evaluate_prompting(
     return ("prompting", [])
 
 
+def _in_zone(event) -> bool:
+    """Is the customer still standing here, face visible or not?
+
+    A face turned away used to read as "gone", and the session ended while the
+    customer was still at the kiosk talking to a friend. The body distance
+    (YOLO + Metric3D) answers presence; the face still answers engagement, so
+    greeting is unaffected.
+    """
+    if event is None:
+        return False
+    if event.kind == "person_near" and event.nearest_m < _CFG.approach_threshold_m:
+        return True
+    return 0 < event.body_m < _CFG.approach_threshold_m
+
+
 def _consecutive_absent_duration(history: EventHistory, now: float) -> float:
-    """How long has the person been absent (no_person, far, or unknown)?"""
+    """How long has the customer been away (no face and no body in the zone)?"""
     events = history.events_in_window(60.0, now)
     if not events:
         return 0.0
     # Walk backward: find the most recent "present" event
     last_present_ts = None
     for e in reversed(events):
-        if e.kind == "person_near" and e.nearest_m < _CFG.approach_threshold_m:
+        if _in_zone(e):
             last_present_ts = e.ts
             break
     if last_present_ts is None:
@@ -191,14 +202,9 @@ def _evaluate_active(
         if elapsed >= _CFG.session_warning_seconds:
             effects.append(SideEffect("tts_warning"))
 
-    # Leave detection: absent = no_person, far (>1m), or depth unknown
+    # Leave detection: no face in the zone and no body either
     last = history.last_event()
-    is_absent = (
-        last is None
-        or last.kind == "no_person"
-        or last.kind == "person_unknown"
-        or (last.kind == "person_near" and last.nearest_m >= _CFG.approach_threshold_m)
-    )
+    is_absent = not _in_zone(last)
     if is_absent:
         absent = _consecutive_absent_duration(history, now)
         if absent >= _CFG.leave_sustain_seconds_active:
