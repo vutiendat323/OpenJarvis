@@ -48,7 +48,7 @@ ARTIFACT_DIR="${OPENJARVIS_LOCAL_TTS_ARTIFACT_DIR:-$HOME/.cache/openjarvis/viene
 # it gives the Agent the http_request + display_* tools the /kiosk route
 # drives. The browser-agent config is still one env var away.
 MCP_CONFIG="${OPENJARVIS_CONFIG:-configs/openjarvis/examples/ordering-kiosk-mcp.toml}"
-MODEL="${OPENJARVIS_MODEL:-gpt-5.6-luna}"
+MODEL="${OPENJARVIS_MODEL:-openrouter/openai/gpt-5.6-luna}"
 # VieNeu ONNX thread pools.  More threads buy no audible speed here: measured
 # on this box (i7-11800H, otherwise idle) across four utterance lengths,
 # 1 thread renders at RTF 0.34 on 2.99 cores while 4 threads render at RTF
@@ -129,6 +129,49 @@ stop_stack() {
         log_info "Reaping orphaned Playwright MCP processes..."
         pkill -9 -f "@playwright/mcp" 2>/dev/null || true
         pkill -9 -f "playwright-mcp" 2>/dev/null || true
+    fi
+
+    # A SIGTERM-exited backend can leave its separately launched Chrome alive.
+    # Only stop the process named by this kiosk profile's Chromium lock.
+    local browser_profile="$ROOT_DIR/.openjarvis/ordering-kiosk/shared-browser-profile"
+    local browser_lock="$browser_profile/SingletonLock"
+    local browser_owner browser_pid browser_cmdline browser_active
+    if [ -L "$browser_lock" ]; then
+        browser_owner="$(readlink "$browser_lock")"
+        browser_pid="${browser_owner##*-}"
+        browser_active=0
+        if [[ "$browser_pid" =~ ^[0-9]+$ ]] && [ -r "/proc/$browser_pid/cmdline" ]; then
+            browser_cmdline="$(tr '\0' ' ' < "/proc/$browser_pid/cmdline")"
+            if [[ "$browser_cmdline" == *chrome* || "$browser_cmdline" == *chromium* ]] &&
+               [[ "$browser_cmdline" == *"--user-data-dir=.openjarvis/ordering-kiosk/shared-browser-profile"* ||
+                  "$browser_cmdline" == *"--user-data-dir=$browser_profile"* ]]; then
+                log_info "Stopping orphaned shared browser (PID $browser_pid)..."
+                kill "$browser_pid" 2>/dev/null || true
+                for _ in {1..10}; do
+                    kill -0 "$browser_pid" 2>/dev/null || break
+                    sleep 0.5
+                done
+                if kill -0 "$browser_pid" 2>/dev/null; then
+                    browser_active=1
+                    log_warn "Shared browser PID $browser_pid is still running; keeping its profile lock."
+                fi
+            fi
+        elif [[ "$browser_pid" =~ ^[0-9]+$ ]] && kill -0 "$browser_pid" 2>/dev/null; then
+            browser_active=1
+            log_warn "Cannot inspect shared browser PID $browser_pid; keeping its profile lock."
+        fi
+        # Chromium leaves these symlinks behind after an unclean exit. A dead
+        # lock PID (or a PID reused by an unrelated process) cannot own this
+        # profile, and the next Chrome launch otherwise exits before CDP starts.
+        if [ "$browser_active" -eq 0 ] && [ -L "$browser_lock" ] &&
+           [ "$(readlink "$browser_lock")" = "$browser_owner" ]; then
+            log_info "Removing stale shared browser profile lock..."
+            for singleton in SingletonLock SingletonCookie SingletonSocket; do
+                if [ -L "$browser_profile/$singleton" ]; then
+                    unlink "$browser_profile/$singleton"
+                fi
+            done
+        fi
     fi
 
     # Whatever ignored SIGTERM, by PID and by port.
