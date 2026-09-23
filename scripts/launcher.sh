@@ -22,7 +22,8 @@
 set -Eeuo pipefail
 
 # ---------- Standard Linux CLI Logging Helpers ----------
-# Format: [YYYY-MM-DD HH:MM:SS] [LEVEL] Message
+# Format: [YYYY-MM-DD HH:MM:SS] [LEVEL] component: message
+# LEVEL is INFO, WARN or ERROR; log_ok is INFO in green, for a check that passed.
 _log_msg() {
     local level="$1"
     local color="$2"
@@ -31,16 +32,16 @@ _log_msg() {
     local ts
     ts="$(date '+%Y-%m-%d %H:%M:%S')"
     if [ -t "$fd" ]; then
-        printf '[%s] %b[%s]%b %s\n' "$ts" "$color" "$level" "\033[0m" "$*" >&"$fd"
+        printf '[%s] %b[%-5s]%b %s\n' "$ts" "$color" "$level" "\033[0m" "$*" >&"$fd"
     else
-        printf '[%s] [%s] %s\n' "$ts" "$level" "$*" >&"$fd"
+        printf '[%s] [%-5s] %s\n' "$ts" "$level" "$*" >&"$fd"
     fi
 }
 
-log_info()    { _log_msg "INFO"    "\033[36m" 1 "$@"; }   # Cyan
-log_warn()    { _log_msg "WARN"    "\033[33m" 1 "$@"; }   # Yellow
-log_error()   { _log_msg "ERROR"   "\033[31m" 2 "$@"; }   # Red
-log_success() { _log_msg "SUCCESS" "\033[32m" 1 "$@"; }   # Green
+log_info()  { _log_msg "INFO"  "\033[36m" 1 "$@"; }   # Cyan
+log_ok()    { _log_msg "INFO"  "\033[32m" 1 "$@"; }   # Green
+log_warn()  { _log_msg "WARN"  "\033[33m" 1 "$@"; }   # Yellow
+log_error() { _log_msg "ERROR" "\033[31m" 2 "$@"; }   # Red
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${OPENJARVIS_ENV_FILE:-/home/robber/Work/jarvis/OpenJarvis/.env}"
@@ -100,9 +101,9 @@ for arg in "$@"; do
         --no-vision) WITH_VISION=0 ;;
         -f|--follow) FOLLOW=1 ;;
         vision|backend|frontend)
-            [ "$ACTION" = logs ] || { log_error "'$arg' only goes with: logs"; exit 2; }
+            [ "$ACTION" = logs ] || { log_error "args: '$arg' only goes with logs"; exit 2; }
             LOG_SERVICE="$arg" ;;
-        *) log_error "Unknown argument: $arg"; usage >&2; exit 2 ;;
+        *) log_error "args: unknown argument '$arg'"; usage >&2; exit 2 ;;
     esac
 done
 [ "$ACTION" = restart ] && ACTION=start
@@ -132,12 +133,11 @@ port_pid() { lsof -ti:"$1" -sTCP:LISTEN 2>/dev/null || true; }
 # SIGTERM (never -9): the backend needs to reap its Playwright MCP child,
 # otherwise orphaned `npx @playwright/mcp` processes pile up across restarts.
 stop_stack() {
-    log_info "Stopping OpenJarvis stack services..."
-    local pid doomed=() remaining deadline
+    local pid doomed=() remaining deadline targets=""
     for port in 8000 5173; do
         pid="$(port_pid "$port")"
         if [ -n "$pid" ]; then
-            log_info "Sending SIGTERM to listener on :$port (PID $pid)..."
+            targets="$targets, :$port $pid"
             kill "$pid" 2>/dev/null || true
             # Track the PIDs, not the ports.  A backend that has released its
             # listener but not yet exited still holds ~700 MB, and the old
@@ -151,12 +151,18 @@ stop_stack() {
         v_pids="$(pidfile_pid "$VISION_PID_FILE")"
         [ -n "$v_pids" ] || v_pids="$(pgrep -f "^python3 main\.py$" 2>/dev/null || true)"
         if [ -n "$v_pids" ]; then
-            log_info "Sending SIGTERM to Vision processes (PID $(echo "$v_pids" | tr '\n' ' '))..."
+            targets="$targets, vision $(echo $v_pids)"
             for vp in $v_pids; do
                 kill "$vp" 2>/dev/null || true
                 doomed+=("$vp")
             done
         fi
+    fi
+
+    if [ -n "$targets" ]; then
+        log_info "stop: SIGTERM ${targets#, }"
+    else
+        log_info "stop: nothing running"
     fi
 
     # Wait for a clean exit rather than a fixed sleep: SIGTERM has to give the
@@ -175,7 +181,7 @@ stop_stack() {
     local mcp_pids
     mcp_pids="$(pgrep -f '@playwright/mcp|playwright-mcp' 2>/dev/null || true)"
     if [ -n "$mcp_pids" ]; then
-        log_info "Reaping orphaned Playwright MCP processes..."
+        log_info "stop: reaping orphaned Playwright MCP"
         pkill -9 -f "@playwright/mcp" 2>/dev/null || true
         pkill -9 -f "playwright-mcp" 2>/dev/null || true
     fi
@@ -194,7 +200,7 @@ stop_stack() {
             if [[ "$browser_cmdline" == *chrome* || "$browser_cmdline" == *chromium* ]] &&
                [[ "$browser_cmdline" == *"--user-data-dir=.openjarvis/ordering-kiosk/shared-browser-profile"* ||
                   "$browser_cmdline" == *"--user-data-dir=$browser_profile"* ]]; then
-                log_info "Stopping orphaned shared browser (PID $browser_pid)..."
+                log_info "stop: orphaned shared browser $browser_pid"
                 kill "$browser_pid" 2>/dev/null || true
                 for _ in {1..10}; do
                     kill -0 "$browser_pid" 2>/dev/null || break
@@ -202,19 +208,18 @@ stop_stack() {
                 done
                 if kill -0 "$browser_pid" 2>/dev/null; then
                     browser_active=1
-                    log_warn "Shared browser PID $browser_pid is still running; keeping its profile lock."
+                    log_warn "stop: shared browser $browser_pid still running, keeping its profile lock"
                 fi
             fi
         elif [[ "$browser_pid" =~ ^[0-9]+$ ]] && kill -0 "$browser_pid" 2>/dev/null; then
             browser_active=1
-            log_warn "Cannot inspect shared browser PID $browser_pid; keeping its profile lock."
+            log_warn "stop: cannot inspect shared browser $browser_pid, keeping its profile lock"
         fi
         # Chromium leaves these symlinks behind after an unclean exit. A dead
         # lock PID (or a PID reused by an unrelated process) cannot own this
         # profile, and the next Chrome launch otherwise exits before CDP starts.
         if [ "$browser_active" -eq 0 ] && [ -L "$browser_lock" ] &&
            [ "$(readlink "$browser_lock")" = "$browser_owner" ]; then
-            log_info "Removing stale shared browser profile lock..."
             for singleton in SingletonLock SingletonCookie SingletonSocket; do
                 if [ -L "$browser_profile/$singleton" ]; then
                     unlink "$browser_profile/$singleton"
@@ -226,19 +231,19 @@ stop_stack() {
     # Whatever ignored SIGTERM, by PID and by port.
     for pid in "${doomed[@]:-}"; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            log_warn "Force-killing PID $pid (ignored SIGTERM)..."
+            log_warn "stop: SIGKILL $pid (ignored SIGTERM)"
             kill -9 "$pid" 2>/dev/null || true
         fi
     done
     for port in 8000 5173; do
         pid="$(port_pid "$port")"
         if [ -n "$pid" ]; then
-            log_warn "Force-killing listener on :$port (PID $pid)..."
+            log_warn "stop: SIGKILL :$port $pid"
             kill -9 "$pid" 2>/dev/null || true
         fi
     done
     [ "$WITH_VISION" = 0 ] || rm -f "$VISION_PID_FILE"
-    log_success "All stack services stopped."
+    log_ok "stop: done"
     return 0
 }
 
@@ -297,7 +302,7 @@ logs_stack() {
     fi
     local f
     for f in "${files[@]}"; do
-        [ -f "$f" ] || { log_warn "No log yet: $f"; continue; }
+        [ -f "$f" ] || { log_warn "logs: no log yet at $f"; continue; }
         [ "${#files[@]}" -gt 1 ] && printf '==> %s <==\n' "$f"
         tail -n 50 "$f"
     done
@@ -310,25 +315,23 @@ case "$ACTION" in
 esac
 
 # ---------- preflight: fail loudly now, not silently at runtime ----------
-log_info "Running preflight checks..."
-[ -x "$ROOT_DIR/.venv/bin/jarvis" ] || { log_error "Missing executable: $ROOT_DIR/.venv/bin/jarvis"; exit 1; }
-[ -f "$ENV_FILE" ]                  || { log_error "Missing env file: $ENV_FILE"; exit 1; }
-[ -d "$ARTIFACT_DIR" ]              || { log_error "Missing VieNeu artifact: $ARTIFACT_DIR"; exit 1; }
+[ -x "$ROOT_DIR/.venv/bin/jarvis" ] || { log_error "preflight: missing $ROOT_DIR/.venv/bin/jarvis"; exit 1; }
+[ -f "$ENV_FILE" ]                  || { log_error "preflight: missing env file $ENV_FILE"; exit 1; }
+[ -d "$ARTIFACT_DIR" ]              || { log_error "preflight: missing VieNeu artifact $ARTIFACT_DIR"; exit 1; }
 case "$MCP_CONFIG" in
     /*) MCP_CONFIG_PATH="$MCP_CONFIG" ;;
     *)  MCP_CONFIG_PATH="$ROOT_DIR/$MCP_CONFIG" ;;
 esac
-[ -f "$MCP_CONFIG_PATH" ]           || { log_error "Missing config: $MCP_CONFIG"; exit 1; }
+[ -f "$MCP_CONFIG_PATH" ]           || { log_error "preflight: missing config $MCP_CONFIG"; exit 1; }
 
 set -a
 . "$ENV_FILE"
 set +a
-[ -n "${GEMINI_API_KEY:-}" ]   || { log_error "GEMINI_API_KEY missing in $ENV_FILE (voice STT needs it)"; exit 1; }
-[ -n "${DEEPSEEK_API_KEY:-}" ] || { log_error "DEEPSEEK_API_KEY missing in $ENV_FILE"; exit 1; }
+[ -n "${GEMINI_API_KEY:-}" ]   || { log_error "preflight: GEMINI_API_KEY missing in $ENV_FILE (voice STT needs it)"; exit 1; }
+[ -n "${DEEPSEEK_API_KEY:-}" ] || { log_error "preflight: DEEPSEEK_API_KEY missing in $ENV_FILE"; exit 1; }
 
-log_success "Preflight checks passed."
+log_ok "preflight: ok (model=$MODEL, vision=$WITH_VISION, threads=$THREADS)"
 mkdir -p "$LOG_DIR"
-log_info "Restarting OpenJarvis stack (model=$MODEL, vision=$WITH_VISION, threads=$THREADS)..."
 stop_stack
 
 # ---------- Vision (GPU) ----------
@@ -347,12 +350,12 @@ if [ "$WITH_VISION" = 1 ] && [ -d "$VISION_DIR" ]; then
      setsid env LD_LIBRARY_PATH="$VISION_LD:${LD_LIBRARY_PATH:-}" \
         python3 main.py >>"$VISION_LOG" 2>&1 </dev/null &
      echo $! >"$VISION_PID_FILE")
-    log_info "Vision service started (PID $(cat "$VISION_PID_FILE")): $VISION_LOG"
 fi
 
 # ---------- Backend ----------
 fresh_log "$BACKEND_LOG" "backend: jarvis serve --model $MODEL (config $MCP_CONFIG)"
-(cd "$ROOT_DIR" && setsid env \
+(cd "$ROOT_DIR" || exit 1
+ setsid env \
     OMP_NUM_THREADS="$THREADS" \
     ORT_NUM_THREADS="$THREADS" \
     OPENJARVIS_VIENEU_THREADS="$THREADS" \
@@ -362,17 +365,18 @@ fresh_log "$BACKEND_LOG" "backend: jarvis serve --model $MODEL (config $MCP_CONF
     OPENJARVIS_CONFIG="$MCP_CONFIG" \
     .venv/bin/jarvis serve --host 127.0.0.1 --port 8000 --engine cloud --model "$MODEL" \
     >>"$BACKEND_LOG" 2>&1 </dev/null &)
-log_info "Backend service started on :8000: $BACKEND_LOG"
 
 # ---------- Frontend ----------
 fresh_log "$FRONTEND_LOG" "frontend: npm run dev (vite :5173)"
-(cd "$ROOT_DIR/frontend" && setsid npm run dev -- \
+(cd "$ROOT_DIR/frontend" || exit 1
+ setsid npm run dev -- \
     --host 127.0.0.1 --port 5173 --strictPort \
     >>"$FRONTEND_LOG" 2>&1 </dev/null &)
-log_info "Frontend service started on :5173: $FRONTEND_LOG"
+started="backend, frontend"
+[ "$WITH_VISION" = 1 ] && started="vision $(cat "$VISION_PID_FILE"), $started"
+log_info "start: $started (logs $LOG_DIR, timeout 90s)"
 
 # ---------- Healthcheck ----------
-log_info "Waiting for stack services to become healthy (timeout 90s)..."
 backend_up=0
 frontend_up=0
 # Vision is not waited on when disabled; the loop treats it as already up.
@@ -380,15 +384,19 @@ vision_up=$((1 - WITH_VISION))
 for elapsed in $(seq 1 90); do
     if [ "$vision_up" -eq 0 ] && http_ok http://127.0.0.1:9876/; then
         vision_up=1
-        log_success "Vision is serving (http://127.0.0.1:9876/ responded in ${elapsed}s)"
+        if grep -qiE 'Failed to create CUDAExecutionProvider|libcublasLt' "$VISION_LOG" 2>/dev/null; then
+            log_warn "vision: serving :9876 (${elapsed}s) on CPU fallback, check nvidia-* wheels"
+        else
+            log_ok "vision: serving :9876 (${elapsed}s)"
+        fi
     fi
     if [ "$backend_up" -eq 0 ] && curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
         backend_up=1
-        log_success "Backend is healthy (http://127.0.0.1:8000/health responded in ${elapsed}s)"
+        log_ok "backend: healthy :8000 (${elapsed}s)"
     fi
     if [ "$frontend_up" -eq 0 ] && curl -fsS http://127.0.0.1:5173/ >/dev/null 2>&1; then
         frontend_up=1
-        log_success "Frontend is ready (http://127.0.0.1:5173/ responded in ${elapsed}s)"
+        log_ok "frontend: ready :5173 (${elapsed}s)"
     fi
     if [ "$backend_up" -eq 1 ] && [ "$frontend_up" -eq 1 ] && [ "$vision_up" -eq 1 ]; then
         break
@@ -397,7 +405,7 @@ for elapsed in $(seq 1 90); do
     # Early exit check: fail fast if backend crashed on startup
     if [ "$backend_up" -eq 0 ] && [ "$elapsed" -ge 4 ] && [ -z "$(port_pid 8000)" ]; then
         if grep -qiE 'Traceback \(most recent call last\)|Error:|Exception:' "$BACKEND_LOG" 2>/dev/null; then
-            log_error "Backend process exited with an error. Recent log output:"
+            log_error "backend: exited with an error, last lines of $BACKEND_LOG:"
             tail -n 12 "$BACKEND_LOG" >&2 || true
             exit 1
         fi
@@ -406,33 +414,31 @@ for elapsed in $(seq 1 90); do
 done
 
 if [ "$backend_up" -eq 0 ]; then
-    log_error "Backend did not come up within 90s. See $BACKEND_LOG"
+    log_error "backend: not healthy after 90s, see $BACKEND_LOG"
     exit 1
 fi
 if [ "$frontend_up" -eq 0 ]; then
-    log_error "Frontend did not come up within 90s. See $FRONTEND_LOG"
+    log_error "frontend: not ready after 90s, see $FRONTEND_LOG"
     exit 1
 fi
 # Vision stays a warning, as before: the kiosk still runs without presence.
 if [ "$vision_up" -eq 0 ]; then
-    log_warn "Vision did not serve :9876 within 90s. See $VISION_LOG"
+    log_warn "vision: not serving :9876 after 90s, see $VISION_LOG"
 fi
 
 # ---------- Kiosk routes ----------
-for url in http://127.0.0.1:5173/kiosk http://127.0.0.1:5173/customer-display; do
-    if http_ok "$url"; then
-        log_success "Kiosk route OK: $url"
-    else
-        log_warn "Kiosk route not answering: $url"
-    fi
+kiosk="" kiosk_bad=0
+for route in /kiosk /customer-display; do
+    if http_ok "http://127.0.0.1:5173$route"; then kiosk="$kiosk, $route ok"
+    else kiosk="$kiosk, $route FAIL"; kiosk_bad=1; fi
 done
 case "$(curl -fsS --max-time 2 http://127.0.0.1:8000/api/kiosk/state 2>/dev/null || true)" in
-    *'"running":true'*) log_success "Kiosk runtime: running (/api/kiosk/state)" ;;
-    *)                  log_warn "Kiosk runtime: not running (/api/kiosk/state). See $BACKEND_LOG" ;;
+    *'"running":true'*) kiosk="$kiosk, runtime running" ;;
+    *)                  kiosk="$kiosk, runtime NOT running"; kiosk_bad=1 ;;
 esac
+if [ "$kiosk_bad" -eq 0 ]; then log_ok "kiosk: ${kiosk#, }"; else log_warn "kiosk: ${kiosk#, }"; fi
 
-# ---------- Verification ----------
-log_info "Verifying stack components and tool integrations..."
+# ---------- Agent ----------
 tools=$(grep -o 'Agent tools:.*' "$BACKEND_LOG" 2>/dev/null | tr ',' '\n' | grep -c 'browser_' || true)
 expected_tools=$("$ROOT_DIR/.venv/bin/python" -c '
 import sys, tomllib
@@ -442,45 +448,18 @@ names = value if isinstance(value, list) else value.split(",")
 print(sum(str(name).strip().startswith("browser_") for name in names))
 ' "$MCP_CONFIG_PATH" 2>/dev/null || echo 0)
 
-if [ "$tools" -eq "$expected_tools" ]; then
-    log_success "Agent browser tools: $tools/$expected_tools verified"
-else
-    log_warn "Agent browser tools: found $tools (expected $expected_tools)"
-fi
-
 mcp=$(pgrep -f '@playwright/mcp' 2>/dev/null | wc -l)
-if [ "$mcp" -eq 1 ]; then
-    log_success "Playwright MCP daemon: active (1 process running)"
-elif [ "$mcp" -gt 1 ]; then
-    log_warn "Playwright MCP daemon: $mcp processes running (expected 1)"
-else
-    log_warn "Playwright MCP daemon: not running (expected 1 process)"
-fi
-
 mem=$(curl -fsS http://127.0.0.1:8000/v1/memory/config 2>/dev/null || echo '')
+agent="browser tools $tools/$expected_tools, playwright mcp $mcp"
+agent_bad=0
+[ "$tools" -eq "$expected_tools" ] && [ "$mcp" -eq 1 ] || agent_bad=1
 case "$mem" in
-    *'"available":true'*)
-        log_success "Memory backend: available and operational"
-        ;;
-    *)
-        log_warn "Memory backend: unavailable — build with: uv run maturin develop -m rust/crates/openjarvis-python/Cargo.toml --release"
-        ;;
+    *'"available":true'*) agent="$agent, memory ok" ;;
+    *) agent="$agent, memory unavailable (uv run maturin develop -m rust/crates/openjarvis-python/Cargo.toml --release)"
+       agent_bad=1 ;;
 esac
+if [ "$agent_bad" -eq 0 ]; then log_ok "agent: $agent"; else log_warn "agent: $agent"; fi
 
-if [ "$WITH_VISION" = 1 ]; then
-    if grep -qiE 'Failed to create CUDAExecutionProvider|libcublasLt' "$VISION_LOG" 2>/dev/null; then
-        log_warn "Vision GPU: running on CPU fallback (check nvidia-* wheels)"
-    elif grep -qiE 'CUDAExecutionProvider|Running on GPU|Device: cuda' "$VISION_LOG" 2>/dev/null || [ -n "$(pgrep -f '^python3 main\.py$' 2>/dev/null || true)" ]; then
-        log_success "Vision GPU: service running"
-    else
-        log_warn "Vision GPU: not responding or check $VISION_LOG"
-    fi
-fi
-
-log_success "OpenJarvis stack launched successfully!"
-log_info "  - Web Chat:          http://127.0.0.1:5173"
-log_info "  - Kiosk UI:          http://127.0.0.1:5173/kiosk"
-log_info "  - Customer Display:  http://127.0.0.1:5173/customer-display"
-[ "$WITH_VISION" = 1 ] && log_info "  - Vision Console:    http://127.0.0.1:9876/"
-log_info "  - Logs:              $LOG_DIR  (scripts/launcher.sh logs [service] -f)"
-log_info "  - Status / stop:     scripts/launcher.sh status | stop"
+urls="kiosk http://127.0.0.1:5173/kiosk | display http://127.0.0.1:5173/customer-display | chat http://127.0.0.1:5173"
+[ "$WITH_VISION" = 1 ] && urls="$urls | vision http://127.0.0.1:9876/"
+log_ok "ready: $urls"
