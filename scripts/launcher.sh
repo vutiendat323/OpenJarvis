@@ -15,7 +15,9 @@
 #   LD_LIBRARY_PATH (vision)  unset -> onnxruntime silently falls back to CPU
 #                             and Vision eats ~5 cores instead of the GPU.
 #
-# Usage: scripts/launcher.sh [start|stop|status] [--no-vision]
+# Usage: scripts/launcher.sh start|restart|stop|status [--no-vision]
+#        scripts/launcher.sh logs [vision|backend|frontend] [-f]
+#        scripts/launcher.sh help
 
 set -Eeuo pipefail
 
@@ -65,16 +67,62 @@ LOG_DIR="${OPENJARVIS_LOG_DIR:-/tmp/openjarvis-stack}"
 BACKEND_LOG="$LOG_DIR/backend.log"
 FRONTEND_LOG="$LOG_DIR/frontend.log"
 VISION_LOG="$LOG_DIR/vision.log"
+# Backend and frontend are found by their ports.  Vision opens :9876 only
+# after its models load, so it gets a pid file written at launch.
+VISION_PID_FILE="$LOG_DIR/vision.pid"
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/launcher.sh <command> [options]
+
+Commands:
+  start     Stop any running stack, then start vision, backend and frontend
+  restart   Same as start
+  stop      Stop every stack service
+  status    Show each service's process, uptime and health
+  logs      Show service logs: logs [vision|backend|frontend] [-f]
+  help      Show this help
+
+Options:
+  --no-vision   Leave the vision service out (start/restart/stop/status)
+  -f            Follow the logs (logs only)
+EOF
+}
 
 WITH_VISION=1
 ACTION="start"
+LOG_SERVICE=""
+FOLLOW=0
 for arg in "$@"; do
     case "$arg" in
-        start|stop|status) ACTION="$arg" ;;
+        start|restart|stop|status|logs) ACTION="$arg" ;;
+        help|-h|--help) usage; exit 0 ;;
         --no-vision) WITH_VISION=0 ;;
-        *) log_error "Unknown argument: $arg"; exit 2 ;;
+        -f|--follow) FOLLOW=1 ;;
+        vision|backend|frontend)
+            [ "$ACTION" = logs ] || { log_error "'$arg' only goes with: logs"; exit 2; }
+            LOG_SERVICE="$arg" ;;
+        *) log_error "Unknown argument: $arg"; usage >&2; exit 2 ;;
     esac
 done
+[ "$ACTION" = restart ] && ACTION=start
+
+http_ok() { curl -fsS -o /dev/null --max-time 2 "$1" 2>/dev/null; }
+
+# PID from a pid file, or nothing when the file is missing or the process is gone.
+pidfile_pid() {
+    local pid
+    pid="$(cat "$1" 2>/dev/null || true)"
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && echo "$pid"
+    return 0
+}
+
+# Keep the previous run's log as *.log.1, so a restart never erases the log of
+# the crash that made you restart; start the new one with a timestamped header.
+fresh_log() {
+    [ -f "$1" ] && mv -f "$1" "$1.1"
+    printf '[%s] [launcher] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$2" > "$1"
+}
 
 # -sTCP:LISTEN matters: a bare `lsof -ti:PORT` also returns *clients* connected
 # to the port, so an open browser tab shows up as the server — and stop would
@@ -100,11 +148,12 @@ stop_stack() {
     done
     if [ "$WITH_VISION" = 1 ]; then
         local v_pids
-        v_pids="$(pgrep -f "python3 main.py" 2>/dev/null || true)"
+        v_pids="$(pidfile_pid "$VISION_PID_FILE")"
+        [ -n "$v_pids" ] || v_pids="$(pgrep -f "^python3 main\.py$" 2>/dev/null || true)"
         if [ -n "$v_pids" ]; then
             log_info "Sending SIGTERM to Vision processes (PID $(echo "$v_pids" | tr '\n' ' '))..."
-            pkill -f "python3 main.py" 2>/dev/null || true
             for vp in $v_pids; do
+                kill "$vp" 2>/dev/null || true
                 doomed+=("$vp")
             done
         fi
@@ -188,58 +237,76 @@ stop_stack() {
             kill -9 "$pid" 2>/dev/null || true
         fi
     done
+    [ "$WITH_VISION" = 0 ] || rm -f "$VISION_PID_FILE"
     log_success "All stack services stopped."
     return 0
 }
 
+# One status row: SERVICE STATE PID PORT UPTIME HEALTH.
+status_row() {
+    local name="$1" pid="$2" port="$3" health="$4" state uptime
+    if [ -n "$pid" ]; then
+        state="running"
+        uptime="$(ps -o etime= -p "${pid%% *}" 2>/dev/null | tr -d ' ' || true)"
+    else
+        state="stopped"; pid="-"; uptime="-"; health="-"
+    fi
+    printf '%-9s %-8s %-7s %-5s %-11s %s\n' "$name" "$state" "$pid" "$port" "${uptime:--}" "$health"
+}
+
+# "ok" when every URL answers 200, else the first one that does not.
+health_of() {
+    local url
+    for url in "$@"; do
+        http_ok "$url" || { echo "FAIL ${url#http://127.0.0.1}"; return 0; }
+    done
+    echo "ok"
+}
+
 status_stack() {
-    log_info "Checking OpenJarvis stack status..."
-    local b_pid f_pid v_pids mcp_count
+    local v_pid b_pid f_pid mcp_count
+    v_pid="$(pidfile_pid "$VISION_PID_FILE")"
+    [ -n "$v_pid" ] || v_pid="$(pgrep -f '^python3 main\.py$' 2>/dev/null | tr '\n' ' ' | sed 's/ *$//' || true)"
     b_pid="$(port_pid 8000)"
     f_pid="$(port_pid 5173)"
-    v_pids="$(pgrep -f 'python3 main.py' 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g;s/ *$//' || true)"
     mcp_count="$(pgrep -f '@playwright/mcp' 2>/dev/null | wc -l)"
 
-    if [ -n "$b_pid" ]; then
-        if curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
-            log_success "Backend:  running (PID $b_pid, port 8000 healthy)"
-        else
-            log_warn "Backend:  running (PID $b_pid, port 8000 open, health check failing)"
-        fi
+    printf '%-9s %-8s %-7s %-5s %-11s %s\n' SERVICE STATE PID PORT UPTIME HEALTH
+    if [ "$WITH_VISION" = 1 ]; then
+        status_row vision "$v_pid" 9876 "$(health_of http://127.0.0.1:9876/)"
     else
-        log_warn "Backend:  stopped (port 8000 inactive)"
+        printf '%-9s %s\n' vision "disabled (--no-vision)"
     fi
+    status_row backend "$b_pid" 8000 \
+        "$(health_of http://127.0.0.1:8000/health http://127.0.0.1:8000/api/kiosk/state)"
+    status_row frontend "$f_pid" 5173 \
+        "$(health_of http://127.0.0.1:5173/kiosk http://127.0.0.1:5173/customer-display)"
+    printf '%-9s %s active Playwright process(es)\n' mcp "$mcp_count"
+}
 
-    if [ -n "$f_pid" ]; then
-        if curl -fsS http://127.0.0.1:5173/ >/dev/null 2>&1; then
-            log_success "Frontend: running (PID $f_pid, port 5173 ready)"
-        else
-            log_warn "Frontend: running (PID $f_pid, port 5173 open, not responding to HTTP)"
-        fi
-    else
-        log_warn "Frontend: stopped (port 5173 inactive)"
+logs_stack() {
+    local files=()
+    case "$LOG_SERVICE" in
+        vision)   files=("$VISION_LOG") ;;
+        backend)  files=("$BACKEND_LOG") ;;
+        frontend) files=("$FRONTEND_LOG") ;;
+        *)        files=("$VISION_LOG" "$BACKEND_LOG" "$FRONTEND_LOG") ;;
+    esac
+    if [ "$FOLLOW" = 1 ]; then
+        exec tail -n 50 -F "${files[@]}"
     fi
-
-    if [ -n "$v_pids" ]; then
-        log_success "Vision:   running (PID $v_pids)"
-    else
-        if [ "$WITH_VISION" = 1 ]; then
-            log_warn "Vision:   stopped"
-        else
-            log_info "Vision:   disabled (--no-vision)"
-        fi
-    fi
-
-    if [ "$mcp_count" -gt 0 ]; then
-        log_info "MCP:      $mcp_count active Playwright process(es)"
-    else
-        log_info "MCP:      0 active Playwright process(es)"
-    fi
+    local f
+    for f in "${files[@]}"; do
+        [ -f "$f" ] || { log_warn "No log yet: $f"; continue; }
+        [ "${#files[@]}" -gt 1 ] && printf '==> %s <==\n' "$f"
+        tail -n 50 "$f"
+    done
 }
 
 case "$ACTION" in
     stop)   stop_stack; exit 0 ;;
     status) status_stack; exit 0 ;;
+    logs)   logs_stack; exit 0 ;;
 esac
 
 # ---------- preflight: fail loudly now, not silently at runtime ----------
@@ -273,12 +340,18 @@ if [ "$WITH_VISION" = 1 ] && [ -d "$VISION_DIR" ]; then
     [ -n "$NV_ROOT" ] && VISION_LD="$NV_ROOT/cu13/lib:$NV_ROOT/cudnn/lib"
     # setsid, not `& disown`: disown is a no-op in a non-interactive subshell,
     # which then blocks in wait() and the launcher never returns.
-    (cd "$VISION_DIR" && setsid env LD_LIBRARY_PATH="$VISION_LD:${LD_LIBRARY_PATH:-}" \
-        python3 main.py >"$VISION_LOG" 2>&1 </dev/null &)
-    log_info "Vision service started: $VISION_LOG"
+    fresh_log "$VISION_LOG" "vision: python3 main.py (cwd $VISION_DIR)"
+    # cd first, then a bare `setsid ... &`: that child execs straight through
+    # setsid and env into python, so $! is the vision PID itself.
+    (cd "$VISION_DIR" || exit 1
+     setsid env LD_LIBRARY_PATH="$VISION_LD:${LD_LIBRARY_PATH:-}" \
+        python3 main.py >>"$VISION_LOG" 2>&1 </dev/null &
+     echo $! >"$VISION_PID_FILE")
+    log_info "Vision service started (PID $(cat "$VISION_PID_FILE")): $VISION_LOG"
 fi
 
 # ---------- Backend ----------
+fresh_log "$BACKEND_LOG" "backend: jarvis serve --model $MODEL (config $MCP_CONFIG)"
 (cd "$ROOT_DIR" && setsid env \
     OMP_NUM_THREADS="$THREADS" \
     ORT_NUM_THREADS="$THREADS" \
@@ -288,20 +361,27 @@ fi
     OPENJARVIS_LOCAL_TTS_ARTIFACT_DIR="$ARTIFACT_DIR" \
     OPENJARVIS_CONFIG="$MCP_CONFIG" \
     .venv/bin/jarvis serve --host 127.0.0.1 --port 8000 --engine cloud --model "$MODEL" \
-    >"$BACKEND_LOG" 2>&1 </dev/null &)
+    >>"$BACKEND_LOG" 2>&1 </dev/null &)
 log_info "Backend service started on :8000: $BACKEND_LOG"
 
 # ---------- Frontend ----------
+fresh_log "$FRONTEND_LOG" "frontend: npm run dev (vite :5173)"
 (cd "$ROOT_DIR/frontend" && setsid npm run dev -- \
     --host 127.0.0.1 --port 5173 --strictPort \
-    >"$FRONTEND_LOG" 2>&1 </dev/null &)
+    >>"$FRONTEND_LOG" 2>&1 </dev/null &)
 log_info "Frontend service started on :5173: $FRONTEND_LOG"
 
 # ---------- Healthcheck ----------
 log_info "Waiting for stack services to become healthy (timeout 90s)..."
 backend_up=0
 frontend_up=0
+# Vision is not waited on when disabled; the loop treats it as already up.
+vision_up=$((1 - WITH_VISION))
 for elapsed in $(seq 1 90); do
+    if [ "$vision_up" -eq 0 ] && http_ok http://127.0.0.1:9876/; then
+        vision_up=1
+        log_success "Vision is serving (http://127.0.0.1:9876/ responded in ${elapsed}s)"
+    fi
     if [ "$backend_up" -eq 0 ] && curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
         backend_up=1
         log_success "Backend is healthy (http://127.0.0.1:8000/health responded in ${elapsed}s)"
@@ -310,7 +390,7 @@ for elapsed in $(seq 1 90); do
         frontend_up=1
         log_success "Frontend is ready (http://127.0.0.1:5173/ responded in ${elapsed}s)"
     fi
-    if [ "$backend_up" -eq 1 ] && [ "$frontend_up" -eq 1 ]; then
+    if [ "$backend_up" -eq 1 ] && [ "$frontend_up" -eq 1 ] && [ "$vision_up" -eq 1 ]; then
         break
     fi
 
@@ -333,6 +413,23 @@ if [ "$frontend_up" -eq 0 ]; then
     log_error "Frontend did not come up within 90s. See $FRONTEND_LOG"
     exit 1
 fi
+# Vision stays a warning, as before: the kiosk still runs without presence.
+if [ "$vision_up" -eq 0 ]; then
+    log_warn "Vision did not serve :9876 within 90s. See $VISION_LOG"
+fi
+
+# ---------- Kiosk routes ----------
+for url in http://127.0.0.1:5173/kiosk http://127.0.0.1:5173/customer-display; do
+    if http_ok "$url"; then
+        log_success "Kiosk route OK: $url"
+    else
+        log_warn "Kiosk route not answering: $url"
+    fi
+done
+case "$(curl -fsS --max-time 2 http://127.0.0.1:8000/api/kiosk/state 2>/dev/null || true)" in
+    *'"running":true'*) log_success "Kiosk runtime: running (/api/kiosk/state)" ;;
+    *)                  log_warn "Kiosk runtime: not running (/api/kiosk/state). See $BACKEND_LOG" ;;
+esac
 
 # ---------- Verification ----------
 log_info "Verifying stack components and tool integrations..."
@@ -371,10 +468,9 @@ case "$mem" in
 esac
 
 if [ "$WITH_VISION" = 1 ]; then
-    sleep 3
     if grep -qiE 'Failed to create CUDAExecutionProvider|libcublasLt' "$VISION_LOG" 2>/dev/null; then
         log_warn "Vision GPU: running on CPU fallback (check nvidia-* wheels)"
-    elif grep -qiE 'CUDAExecutionProvider|Running on GPU|Device: cuda' "$VISION_LOG" 2>/dev/null || [ -n "$(pgrep -f 'python3 main.py' 2>/dev/null || true)" ]; then
+    elif grep -qiE 'CUDAExecutionProvider|Running on GPU|Device: cuda' "$VISION_LOG" 2>/dev/null || [ -n "$(pgrep -f '^python3 main\.py$' 2>/dev/null || true)" ]; then
         log_success "Vision GPU: service running"
     else
         log_warn "Vision GPU: not responding or check $VISION_LOG"
@@ -382,6 +478,9 @@ if [ "$WITH_VISION" = 1 ]; then
 fi
 
 log_success "OpenJarvis stack launched successfully!"
-log_info "  - Web Chat:  http://127.0.0.1:5173"
-log_info "  - Kiosk UI:  http://127.0.0.1:5173/kiosk"
-log_info "  - Stop with: scripts/launcher.sh stop"
+log_info "  - Web Chat:          http://127.0.0.1:5173"
+log_info "  - Kiosk UI:          http://127.0.0.1:5173/kiosk"
+log_info "  - Customer Display:  http://127.0.0.1:5173/customer-display"
+[ "$WITH_VISION" = 1 ] && log_info "  - Vision Console:    http://127.0.0.1:9876/"
+log_info "  - Logs:              $LOG_DIR  (scripts/launcher.sh logs [service] -f)"
+log_info "  - Status / stop:     scripts/launcher.sh status | stop"
