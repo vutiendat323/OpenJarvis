@@ -13,6 +13,12 @@ services:
       # fast if OPENJARVIS_API_KEY is unset (set it in deploy/docker/.env —
       # see .env.example, or `export` it). Generate one: `jarvis auth generate-key`.
       - OPENJARVIS_API_KEY=${OPENJARVIS_API_KEY:?OPENJARVIS_API_KEY must be set (see deploy/docker/.env.example)}
+      # Cloud provider keys, passed through from the env file; unset ones stay empty.
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
     volumes:
       # Pre-created in the image as uid 10001 so the volumes inherit its ownership.
       - jarvis-data:/home/openjarvis/.openjarvis
