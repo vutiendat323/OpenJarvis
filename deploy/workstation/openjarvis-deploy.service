@@ -3,5 +3,5 @@ Description=OpenJarvis pull-based deploy
 
 [Service]
 Type=oneshot
-ExecStart=/srv/openjarvis/repo/deploy/workstation/deploy.sh
+ExecStart=%h/openjarvis/repo/deploy/workstation/deploy.sh
 TimeoutStartSec=30min

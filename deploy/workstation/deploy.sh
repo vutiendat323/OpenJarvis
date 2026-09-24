@@ -5,7 +5,7 @@
 # digest if it never gets healthy.
 set -euo pipefail
 
-ROOT=${OPENJARVIS_ROOT:-/srv/openjarvis}
+ROOT=${OPENJARVIS_ROOT:-$HOME/openjarvis}
 REPO=$ROOT/repo
 ENV_FILE=$ROOT/prod/.env
 STATE=$ROOT/prod/last-good-image
