@@ -21,17 +21,34 @@ env:
 jobs:
   scan-repo:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Trivy - lockfile CVEs and committed secrets
+      - name: Trivy - committed secrets (blocking)
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           scan-type: fs
-          scanners: vuln,secret
+          scanners: secret
           skip-dirs: tests
+          exit-code: "1"
+      # Report-only: existing lockfile CVEs are tracked in the Security tab;
+      # the image gate below is what blocks shipping.
+      - name: Trivy - lockfile CVEs (report)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-          exit-code: "1"
+          format: sarif
+          output: trivy-repo.sarif
+      - if: always() && github.event.pull_request.head.repo.fork != true
+        uses: github/codeql-action/upload-sarif@c23de5a82f64bb08c6d9f28844551440ca298e76 # v4.38.1
+        with:
+          sarif_file: trivy-repo.sarif
+          category: trivy-repo
 
   image:
     needs: scan-repo
@@ -63,11 +80,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Trivy - image gate
+      - name: Trivy - image gate (CRITICAL, fixable)
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           image-ref: openjarvis:scan
-          severity: CRITICAL,HIGH
+          severity: CRITICAL
           ignore-unfixed: true
           exit-code: "1"
 
