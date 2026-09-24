@@ -94,6 +94,9 @@ jobs:
           OPENJARVIS_API_KEY: ci-smoke-key
         run: |
           compose="docker compose -f deploy/docker/docker-compose.yml"
+          # serve exits unless the engine lists a model; any tiny one boots it.
+          $compose up -d --no-build --wait ollama
+          $compose exec -T ollama ollama pull qwen2.5:0.5b
           $compose up -d --no-build
           for i in $(seq 1 60); do
             curl -fsS http://localhost:8000/health && exit_code=0 && break
