@@ -100,12 +100,12 @@ def test_a_post_never_takes_the_rust_path(monkeypatch):
         def check_ssrf(self, url):
             return None
 
-    monkeypatch.setattr(
-        "openjarvis._rust_bridge.get_rust_module", lambda: _Rust(), raising=False
-    )
     _raise(monkeypatch, httpx.ConnectError("refused"))
 
-    HttpRequestTool().execute(url=_URL, method="POST", body="{}")
+    # Nested inside the autouse patch; monkeypatch here would restore the
+    # autouse MagicMock after that patch exits and leak it to later tests.
+    with patch("openjarvis._rust_bridge.get_rust_module", return_value=_Rust()):
+        HttpRequestTool().execute(url=_URL, method="POST", body="{}")
 
     assert calls == []
 
