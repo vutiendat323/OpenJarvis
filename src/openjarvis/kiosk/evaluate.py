@@ -9,8 +9,8 @@ from __future__ import annotations
 from typing import Literal
 
 from openjarvis.kiosk.config import KioskConfig
-from openjarvis.kiosk.events import EventHistory
 from openjarvis.kiosk.effects import SideEffect
+from openjarvis.kiosk.events import EventHistory
 
 # -- Types ------------------------------------------------------------
 
@@ -57,19 +57,29 @@ def evaluate_state(
     handler = _HANDLERS.get(current_state)
     if handler is None:
         return (current_state, [])
-    return handler(history, now, user_response, session_start,
-                   prompting_started_at, last_decline_at)
+    return handler(
+        history,
+        now,
+        user_response,
+        session_start,
+        prompting_started_at,
+        last_decline_at,
+    )
 
 
 # -- Handler registry -------------------------------------------------
 
 
 def _evaluate_idle(
-    history, now, user_response, session_start, prompting_started_at,
+    history,
+    now,
+    user_response,
+    session_start,
+    prompting_started_at,
     last_decline_at,
 ) -> tuple[KioskState, list[SideEffect]]:
     # Decline cooldown: ignore the person until the cooldown expires.
-    if (_cooldown_active(last_decline_at, now)):
+    if _cooldown_active(last_decline_at, now):
         return ("idle", [])
 
     last = history.last_event()
@@ -86,11 +96,15 @@ def _evaluate_idle(
 
 
 def _evaluate_approaching(
-    history, now, user_response, session_start, prompting_started_at,
+    history,
+    now,
+    user_response,
+    session_start,
+    prompting_started_at,
     last_decline_at,
 ) -> tuple[KioskState, list[SideEffect]]:
     # Decline cooldown: don't progress to prompting; return to idle.
-    if (_cooldown_active(last_decline_at, now)):
+    if _cooldown_active(last_decline_at, now):
         return ("idle", [])
 
     last = history.last_event()
@@ -120,17 +134,24 @@ def _evaluate_approaching(
 
 
 def _evaluate_prompting(
-    history, now, user_response, session_start, prompting_started_at,
+    history,
+    now,
+    user_response,
+    session_start,
+    prompting_started_at,
     last_decline_at,
 ) -> tuple[KioskState, list[SideEffect]]:
     # User response takes priority
     if user_response == "accept":
-        return ("active", [
-            _publish_state("active", mic_enabled=False),
-            SideEffect("load_initial_display"),
-            SideEffect("tts_greeting"),
-            _publish_state("active", mic_enabled=True),
-        ])
+        return (
+            "active",
+            [
+                _publish_state("active", mic_enabled=False),
+                SideEffect("load_initial_display"),
+                SideEffect("tts_greeting"),
+                _publish_state("active", mic_enabled=True),
+            ],
+        )
     if user_response == "decline":
         return ("idle", [_publish_state("idle")])
 
@@ -183,7 +204,11 @@ def _consecutive_absent_duration(history: EventHistory, now: float) -> float:
 
 
 def _evaluate_active(
-    history, now, user_response, session_start, prompting_started_at,
+    history,
+    now,
+    user_response,
+    session_start,
+    prompting_started_at,
     last_decline_at,
 ) -> tuple[KioskState, list[SideEffect]]:
     effects: list[SideEffect] = []
@@ -193,10 +218,13 @@ def _evaluate_active(
 
         # Hard timeout
         if elapsed >= _CFG.session_max_seconds:
-            return ("cleanup", [
-                _publish_state("cleanup"),
-                SideEffect("tts_goodbye"),
-            ])
+            return (
+                "cleanup",
+                [
+                    _publish_state("cleanup"),
+                    SideEffect("tts_goodbye"),
+                ],
+            )
 
         # One-time warning
         if elapsed >= _CFG.session_warning_seconds:
@@ -208,16 +236,23 @@ def _evaluate_active(
     if is_absent:
         absent = _consecutive_absent_duration(history, now)
         if absent >= _CFG.leave_sustain_seconds_active:
-            return ("cleanup", [
-                _publish_state("cleanup"),
-                SideEffect("tts_goodbye"),
-            ])
+            return (
+                "cleanup",
+                [
+                    _publish_state("cleanup"),
+                    SideEffect("tts_goodbye"),
+                ],
+            )
 
     return ("active", effects)
 
 
 def _evaluate_cleanup(
-    history, now, user_response, session_start, prompting_started_at,
+    history,
+    now,
+    user_response,
+    session_start,
+    prompting_started_at,
     last_decline_at,
 ) -> tuple[KioskState, list[SideEffect]]:
     # Automatic: cleanup → idle

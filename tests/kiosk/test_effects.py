@@ -25,8 +25,9 @@ def test_publish_state_emits_kiosk_state_event() -> None:
     assert bus.history[0].data == {"state": "prompting", "mic_enabled": False}
 
 
-def test_accepting_the_kiosk_prompt_loads_the_default_menu_before_enabling_mic(
-) -> None:
+def test_accepting_the_kiosk_prompt_loads_the_default_menu_before_enabling_mic() -> (
+    None
+):
     state, effects = evaluate_state(
         EventHistory(),
         now=0.0,

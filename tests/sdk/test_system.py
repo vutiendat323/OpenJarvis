@@ -163,9 +163,7 @@ class TestJarvisSystem:
                 return AgentResult(content="ok", turns=1)
 
         if not AgentRegistry.contains("test-parallel-tools-agent"):
-            AgentRegistry.register_value(
-                "test-parallel-tools-agent", _CapturingAgent
-            )
+            AgentRegistry.register_value("test-parallel-tools-agent", _CapturingAgent)
         _CapturingAgent.instances.clear()
 
         def ask_with(parallel_tools: bool) -> None:

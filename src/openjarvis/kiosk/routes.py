@@ -176,9 +176,7 @@ async def ensure_presentation(
         session = await run_in_threadpool(manager.ensure, body.display_origin)
     except PresentationUnavailableError as exc:
         logger.warning("Customer display unavailable: %s", exc)
-        raise HTTPException(
-            status_code=503, detail="presentation_unavailable"
-        ) from exc
+        raise HTTPException(status_code=503, detail="presentation_unavailable") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"presentation_session_id": session.session_id}

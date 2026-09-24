@@ -33,9 +33,7 @@ class TestTypeSafeDecideTool:
 
         assert "typesafe_decide" in names
 
-    def test_missing_openrouter_key_does_not_call_provider(
-        self, monkeypatch
-    ):
+    def test_missing_openrouter_key_does_not_call_provider(self, monkeypatch):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         called = False
 
@@ -54,9 +52,7 @@ class TestTypeSafeDecideTool:
         assert "OPENROUTER_API_KEY" in result.content
         assert called is False
 
-    def test_success_uses_pinned_jev_model_and_reports_confidence(
-        self, monkeypatch
-    ):
+    def test_success_uses_pinned_jev_model_and_reports_confidence(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
         captured = {}
 
@@ -124,9 +120,7 @@ class TestTypeSafeDecideTool:
         assert "test-openrouter-key" not in result.content
         assert json.loads(result.content)["accepted"] is True
 
-    def test_low_confidence_is_advisory_not_a_provider_failure(
-        self, monkeypatch
-    ):
+    def test_low_confidence_is_advisory_not_a_provider_failure(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
         monkeypatch.setattr(
             typesafe_decide.httpx,

@@ -284,8 +284,7 @@ class OrchestratorAgent(ToolUsingAgent):
                         content="".join(visible_parts),
                         tool_calls=tool_calls,
                         metadata=(
-                            {"response_items": response_items}
-                            if response_items else {}
+                            {"response_items": response_items} if response_items else {}
                         ),
                     )
                 )
@@ -616,9 +615,7 @@ class OrchestratorAgent(ToolUsingAgent):
                     role=Role.ASSISTANT,
                     content=content,
                     tool_calls=tool_calls,
-                    metadata={
-                        "response_items": result["response_items"]
-                    }
+                    metadata={"response_items": result["response_items"]}
                     if result.get("response_items")
                     else {},
                 )
@@ -796,8 +793,7 @@ class OrchestratorAgent(ToolUsingAgent):
         if len(tool_calls) != len(tool_results) or not tool_results:
             return False
         if any(
-            result.metadata.get("continue_agent") is True
-            for result in tool_results
+            result.metadata.get("continue_agent") is True for result in tool_results
         ):
             return False
         display_tools = {

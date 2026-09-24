@@ -52,16 +52,21 @@ def test_voice_recall_uses_current_skill_registry(tmp_path):
 
     manager = SkillManager(EventBus(), overlay_dir=tmp_path / "overlays")
     skill = SkillManageTool(skills_dir=tmp_path / "skills", skill_manager=manager)
-    memory = SimpleNamespace(retrieve=lambda *args, **kwargs: [
-        RetrievalResult(
-            content="Use known-read", source="openjarvis.skill_learning",
-            metadata={"skill_name": "known-read"},
-        ),
-    ])
+    memory = SimpleNamespace(
+        retrieve=lambda *args, **kwargs: [
+            RetrievalResult(
+                content="Use known-read",
+                source="openjarvis.skill_learning",
+                metadata={"skill_name": "known-read"},
+            ),
+        ]
+    )
     config = SimpleNamespace(
         agent=SimpleNamespace(context_from_memory=True),
         memory=SimpleNamespace(
-            context_top_k=5, context_min_score=0, context_max_tokens=2048,
+            context_top_k=5,
+            context_min_score=0,
+            context_max_tokens=2048,
         ),
     )
     recall = _memory_recall(memory, config, agent=SimpleNamespace(_tools=[skill]))
@@ -69,7 +74,9 @@ def test_voice_recall_uses_current_skill_registry(tmp_path):
     _, before = agent_input(pipecat_context, recall)
     assert not any("known-read" in m.text for m in before.conversation.messages)
     assert skill.execute(
-        action="create", name="known-read", steps=[{"tool_name": "http_request"}],
+        action="create",
+        name="known-read",
+        steps=[{"tool_name": "http_request"}],
     ).success
     # The same active session sees newly registered skills, not a stale snapshot.
     _, after = agent_input(pipecat_context, recall)

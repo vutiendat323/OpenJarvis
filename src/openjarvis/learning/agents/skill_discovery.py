@@ -333,7 +333,8 @@ class SkillDiscovery:
 
         raw_display_arguments = self._step_arguments(display)
         evidence_native_menu = (
-            len(reads) == 1 and self._tool_name(display) == "display_menu"
+            len(reads) == 1
+            and self._tool_name(display) == "display_menu"
             and raw_display_arguments == {"all_from_latest_http": True}
         )
         if evidence_native_menu:
@@ -394,7 +395,8 @@ class SkillDiscovery:
             or names[0] != "browser_network_requests"
             or names[1] not in {"browser_fill_form", "browser_click"}
             or names[2] != "browser_network_requests"
-            or names[3:] != [
+            or names[3:]
+            != [
                 "http_request",
                 "browser_verify_list_visible",
                 "display_menu",
@@ -518,9 +520,7 @@ class SkillDiscovery:
         }
         input_schema = {
             "type": "object",
-            "properties": {
-                parameter_name: {"type": "string", "minLength": 1}
-            },
+            "properties": {parameter_name: {"type": "string", "minLength": 1}},
             "required": [parameter_name],
             "additionalProperties": False,
         }
@@ -645,10 +645,7 @@ class SkillDiscovery:
             if all(
                 any(
                     identity == value
-                    or (
-                        isinstance(value, str)
-                        and identity.strip() == value.strip()
-                    )
+                    or (isinstance(value, str) and identity.strip() == value.strip())
                     for value in cls._scalar_values(row)
                 )
                 for identity, row in zip(identities, rows)
@@ -901,9 +898,7 @@ class SkillDiscovery:
                     return semantic_matches[0]
             return best[0] if best_score > 0 and len(best) == 1 else None
 
-        def composed_string(
-            value: str, anchor: str, target_key: str
-        ) -> str | None:
+        def composed_string(value: str, anchor: str, target_key: str) -> str | None:
             matches: List[Tuple[int, int, str]] = []
             source_strings = {
                 source_value

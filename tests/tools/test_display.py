@@ -529,9 +529,9 @@ def test_display_cart_rejects_a_bad_batch_edit_without_mutating(params, content)
         published = len(recorder.events)
         swap = {"LIVE": ids[0], "LIVE2": ids[1]}
         params = json.loads(
-            json.dumps(params).replace('"LIVE2"', f'"{swap["LIVE2"]}"').replace(
-                '"LIVE"', f'"{swap["LIVE"]}"'
-            )
+            json.dumps(params)
+            .replace('"LIVE2"', f'"{swap["LIVE2"]}"')
+            .replace('"LIVE"', f'"{swap["LIVE"]}"')
         )
         result = tool.execute(**params)
         after = tool.current_snapshot()
@@ -1519,9 +1519,7 @@ def test_display_menu_can_publish_every_product_from_latest_http_evidence():
                                 "slug": "product-a",
                                 "name": "Taco gà",
                                 "isActive": True,
-                                "variants": [
-                                    {"slug": "variant-a", "price": 86_000}
-                                ],
+                                "variants": [{"slug": "variant-a", "price": 86_000}],
                             }
                         },
                         {
@@ -1529,9 +1527,7 @@ def test_display_menu_can_publish_every_product_from_latest_http_evidence():
                                 "slug": "product-b",
                                 "name": "Burger gà",
                                 "isActive": False,
-                                "variants": [
-                                    {"slug": "variant-b", "price": 129_000}
-                                ],
+                                "variants": [{"slug": "variant-b", "price": 129_000}],
                             }
                         },
                     ]

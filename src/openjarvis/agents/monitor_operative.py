@@ -715,9 +715,7 @@ class MonitorOperativeAgent(ToolUsingAgent):
 
         def _updated_at(result: Any) -> float:
             try:
-                timestamp = float(
-                    result.metadata.get("updated_at", float("-inf"))
-                )
+                timestamp = float(result.metadata.get("updated_at", float("-inf")))
             except (TypeError, ValueError):
                 return float("-inf")
             return timestamp if math.isfinite(timestamp) else float("-inf")

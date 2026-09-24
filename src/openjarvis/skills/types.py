@@ -68,11 +68,7 @@ class SkillManifest:
             "depends": self.depends,
             **({"input_schema": self.input_schema} if self.input_schema else {}),
             **(
-                {
-                    "metadata": {
-                        "openjarvis": {"request_recipe": request_recipe}
-                    }
-                }
+                {"metadata": {"openjarvis": {"request_recipe": request_recipe}}}
                 if isinstance(request_recipe, dict)
                 else {}
             ),

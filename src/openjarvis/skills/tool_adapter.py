@@ -25,8 +25,9 @@ def _validate_parameters(
         "array": lambda item: isinstance(item, list),
         "string": lambda item: isinstance(item, str),
         "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
-        "number": lambda item: isinstance(item, (int, float))
-        and not isinstance(item, bool),
+        "number": lambda item: (
+            isinstance(item, (int, float)) and not isinstance(item, bool)
+        ),
         "boolean": lambda item: isinstance(item, bool),
     }
     if schema_type in type_matches and not type_matches[schema_type](value):

@@ -522,26 +522,42 @@ class TestOrchestratorAgent:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("display_success", [True, False])
     async def test_streaming_acknowledged_message_requires_success(
-        self, display_success: bool,
+        self,
+        display_success: bool,
     ) -> None:
         class DisplayWithMessage(_DisplayStub):
             def execute(self, **params: Any) -> ToolResult:
                 return ToolResult(
-                    tool_name="display_menu", content="shown",
+                    tool_name="display_menu",
+                    content="shown",
                     success=display_success,
                     metadata={"customer_message": "Đã hiển thị."},
                 )
 
-        engine = StreamingEngine([
-            [StreamChunk(tool_calls=[{
-                "index": 0, "id": "display-1",
-                "function": {"name": "display_menu", "arguments": "{}"},
-            }]), StreamChunk(finish_reason="tool_calls")],
-            [StreamChunk(content="Màn hình chưa sẵn sàng."),
-             StreamChunk(finish_reason="stop")],
-        ])
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "display-1",
+                                "function": {"name": "display_menu", "arguments": "{}"},
+                            }
+                        ]
+                    ),
+                    StreamChunk(finish_reason="tool_calls"),
+                ],
+                [
+                    StreamChunk(content="Màn hình chưa sẵn sàng."),
+                    StreamChunk(finish_reason="stop"),
+                ],
+            ]
+        )
         agent = OrchestratorAgent(
-            engine, "deepseek-v4-flash", tools=[DisplayWithMessage()],
+            engine,
+            "deepseek-v4-flash",
+            tools=[DisplayWithMessage()],
         )
         events = [event async for event in agent.run_stream("show menu")]
         text = "".join(
@@ -701,8 +717,7 @@ class TestOrchestratorAgent:
                         "id": "set-type",
                         "name": "display_cart",
                         "arguments": (
-                            '{"action":"set_order_type",'
-                            '"order_type":"take-out"}'
+                            '{"action":"set_order_type","order_type":"take-out"}'
                         ),
                     }
                 ],
@@ -859,21 +874,29 @@ class TestOrchestratorAgent:
                     metadata={"customer_message": "Đã tìm thấy 1 kết quả."},
                 )
 
-        engine = StreamingEngine([
+        engine = StreamingEngine(
             [
-                StreamChunk(content="Dạ, mình xem nhé."),
-                StreamChunk(tool_calls=[{
-                    "index": 0, "id": "display-1",
-                    "function": {"name": "display_menu", "arguments": "{}"},
-                }]),
-                StreamChunk(finish_reason="tool_calls"),
-            ],
-        ])
+                [
+                    StreamChunk(content="Dạ, mình xem nhé."),
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "display-1",
+                                "function": {"name": "display_menu", "arguments": "{}"},
+                            }
+                        ]
+                    ),
+                    StreamChunk(finish_reason="tool_calls"),
+                ],
+            ]
+        )
         agent = OrchestratorAgent(engine, "test-model", tools=[ResultDisplay()])
 
         events = [event async for event in agent.run_stream("món có khoai")]
         finished = next(
-            index for index, event in enumerate(events)
+            index
+            for index, event in enumerate(events)
             if type(event).__name__ == "AgentToolFinished"
         )
         text = "".join(
@@ -1248,10 +1271,14 @@ class TestOrchestratorAgent:
 
     @pytest.mark.asyncio
     async def test_http_result_is_projected_only_in_the_model_transcript(self) -> None:
-        raw_body = "{\"products\":[" + ",".join(
-            f'{{"id":"item-{index:03d}","description":"{"x" * 600}"}}'
-            for index in range(121)
-        ) + "]}"
+        raw_body = (
+            '{"products":['
+            + ",".join(
+                f'{{"id":"item-{index:03d}","description":"{"x" * 600}"}}'
+                for index in range(121)
+            )
+            + "]}"
+        )
 
         class LargeHttpResult(BaseTool):
             tool_id = "http_request"
@@ -1479,7 +1506,7 @@ class TestOrchestratorAgent:
                 [
                     StreamChunk(content="Result is 4."),
                     StreamChunk(finish_reason="stop"),
-                ]
+                ],
             ]
         )
         tool = RecordingCalculator()
@@ -1602,7 +1629,7 @@ class TestOrchestratorAgent:
                 [
                     StreamChunk(content="Result is 4."),
                     StreamChunk(finish_reason="stop"),
-                ]
+                ],
             ]
         )
         engine = InstrumentedEngine(inner, bus)
@@ -1948,7 +1975,8 @@ class TestOrchestratorAgent:
         assert events[0].content == "Dạ để tôi tính. "
         second_messages = engine.calls[1][0]
         assistant = next(
-            message for message in second_messages
+            message
+            for message in second_messages
             if message.role == Role.ASSISTANT and message.tool_calls
         )
         assert assistant.metadata["response_items"] == response_items
@@ -2285,9 +2313,7 @@ class TestOrchestratorParallelTools:
                 del params
                 display_started.set()
                 assert new_generation_published.wait(timeout=1)
-                return presentation.publish(
-                    {"view": "menu", "items": [{"id": "old"}]}
-                )
+                return presentation.publish({"view": "menu", "items": [{"id": "old"}]})
 
         class _NewGenerationTool(BaseTool):
             tool_id = "new_generation"
@@ -2376,9 +2402,7 @@ class TestBrowserSystemPromptPlumbing:
 
     def _voice_context(self) -> AgentContext:
         conversation = Conversation()
-        conversation.add(
-            Message(role=Role.SYSTEM, content=self.VOICE_SYSTEM_PROMPT)
-        )
+        conversation.add(Message(role=Role.SYSTEM, content=self.VOICE_SYSTEM_PROMPT))
         return AgentContext(conversation=conversation)
 
     def test_sync_run_prepends_the_agent_system_prompt(self) -> None:

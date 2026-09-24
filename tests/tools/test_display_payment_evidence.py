@@ -89,7 +89,9 @@ def test_customer_message_is_released_only_after_display_succeeds(display_availa
         tool._bus = None
     with conversation_scope("customer-message"):
         _observe(
-            ToolExecutor([_Http()]), '{"qrCode": "QR_REAL_789"}', 201,
+            ToolExecutor([_Http()]),
+            '{"qrCode": "QR_REAL_789"}',
+            201,
             "https://trendcoffee.net/api/latest/payment/initiate/public",
         )
         result = tool.execute(**_PAYMENT, customer_message="QR đã hiển thị.")

@@ -36,9 +36,7 @@ def _default_session_factory(*args: Any, **kwargs: Any) -> Any:
 
     from mcp import ClientSession
 
-    kwargs.setdefault(
-        "client_info", Implementation(name="openjarvis", version="0.1.0")
-    )
+    kwargs.setdefault("client_info", Implementation(name="openjarvis", version="0.1.0"))
     return ClientSession(*args, **kwargs)
 
 

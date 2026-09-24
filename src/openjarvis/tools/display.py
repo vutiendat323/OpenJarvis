@@ -150,9 +150,7 @@ def _menu_items_from_latest_http() -> list[dict[str, Any]]:
         if not isinstance(menu_items, list):
             continue
         for menu_item in menu_items:
-            product = (
-                menu_item.get("product") if isinstance(menu_item, dict) else None
-            )
+            product = menu_item.get("product") if isinstance(menu_item, dict) else None
             if not isinstance(product, dict) or not product.get("name"):
                 continue
             variants = product.get("variants")

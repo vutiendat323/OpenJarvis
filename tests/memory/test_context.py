@@ -84,11 +84,13 @@ def test_format_context_empty():
 def test_recall_omits_missing_skills_but_keeps_live_skills_and_other_memory():
     results = [
         RetrievalResult(
-            content="Run deleted-read", source="openjarvis.skill_learning",
+            content="Run deleted-read",
+            source="openjarvis.skill_learning",
             metadata={"skill_name": "deleted-read"},
         ),
         RetrievalResult(
-            content="Run live-read", source="openjarvis.skill_learning",
+            content="Run live-read",
+            source="openjarvis.skill_learning",
             metadata={"skill_name": "live-read"},
         ),
         RetrievalResult(content="Customer prefers take-away", source="notes"),

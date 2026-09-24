@@ -108,9 +108,7 @@ class TestStepsHaveToolNames:
 
 def test_workspace_checkout_accepts_atomic_cart_replacement() -> None:
     manifest = load_skill(
-        Path(__file__).resolve().parents[2]
-        / "skills"
-        / "trendcoffee-checkout.toml"
+        Path(__file__).resolve().parents[2] / "skills" / "trendcoffee-checkout.toml"
     )
 
     assert manifest.checkout is True
@@ -121,9 +119,7 @@ _CHECKOUT_SKILL = (
     Path(__file__).resolve().parents[2] / "skills" / "trendcoffee-checkout.toml"
 )
 _ADD_TO_CART_SKILL = (
-    Path(__file__).resolve().parents[2]
-    / "skills"
-    / "trendcoffee-add-to-cart.toml"
+    Path(__file__).resolve().parents[2] / "skills" / "trendcoffee-add-to-cart.toml"
 )
 
 

@@ -125,9 +125,7 @@ class TestSkillToolMetadataTagging:
 
         assert tool.agent_context() == {}
         assert tool.execute().success is True
-        assert tool.agent_context() == {
-            "menu_categories": ["cà phê", "món trà"]
-        }
+        assert tool.agent_context() == {"menu_categories": ["cà phê", "món trà"]}
 
     def _make_tool(self, manifest: SkillManifest) -> SkillTool:
         executor = SkillExecutor(ToolExecutor([_EchoTool()]))

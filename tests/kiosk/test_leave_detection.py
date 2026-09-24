@@ -20,25 +20,34 @@ def _history(*events: VisionEvent) -> EventHistory:
 
 
 def _near(ts: float, m: float = 0.6) -> VisionEvent:
-    return VisionEvent(kind="person_near", ts=ts, nearest_m=m, track_id=1,
-                       body_m=m + 0.1, facing=True)
+    return VisionEvent(
+        kind="person_near", ts=ts, nearest_m=m, track_id=1, body_m=m + 0.1, facing=True
+    )
 
 
 def _turned_away(ts: float, body_m: float = 0.7) -> VisionEvent:
     """No face (so no track), but a body still stands in the zone."""
-    return VisionEvent(kind="no_person", ts=ts, nearest_m=0.0, track_id=-1,
-                       body_m=body_m, facing=False)
+    return VisionEvent(
+        kind="no_person", ts=ts, nearest_m=0.0, track_id=-1, body_m=body_m, facing=False
+    )
 
 
 def _gone(ts: float) -> VisionEvent:
-    return VisionEvent(kind="no_person", ts=ts, nearest_m=0.0, track_id=-1,
-                       body_m=-1.0, facing=False)
+    return VisionEvent(
+        kind="no_person", ts=ts, nearest_m=0.0, track_id=-1, body_m=-1.0, facing=False
+    )
 
 
 def _evaluate(state: str, history: EventHistory, now: float):
-    return evaluate_state(history, now, state, user_response=None,
-                          session_start=now - 30.0, prompting_started_at=now - 30.0,
-                          last_decline_at=None)
+    return evaluate_state(
+        history,
+        now,
+        state,
+        user_response=None,
+        session_start=now - 30.0,
+        prompting_started_at=now - 30.0,
+        last_decline_at=None,
+    )
 
 
 class TestActiveSession:
@@ -63,7 +72,13 @@ class TestApproaching:
     def test_a_back_turned_body_never_starts_a_greeting(self):
         """Greeting needs a face: the customer has to look at the kiosk."""
         history = _history(*[_turned_away(t) for t in range(0, 10)])
-        state, effects = evaluate_state(history, 10.0, "idle", user_response=None,
-                                        session_start=None, prompting_started_at=None,
-                                        last_decline_at=None)
+        state, effects = evaluate_state(
+            history,
+            10.0,
+            "idle",
+            user_response=None,
+            session_start=None,
+            prompting_started_at=None,
+            last_decline_at=None,
+        )
         assert state == "idle" and effects == []

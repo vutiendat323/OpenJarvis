@@ -37,9 +37,7 @@ def resolve_agent_system_prompt(agent_config: Any) -> str | None:
     try:
         return path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise RuntimeError(
-            f"agent.system_prompt_path is not readable: {path}"
-        ) from exc
+        raise RuntimeError(f"agent.system_prompt_path is not readable: {path}") from exc
 
 
 def build_morning_digest_kwargs(

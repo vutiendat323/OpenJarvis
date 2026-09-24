@@ -102,9 +102,7 @@ class AgentWorkerLease:
             self._signal_cancelled()
             raise
 
-    def register_cancellation(
-        self, callback: Callable[[], None]
-    ) -> Callable[[], None]:
+    def register_cancellation(self, callback: Callable[[], None]) -> Callable[[], None]:
         """Register ``callback`` for caller cancellation; return an unregister."""
         with self._cancel_lock:
             if not self._cancelled:
@@ -163,9 +161,7 @@ def check_agent_cancelled() -> None:
         lease.check_cancelled()
 
 
-async def run_agent_sync_worker(
-    function: Callable[..., Any], /, *args: Any
-) -> Any:
+async def run_agent_sync_worker(function: Callable[..., Any], /, *args: Any) -> Any:
     """Run sync Agent work under the active runtime lease when one exists."""
     lease = _RUN_WORKER_LEASE.get()
     if lease is None:
@@ -482,8 +478,7 @@ class BaseAgent(ABC):
             tool_evidence_context = ""
         if tool_evidence_context:
             evidence_section = (
-                "Recent tool evidence from this conversation:\n"
-                f"{tool_evidence_context}"
+                f"Recent tool evidence from this conversation:\n{tool_evidence_context}"
             )
             effective_system_prompt = (
                 f"{effective_system_prompt}\n\n{evidence_section}"

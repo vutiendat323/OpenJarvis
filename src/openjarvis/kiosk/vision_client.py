@@ -63,7 +63,8 @@ class VisionClient:
                 delay_idx += 1
                 logger.warning(
                     "VisionClient disconnected: %s. Reconnecting in %ds...",
-                    exc, delay,
+                    exc,
+                    delay,
                 )
                 await asyncio.sleep(delay)
 

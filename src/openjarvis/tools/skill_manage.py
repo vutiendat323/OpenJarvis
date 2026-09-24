@@ -281,10 +281,7 @@ class SkillManageTool(BaseTool):
                 ),
                 "",
             )
-            if (
-                candidate_display == display
-                and origins & self._http_origins(candidate)
-            ):
+            if candidate_display == display and origins & self._http_origins(candidate):
                 return True
         return False
 

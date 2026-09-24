@@ -185,7 +185,7 @@ class TestCloudEngineGenerate:
                                 "name": "lookup",
                                 "arguments": '{"query":"menu"}',
                             },
-                        )
+                        ),
                     ],
                     usage=SimpleNamespace(
                         input_tokens=10, output_tokens=5, total_tokens=15
@@ -216,7 +216,8 @@ class TestCloudEngineGenerate:
         assert sent["stream"] is True
         assert sent["store"] is False
         assert [chunk.content for chunk in chunks if chunk.content] == [
-            "Dạ, ", "để tôi xem."
+            "Dạ, ",
+            "để tôi xem.",
         ]
         assert chunks[-1].tool_calls == [
             {
@@ -282,7 +283,11 @@ class TestCloudEngineGenerate:
     async def test_gpt_6_text_stream_uses_supported_chat_mode(self) -> None:
         client = mock.MagicMock()
         client.chat.completions.create.return_value = iter(
-            [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="OK"))])]
+            [
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="OK"))]
+                )
+            ]
         )
         engine = CloudEngine()
         engine._openai_client = client
@@ -756,10 +761,12 @@ class TestOpenRouterToolForwarding:
         self, full: bool, selected_model: str, provider_model: str
     ) -> None:
         chunk = SimpleNamespace(
-            choices=[SimpleNamespace(
-                delta=SimpleNamespace(content="ok", tool_calls=None),
-                finish_reason="stop",
-            )]
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="ok", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ]
         )
 
         async def chunks():
@@ -777,7 +784,8 @@ class TestOpenRouterToolForwarding:
             stream = engine.stream
 
         result = [
-            token async for token in stream(
+            token
+            async for token in stream(
                 [Message(role=Role.USER, content="hello")], model=selected_model
             )
         ]

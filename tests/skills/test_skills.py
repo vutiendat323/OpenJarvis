@@ -200,7 +200,7 @@ def _skill_toml(
     recipe: str = "",
     checkout: bool = False,
 ) -> str:
-    return f'''\
+    return f"""\
 [skill]
 name = "native-search"
 checkout = {str(checkout).lower()}
@@ -211,7 +211,7 @@ input_schema_json = '{json.dumps(schema)}'
 [[skill.steps]]
 tool_name = "http_request"
 arguments_template = '{{"url":"https://shop.example/search?q={{q|urlencode}}","method":"GET"}}'
-'''
+"""
 
 
 _SAFE_REQUEST_RECIPE = """\
@@ -278,9 +278,7 @@ class TestExplicitSkillInputSchema:
         signed = json.loads(manifest.manifest_bytes())
 
         assert signed["input_schema"] == schema
-        assert signed["metadata"] == {
-            "openjarvis": {"request_recipe": recipe}
-        }
+        assert signed["metadata"] == {"openjarvis": {"request_recipe": recipe}}
 
     def test_legacy_manifest_bytes_are_unchanged(self):
         manifest = SkillManifest(name="legacy")
@@ -295,9 +293,9 @@ class TestExplicitSkillInputSchema:
             "depends": [],
         }
 
-        assert manifest.manifest_bytes() == json.dumps(
-            expected, sort_keys=True
-        ).encode()
+        assert (
+            manifest.manifest_bytes() == json.dumps(expected, sort_keys=True).encode()
+        )
 
     @pytest.mark.parametrize(
         "schema_text",
@@ -312,11 +310,11 @@ class TestExplicitSkillInputSchema:
     def test_rejects_invalid_or_unsupported_schema(
         self, tmp_path: Path, schema_text: str
     ) -> None:
-        body = f'''\
+        body = f"""\
 [skill]
 name = "invalid-schema"
 input_schema_json = '{schema_text}'
-'''
+"""
 
         with pytest.raises(ValueError, match="input_schema"):
             _load_manifest(tmp_path, body)
@@ -598,10 +596,13 @@ class TestSkillExecutor:
         ) == [rows[1]]
 
     def test_multiply_requires_two_numbers_and_preserves_integer_result(self):
-        assert SkillExecutor._render_json_value(
-            {"$multiply": ["{unit_price}", "{quantity}"]},
-            {"unit_price": 35_000, "quantity": 2},
-        ) == 70_000
+        assert (
+            SkillExecutor._render_json_value(
+                {"$multiply": ["{unit_price}", "{quantity}"]},
+                {"unit_price": 35_000, "quantity": 2},
+            )
+            == 70_000
+        )
 
         for operands in ([1], [True, 2], ["2", 2]):
             with pytest.raises(ValueError, match="multiply"):
@@ -669,9 +670,10 @@ class TestSkillExecutor:
         )
 
         assert rendered == "table-73"
-        assert SkillExecutor._render_json_value(
-            {"$coalesce": [False, "fallback"]}, {}
-        ) is False
+        assert (
+            SkillExecutor._render_json_value({"$coalesce": [False, "fallback"]}, {})
+            is False
+        )
 
     @pytest.mark.parametrize(
         "expression",

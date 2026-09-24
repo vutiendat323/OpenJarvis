@@ -114,9 +114,7 @@ def _completed_menu_trace(*, headers: dict | None = None) -> Trace:
     observed_url = f"https://shop.example/menu?date={today}&q=Fresh%20noodles"
     request_headers = headers or {"Accept": "application/json"}
     response = {
-        "items": [
-            {"id": "noodles-1", "name": "Fresh noodles", "price": 59_000}
-        ],
+        "items": [{"id": "noodles-1", "name": "Fresh noodles", "price": 59_000}],
         "hasNext": False,
     }
     return Trace(
@@ -218,9 +216,7 @@ def _completed_menu_trace(*, headers: dict | None = None) -> Trace:
                     "result": json.dumps(
                         {
                             "count": 1,
-                            "items": [
-                                {"id": "noodles-1", "text": "Fresh noodles"}
-                            ],
+                            "items": [{"id": "noodles-1", "text": "Fresh noodles"}],
                             "has_pagination": False,
                             "complete": {"path": "hasNext", "equals": False},
                         }
@@ -250,11 +246,9 @@ def _completed_menu_trace(*, headers: dict | None = None) -> Trace:
 
 
 def _menu_step(trace: Trace, tool_name: str, occurrence: int = 0) -> TraceStep:
-    return [
-        step
-        for step in trace.steps
-        if step.input.get("tool") == tool_name
-    ][occurrence]
+    return [step for step in trace.steps if step.input.get("tool") == tool_name][
+        occurrence
+    ]
 
 
 def _sync_menu_correspondence(trace: Trace) -> None:
@@ -268,9 +262,7 @@ def _sync_menu_correspondence(trace: Trace) -> None:
     _menu_step(trace, "browser_verify_list_visible").output["result"] = json.dumps(
         {
             "count": len(items),
-            "items": [
-                {"id": item["id"], "text": item["name"]} for item in items
-            ],
+            "items": [{"id": item["id"], "text": item["name"]} for item in items],
             "has_pagination": False,
             "complete": {"path": "complete", "equals": False},
         }
@@ -808,14 +800,16 @@ class TestReadDisplayTraceParameterization:
         trace = _completed_menu_trace()
         _menu_step(trace, "http_request").output["result"] = json.dumps(
             {
-                "items": [{
-                    "product": {
-                    "slug": "smoothie-1",
-                    "name": "Berry smoothie",
-                    "description": "Berry smoothie",
-                    "price": 65_000,
+                "items": [
+                    {
+                        "product": {
+                            "slug": "smoothie-1",
+                            "name": "Berry smoothie",
+                            "description": "Berry smoothie",
+                            "price": 65_000,
+                        }
                     }
-                }]
+                ]
             }
         )
         trace.steps[-1].input["arguments"] = {
@@ -842,14 +836,16 @@ class TestReadDisplayTraceParameterization:
         trace = _completed_menu_trace()
         _menu_step(trace, "http_request").output["result"] = json.dumps(
             {
-                "items": [{
-                    "product": {
-                    "slug": "cake-1",
-                    "name": "Salted egg croissant",
-                    "description": "Bánh croissant than tre kim sa",
-                    "price": 65_000,
+                "items": [
+                    {
+                        "product": {
+                            "slug": "cake-1",
+                            "name": "Salted egg croissant",
+                            "description": "Bánh croissant than tre kim sa",
+                            "price": 65_000,
+                        }
                     }
-                }]
+                ]
             }
         )
         trace.steps[-1].input["arguments"] = {
@@ -937,7 +933,9 @@ class TestReadDisplayTraceParameterization:
 
         assert manifest is not None
         arguments = json.loads(manifest.steps[0].arguments_template)
-        assert arguments["url"] == "https://shop.example/menu?date={today}&q={q|urlencode}"
+        assert (
+            arguments["url"] == "https://shop.example/menu?date={today}&q={q|urlencode}"
+        )
 
     @pytest.mark.parametrize("occurrence", [0, 1])
     def test_rejects_when_either_network_snapshot_is_missing(self, occurrence):

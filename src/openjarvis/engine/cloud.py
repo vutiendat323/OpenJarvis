@@ -695,9 +695,7 @@ class CloudEngine(InferenceEngine):
             **kwargs,
             "reasoning": {"effort": "high"},
             "include": list(
-                dict.fromkeys(
-                    [*requested_include, "reasoning.encrypted_content"]
-                )
+                dict.fromkeys([*requested_include, "reasoning.encrypted_content"])
             ),
             "store": False,
         }

@@ -225,7 +225,6 @@ def latest_json_number(
     return None
 
 
-
 def evidence_snapshot() -> Tuple[Dict[str, str], str]:
     """Plain-data view of this conversation's evidence: ``(by_tool, most_recent)``.
 

@@ -71,7 +71,8 @@ def _memory_recall(
 
     skill_exists = next(
         (
-            tool.has_skill for tool in getattr(agent, "_tools", ())
+            tool.has_skill
+            for tool in getattr(agent, "_tools", ())
             if tool.spec.name == "skill_manage"
             and callable(getattr(tool, "has_skill", None))
         ),

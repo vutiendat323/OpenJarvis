@@ -315,8 +315,7 @@ class SystemBuilder:
         for tool in tool_list:
             self._inject_payment_trusted_origins(tool, trusted_origins)
         if any(
-            getattr(getattr(t, "_manifest", None), "checkout", False)
-            for t in tool_list
+            getattr(getattr(t, "_manifest", None), "checkout", False) for t in tool_list
         ):
             self._inject_checkout_guard(tool_list)
 
@@ -694,7 +693,8 @@ class SystemBuilder:
         if cart is None:
             raise ValueError("guarded checkout requires display_cart")
         cart._checkout_contracts = {
-            t._manifest.manifest_bytes() for t in tools
+            t._manifest.manifest_bytes()
+            for t in tools
             if getattr(getattr(t, "_manifest", None), "checkout", False)
         }
         for tool in tools:

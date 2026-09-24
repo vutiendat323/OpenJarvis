@@ -50,12 +50,13 @@ class KioskDependencies:
     Never accessed by evaluate_state() — that function is pure.
     """
 
-    bus: Any | None = None                         # has .publish(event_type, data)
+    bus: Any | None = None  # has .publish(event_type, data)
     tts: Callable[[str], Awaitable[None]] | None = None  # async text-to-speech
-    presentation: Any | None = None                 # has .publish(payload)
+    presentation: Any | None = None  # has .publish(payload)
 
 
 # -- Runner -----------------------------------------------------------
+
 
 async def run_side_effects(
     effects: list[SideEffect],

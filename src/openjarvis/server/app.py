@@ -136,9 +136,7 @@ def _setup_kiosk(app: FastAPI, bus, channel_bridge) -> None:
     from openjarvis.kiosk.vision_client import VisionClient
 
     config = KioskConfig(
-        approach_threshold_m=float(
-            os.environ.get("KIOSK_APPROACH_THRESHOLD_M", "1.0")
-        ),
+        approach_threshold_m=float(os.environ.get("KIOSK_APPROACH_THRESHOLD_M", "1.0")),
         approach_entry_debounce=float(
             os.environ.get("KIOSK_APPROACH_ENTRY_DEBOUNCE", "0.4")
         ),
@@ -151,15 +149,11 @@ def _setup_kiosk(app: FastAPI, bus, channel_bridge) -> None:
         leave_sustain_seconds_active=float(
             os.environ.get("KIOSK_LEAVE_SUSTAIN_ACTIVE", "10.0")
         ),
-        session_max_seconds=float(
-            os.environ.get("KIOSK_SESSION_MINUTES", "10")
-        ) * 60,
-        session_warning_seconds=float(
-            os.environ.get("KIOSK_SESSION_MINUTES", "10")
-        ) * 60 - 60,
-        popup_timeout=float(
-            os.environ.get("KIOSK_POPUP_TIMEOUT", "30")
-        ),
+        session_max_seconds=float(os.environ.get("KIOSK_SESSION_MINUTES", "10")) * 60,
+        session_warning_seconds=float(os.environ.get("KIOSK_SESSION_MINUTES", "10"))
+        * 60
+        - 60,
+        popup_timeout=float(os.environ.get("KIOSK_POPUP_TIMEOUT", "30")),
     )
 
     vision_url = os.environ.get("KIOSK_VISION_URL", "ws://127.0.0.1:9876")

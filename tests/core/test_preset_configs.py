@@ -305,8 +305,7 @@ def test_kiosk_mcp_prompt_routes_supported_order_types_through_checkout_skill() 
     assert "Delivery is not supported by this prepared checkout skill" in normalized
     assert "take-out-only procedure" not in normalized
     assert (
-        "current confirmation for the draft and take-out order type"
-        not in normalized
+        "current confirmation for the draft and take-out order type" not in normalized
     )
 
 

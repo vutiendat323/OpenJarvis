@@ -38,8 +38,10 @@ def _fold_search_text(text: str) -> str:
 
 
 def _search_matches(text: object, terms: object) -> bool:
-    if not isinstance(text, str) or not isinstance(terms, list) or not all(
-        isinstance(term, str) for term in terms
+    if (
+        not isinstance(text, str)
+        or not isinstance(terms, list)
+        or not all(isinstance(term, str) for term in terms)
     ):
         return False
 
@@ -437,10 +439,12 @@ class SkillExecutor:
             "object": lambda item: isinstance(item, dict),
             "array": lambda item: isinstance(item, list),
             "string": lambda item: isinstance(item, str),
-            "integer": lambda item: isinstance(item, int)
-            and not isinstance(item, bool),
-            "number": lambda item: isinstance(item, (int, float))
-            and not isinstance(item, bool),
+            "integer": lambda item: (
+                isinstance(item, int) and not isinstance(item, bool)
+            ),
+            "number": lambda item: (
+                isinstance(item, (int, float)) and not isinstance(item, bool)
+            ),
             "boolean": lambda item: isinstance(item, bool),
             "null": lambda item: item is None,
         }
@@ -514,9 +518,9 @@ class SkillExecutor:
                 if not isinstance(actual, list):
                     raise ValueError("all_unique_non_empty requires an array")
                 identities = [json.dumps(item, sort_keys=True) for item in actual]
-                if any(item in {None, ""} for item in actual) or len(
-                    identities
-                ) != len(set(identities)):
+                if any(item in {None, ""} for item in actual) or len(identities) != len(
+                    set(identities)
+                ):
                     raise ValueError("values must be unique non-empty identities")
                 continue
             if set(assertion) != {"actual", "equals"}:
@@ -550,26 +554,29 @@ class SkillExecutor:
                 )
             if "$multiply" in value:
                 operands = value["$multiply"]
-                if set(value) != {"$multiply"} or not isinstance(
-                    operands, list
-                ) or len(operands) != 2:
+                if (
+                    set(value) != {"$multiply"}
+                    or not isinstance(operands, list)
+                    or len(operands) != 2
+                ):
                     raise ValueError("invalid multiply expression")
                 resolved = [
                     SkillExecutor._render_json_value(operand, ctx)
                     for operand in operands
                 ]
                 if any(
-                    isinstance(operand, bool)
-                    or not isinstance(operand, (int, float))
+                    isinstance(operand, bool) or not isinstance(operand, (int, float))
                     for operand in resolved
                 ):
                     raise ValueError("multiply operands must be numbers")
                 return resolved[0] * resolved[1]
             if "$coalesce" in value:
                 operands = value["$coalesce"]
-                if set(value) != {"$coalesce"} or not isinstance(
-                    operands, list
-                ) or not operands:
+                if (
+                    set(value) != {"$coalesce"}
+                    or not isinstance(operands, list)
+                    or not operands
+                ):
                     raise ValueError("invalid coalesce expression")
                 for operand in operands:
                     try:
@@ -626,9 +633,7 @@ class SkillExecutor:
         if not isinstance(value, str):
             return value
 
-        full_placeholder = re.fullmatch(
-            r"\{(\w+(?:\.\w+)*)(?:\|(\w+))?\}", value
-        )
+        full_placeholder = re.fullmatch(r"\{(\w+(?:\.\w+)*)(?:\|(\w+))?\}", value)
         if full_placeholder:
             resolved = SkillExecutor._resolve_placeholder(
                 full_placeholder.group(1), ctx
@@ -655,9 +660,7 @@ class SkillExecutor:
                 return resolved
             return json.dumps(resolved, ensure_ascii=False)
 
-        return re.sub(
-            r"\{(\w+(?:\.\w+)*)(?:\|(\w+))?\}", _replace, value
-        )
+        return re.sub(r"\{(\w+(?:\.\w+)*)(?:\|(\w+))?\}", _replace, value)
 
     @staticmethod
     def _evaluate_predicate(predicate: Any, ctx: Dict[str, Any]) -> bool:
@@ -698,6 +701,7 @@ class SkillExecutor:
         if operator == "contains_folded":
             if not isinstance(left, str) or not isinstance(right, str):
                 return False
+
             def normalize(text: str) -> str:
                 return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
 
@@ -738,9 +742,7 @@ class SkillExecutor:
                 return rendered[1:-1]
             return rendered
 
-        return re.sub(
-            r"\{(\w+(?:\.\w+)*)(?:\|(\w+))?\}", _replace, template
-        )
+        return re.sub(r"\{(\w+(?:\.\w+)*)(?:\|(\w+))?\}", _replace, template)
 
     @staticmethod
     def _resolve_placeholder(key: str, ctx: Dict[str, Any]) -> Any:

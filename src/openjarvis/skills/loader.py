@@ -72,9 +72,7 @@ def _validate_schema_node(schema: object, path: str) -> None:
 
     additional = schema.get("additionalProperties")
     if additional is not None and not isinstance(additional, bool):
-        raise ValueError(
-            f"input_schema {path}.additionalProperties must be a boolean"
-        )
+        raise ValueError(f"input_schema {path}.additionalProperties must be a boolean")
 
     min_length = schema.get("minLength")
     if min_length is not None and (

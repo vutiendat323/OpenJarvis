@@ -53,12 +53,16 @@ def _parse_proc_stat(text: str) -> ProcessCounters:
 
     try:
         fields = text.rsplit(")", 1)[1].split()
-        return ProcessCounters(ppid=int(fields[1]), cpu_ticks=int(fields[11]) + int(fields[12]))
+        return ProcessCounters(
+            ppid=int(fields[1]), cpu_ticks=int(fields[11]) + int(fields[12])
+        )
     except (IndexError, ValueError) as exc:
         raise ValueError("invalid proc stat") from exc
 
 
-def read_process_counters(proc_root: Path = Path("/proc")) -> dict[int, ProcessCounters]:
+def read_process_counters(
+    proc_root: Path = Path("/proc"),
+) -> dict[int, ProcessCounters]:
     """Read process leaders from procfs, ignoring short-lived processes."""
 
     counters: dict[int, ProcessCounters] = {}
@@ -138,7 +142,9 @@ def read_gpu_snapshot() -> tuple[float | None, int | None]:
             used_bytes = 0
             for index in range(device_count):
                 handle = pynvml.nvmlDeviceGetHandleByIndex(index)
-                utilizations.append(float(pynvml.nvmlDeviceGetUtilizationRates(handle).gpu))
+                utilizations.append(
+                    float(pynvml.nvmlDeviceGetUtilizationRates(handle).gpu)
+                )
                 used_bytes += int(pynvml.nvmlDeviceGetMemoryInfo(handle).used)
             return sum(utilizations) / len(utilizations), used_bytes // (1024 * 1024)
         finally:
@@ -220,8 +226,12 @@ def summarize_samples(samples: Sequence[StackSample]) -> dict[str, object]:
         "rss_mib": _summary([s.rss_kib / 1024.0 for s in samples]),
         "process_count": max(len(s.pids) for s in samples),
     }
-    gpu_utilization = [s.gpu_utilization_pct for s in samples if s.gpu_utilization_pct is not None]
-    gpu_memory = [s.gpu_memory_used_mib for s in samples if s.gpu_memory_used_mib is not None]
+    gpu_utilization = [
+        s.gpu_utilization_pct for s in samples if s.gpu_utilization_pct is not None
+    ]
+    gpu_memory = [
+        s.gpu_memory_used_mib for s in samples if s.gpu_memory_used_mib is not None
+    ]
     if gpu_utilization:
         result["gpu_utilization_pct"] = _summary(gpu_utilization)
     if gpu_memory:

@@ -145,7 +145,8 @@ def inject_context(
     results = [r for r in results if r.score >= cfg.min_score]
     if cfg.skill_exists is not None:
         results = [
-            r for r in results
+            r
+            for r in results
             if r.source != "openjarvis.skill_learning"
             or not isinstance(r.metadata.get("skill_name"), str)
             or cfg.skill_exists(r.metadata["skill_name"])

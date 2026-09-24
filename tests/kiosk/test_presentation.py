@@ -29,9 +29,7 @@ class _FakeMCPClient:
     def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
         self.calls.append((name, arguments))
         action = arguments.get("action")
-        failure = self.failures.get(
-            (name, action if isinstance(action, str) else None)
-        )
+        failure = self.failures.get((name, action if isinstance(action, str) else None))
         if isinstance(failure, Exception):
             raise failure
         if failure == "is_error":

@@ -193,9 +193,7 @@ def test_unguarded_learned_transaction_is_not_recalled_or_executed(
     tool = SkillManageTool(skills_dir=skills_dir, skill_manager=Manager())
 
     assert tool.has_skill("learned-transaction-fixture") is False
-    result = tool.execute(
-        action="run", name="learned-transaction-fixture", context={}
-    )
+    result = tool.execute(action="run", name="learned-transaction-fixture", context={})
     assert result.success is False
     assert "unguarded transaction" in result.content.lower()
 
@@ -209,8 +207,7 @@ def test_learned_read_is_suppressed_when_a_canonical_read_exists(
             SkillStep(
                 tool_name="http_request",
                 arguments_template=(
-                    '{"url":"https://merchant.test/menu?category=stale",'
-                    '"method":"GET"}'
+                    '{"url":"https://merchant.test/menu?category=stale","method":"GET"}'
                 ),
             ),
             SkillStep(tool_name="display_menu"),

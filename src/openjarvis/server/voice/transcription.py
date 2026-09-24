@@ -63,9 +63,7 @@ def load_gemini_stt_profile() -> GeminiSTTProfile:
     if not isinstance(section, Mapping):
         raise ValueError("voice_stt_config_must_be_a_table")
 
-    language_codes = _string_list(
-        section, "language_codes", DEFAULT_LANGUAGE_CODES
-    )
+    language_codes = _string_list(section, "language_codes", DEFAULT_LANGUAGE_CODES)
     custom_vocabulary = _string_list(section, "custom_vocabulary", ())
     raw_mode = section.get("mode", DEFAULT_TRANSCRIPTION_MODE.value)
     if not isinstance(raw_mode, str):

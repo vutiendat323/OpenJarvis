@@ -26,7 +26,7 @@ async def test_direct_gpt_6_stream_omits_temperature(
 
         async def aiter_lines(self):
             yield 'data: {"choices":[{"delta":{"content":"OK"}}]}'
-            yield 'data: [DONE]'
+            yield "data: [DONE]"
 
     class FakeClient:
         async def __aenter__(self):

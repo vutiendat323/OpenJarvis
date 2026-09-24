@@ -8,9 +8,9 @@ import time
 from dataclasses import dataclass
 
 from openjarvis.kiosk.config import KioskConfig
-from openjarvis.kiosk.events import EventHistory
-from openjarvis.kiosk.evaluate import evaluate_state, KioskState, UserResponse
 from openjarvis.kiosk.effects import KioskDependencies, run_side_effects
+from openjarvis.kiosk.evaluate import KioskState, UserResponse, evaluate_state
+from openjarvis.kiosk.events import EventHistory
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,7 @@ async def kiosk_main(
 
     # Expose so routes can push responses
     import openjarvis.kiosk.runtime as mod
+
     mod._current_response_queue = response_queue
 
     logger.warning("Kiosk main loop started — state=idle")
@@ -112,7 +113,8 @@ async def kiosk_main(
 
         now = time.time()
         new_state, effects = evaluate_state(
-            runtime.history, now,
+            runtime.history,
+            now,
             runtime.current_state,
             user_response,
             runtime.session_start,
@@ -147,7 +149,8 @@ async def kiosk_main(
             # where a response arrives on the same tick as approaching->prompting)
             if new_state == "prompting" and user_response is not None:
                 new_state, effects = evaluate_state(
-                    runtime.history, now,
+                    runtime.history,
+                    now,
                     runtime.current_state,
                     user_response,
                     runtime.session_start,
@@ -168,7 +171,12 @@ async def kiosk_main(
             evt_info = f"{last.kind}" if last else "none"
             if last and last.kind == "person_near":
                 evt_info += f"@{last.nearest_m:.2f}m"
-            logger.warning("kiosk tick=%d state=%s last_event=%s", tick_count, runtime.current_state, evt_info)
+            logger.warning(
+                "kiosk tick=%d state=%s last_event=%s",
+                tick_count,
+                runtime.current_state,
+                evt_info,
+            )
 
 
 # Module-level references for routes
@@ -203,6 +211,10 @@ def _dict_to_vision_event(d: dict):
     nearest_m = d.get("nearest_m", 0.0)
     track_id = d.get("track_id", -1)
     return VisionEvent(
-        kind=kind, ts=ts, nearest_m=nearest_m, track_id=track_id,
-        body_m=d.get("body_m", -1.0), facing=d.get("facing", False),
+        kind=kind,
+        ts=ts,
+        nearest_m=nearest_m,
+        track_id=track_id,
+        body_m=d.get("body_m", -1.0),
+        facing=d.get("facing", False),
     )

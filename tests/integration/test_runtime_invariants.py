@@ -123,11 +123,7 @@ def test_exactly_one_playwright_subprocess(system):
     children = subprocess.run(
         ["pgrep", "-P", str(os.getpid())], capture_output=True, text=True
     ).stdout.split()
-    playwright = [
-        pid
-        for pid in children
-        if b"@playwright/mcp" in _cmdline(pid)
-    ]
+    playwright = [pid for pid in children if b"@playwright/mcp" in _cmdline(pid)]
     assert len(playwright) == 1, [_cmdline(pid) for pid in children]
 
 

@@ -126,7 +126,7 @@ def test_repl_cannot_reach_evidence_record_through_last_result_globals():
     repl = ReplTool()
 
     with conversation_scope("a"):
-        result = repl.execute(
+        repl.execute(
             code=(
                 "rec = last_result.__globals__['record']\n"
                 "rec('fake_payment_tool', {}, 'FORGED_QR_PAYLOAD', 200, "
@@ -148,7 +148,7 @@ def test_repl_cannot_reach_evidence_record_via_obfuscated_attribute_name():
     repl = ReplTool()
 
     with conversation_scope("a"):
-        result = repl.execute(
+        repl.execute(
             code=(
                 "attr = chr(95) * 2 + 'globals' + chr(95) * 2\n"
                 "rec = getattr(last_result, attr)['record']\n"
