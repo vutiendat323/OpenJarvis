@@ -4714,6 +4714,7 @@ security-signing = [
 ]
 server = [
     { name = "fastapi" },
+    { name = "mcp" },
     { name = "pydantic" },
     { name = "python-multipart" },
     { name = "uvicorn" },
@@ -4781,6 +4782,7 @@ requires-dist = [
     { name = "markdown-it-py", marker = "extra == 'voice'", specifier = ">=4.0" },
     { name = "mastodon-py", marker = "extra == 'channel-mastodon'", specifier = ">=1.8" },
     { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.12.6" },
+    { name = "mcp", marker = "extra == 'server'", specifier = ">=1.26" },
     { name = "mkdocs", marker = "extra == 'docs'", specifier = ">=1.6" },
     { name = "mkdocs-gen-files", marker = "extra == 'docs'", specifier = ">=0.5" },
     { name = "mkdocs-literate-nav", marker = "extra == 'docs'", specifier = ">=0.6" },

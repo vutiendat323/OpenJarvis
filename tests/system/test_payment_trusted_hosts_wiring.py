@@ -127,3 +127,27 @@ def test_configured_checkout_rejects_a_different_contract():
                 cart.begin_checkout(nonce, 1, manifest.manifest_bytes())["total"] == 100
             )
             cart.end_checkout()
+
+
+def test_wildcard_discovery_drops_checkout_skill_without_cart_guard():
+    from unittest.mock import MagicMock
+
+    from openjarvis.core.events import EventBus
+    from openjarvis.skills.executor import SkillExecutor
+    from openjarvis.skills.tool_adapter import SkillTool
+    from openjarvis.skills.types import SkillManifest
+    from openjarvis.tools._stubs import ToolExecutor
+
+    executor = SkillExecutor(ToolExecutor([], EventBus()))
+    checkout = SkillTool(SkillManifest(name="pay", checkout=True), executor)
+    plain = SkillTool(SkillManifest(name="menu"), executor)
+    mock_tool = MagicMock()  # a MagicMock manifest must not look like checkout
+
+    kept = SystemBuilder._drop_unguarded_wildcard_checkout(
+        [checkout, plain], [mock_tool], "*"
+    )
+    assert kept == [plain]
+    # Explicitly activated skills are kept so the guard fails the build loudly.
+    assert SystemBuilder._drop_unguarded_wildcard_checkout(
+        [checkout, plain], [mock_tool], "pay,menu"
+    ) == [checkout, plain]

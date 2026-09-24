@@ -11,6 +11,7 @@ from openjarvis.core.types import StepType, Trace, TraceStep
 from openjarvis.learning.learning_orchestrator import LearningOrchestrator
 from openjarvis.skills.manager import SkillManager
 from openjarvis.tools.skill_manage import SkillManageTool
+from tests.learning.test_skill_discovery import _completed_menu_trace
 
 
 class _Memory:
@@ -73,39 +74,6 @@ def _failed_transaction() -> Trace:
     return trace
 
 
-def _displayed_read() -> Trace:
-    return Trace(
-        query="Show the food menu",
-        result="Here is the food menu.",
-        steps=[
-            TraceStep(
-                step_type=StepType.TOOL_CALL,
-                timestamp=1.0,
-                input={
-                    "tool": "http_request",
-                    "arguments": {
-                        "method": "GET",
-                        "url": "https://shop.example/menu",
-                    },
-                },
-                output={
-                    "success": True,
-                    "result": '{"items": [{"name": "Fresh noodles"}]}',
-                },
-            ),
-            TraceStep(
-                step_type=StepType.TOOL_CALL,
-                timestamp=2.0,
-                input={
-                    "tool": "display_menu",
-                    "arguments": {"items": [{"name": "Fresh noodles"}]},
-                },
-                output={"success": True, "result": "shown"},
-            ),
-        ],
-    )
-
-
 @pytest.fixture
 def wired(tmp_path):
     """An orchestrator wired the way SystemBuilder wires it."""
@@ -151,7 +119,8 @@ def test_completed_trace_becomes_a_discoverable_skill_and_memory(wired):
 def test_displayed_read_becomes_a_safe_live_read_skill(wired):
     bus, manager, memory, orchestrator = wired
 
-    bus.publish(EventType.TRACE_COMPLETE, {"trace": _displayed_read()})
+    # Reads are learned only from browser-grounded evidence.
+    bus.publish(EventType.TRACE_COMPLETE, {"trace": _completed_menu_trace()})
     orchestrator.close()
 
     learned = manager.resolve(manager.skill_names()[0])

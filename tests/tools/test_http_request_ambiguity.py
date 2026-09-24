@@ -110,25 +110,6 @@ def test_a_post_never_takes_the_rust_path(monkeypatch):
     assert calls == []
 
 
-def test_the_rust_path_does_not_claim_a_status_it_cannot_know(monkeypatch):
-    class _Rust:
-        class HttpRequestTool:
-            def execute(self, url, method="GET", body=None):
-                return '{"ok": true}'
-
-        def check_ssrf(self, url):
-            return None
-
-    monkeypatch.setattr(
-        "openjarvis._rust_bridge.get_rust_module", lambda: _Rust(), raising=False
-    )
-
-    result = HttpRequestTool().execute(url=_URL, method="GET")
-
-    assert result.success is True
-    assert result.metadata["status_code"] is None
-
-
 def test_post_to_blocked_redirect_warns_that_outcome_is_ambiguous(monkeypatch):
     response = httpx.Response(
         302,

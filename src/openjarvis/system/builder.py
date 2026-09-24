@@ -16,6 +16,11 @@ from openjarvis.tools._stubs import BaseTool, ToolExecutor
 logger = logging.getLogger(__name__)
 
 
+def _is_checkout_skill(tool) -> bool:
+    """True only for a skill whose manifest sets ``checkout = true``."""
+    return getattr(getattr(tool, "_manifest", None), "checkout", False) is True
+
+
 class SystemBuilder:
     """Config-driven fluent builder for JarvisSystem."""
 
@@ -296,6 +301,9 @@ class SystemBuilder:
                         tool_executor=tool_executor,
                         active=config.skills.active,
                     )
+                    skill_tools = self._drop_unguarded_wildcard_checkout(
+                        skill_tools, tool_list, config.skills.active
+                    )
                     tool_list.extend(skill_tools)
                     if tool_list:
                         tool_executor = ToolExecutor(
@@ -314,9 +322,7 @@ class SystemBuilder:
         )
         for tool in tool_list:
             self._inject_payment_trusted_origins(tool, trusted_origins)
-        if any(
-            getattr(getattr(t, "_manifest", None), "checkout", False) for t in tool_list
-        ):
+        if any(_is_checkout_skill(t) for t in tool_list):
             self._inject_checkout_guard(tool_list)
 
         agent_name = self._agent_name or config.agent.default_agent
@@ -663,7 +669,7 @@ class SystemBuilder:
 
         for tool in tools:
             manifest = getattr(tool, "_manifest", None)
-            if not getattr(manifest, "checkout", False):
+            if not _is_checkout_skill(tool):
                 continue
             openjarvis = manifest.metadata.get("openjarvis", {})
             kiosk = openjarvis.get("kiosk") if isinstance(openjarvis, dict) else None
@@ -688,14 +694,32 @@ class SystemBuilder:
         return [tool for tool in tools if tool.spec.name not in names]
 
     @staticmethod
+    def _drop_unguarded_wildcard_checkout(skill_tools, tools, active: str):
+        """Leave checkout skills out when only wildcard discovery found them.
+
+        A checkout skill must never run without the display_cart write guard.
+        An explicitly activated one still fails the build in the guard below.
+        """
+        if active != "*" or any(t.spec.name == "display_cart" for t in tools):
+            return skill_tools
+        kept = []
+        for tool in skill_tools:
+            if _is_checkout_skill(tool):
+                logger.warning(
+                    "Skipping checkout skill %s: display_cart is not enabled",
+                    tool.spec.name,
+                )
+            else:
+                kept.append(tool)
+        return kept
+
+    @staticmethod
     def _inject_checkout_guard(tools) -> None:
         cart = next((t for t in tools if t.spec.name == "display_cart"), None)
         if cart is None:
             raise ValueError("guarded checkout requires display_cart")
         cart._checkout_contracts = {
-            t._manifest.manifest_bytes()
-            for t in tools
-            if getattr(getattr(t, "_manifest", None), "checkout", False)
+            t._manifest.manifest_bytes() for t in tools if _is_checkout_skill(t)
         }
         for tool in tools:
             if tool.spec.name == "http_request":

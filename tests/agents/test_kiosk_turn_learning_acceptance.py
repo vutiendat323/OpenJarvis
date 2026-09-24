@@ -16,7 +16,7 @@ import pytest
 from openjarvis.agents._stubs import AgentContext, AgentRunCompleted
 from openjarvis.agents.orchestrator import OrchestratorAgent
 from openjarvis.agents.runtime import NativeAgentRuntime
-from openjarvis.core.events import EventBus
+from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolResult
 from openjarvis.learning.learning_orchestrator import LearningOrchestrator
 from openjarvis.skills.manager import SkillManager
@@ -29,9 +29,6 @@ LEARNED_NAME = (
     "learned-transaction-" + sha256(ORDER_QUERY.lower().encode()).hexdigest()[:12]
 )
 MENU_QUERY = "Show the food menu"
-LEARNED_MENU_NAME = (
-    "learned-read-" + sha256(MENU_QUERY.lower().encode()).hexdigest()[:12]
-)
 
 
 class _FakeHttp(BaseTool):
@@ -89,16 +86,6 @@ class _FakeMenuDisplay(BaseTool):
     def execute(self, **params: Any) -> ToolResult:
         self.calls.append(params)
         return ToolResult(tool_name="display_menu", success=True, content="shown")
-
-
-class _ChangingMenuHttp(_FakeHttp):
-    def execute(self, **params: Any) -> ToolResult:
-        self.calls.append(params)
-        version = len(self.calls)
-        body = json.dumps(
-            {"items": [{"name": f"Fresh noodles v{version}", "price": 59_000}]}
-        )
-        return ToolResult(tool_name="http_request", success=True, content=body)
 
 
 def _tool_call(call_id: str, name: str, arguments: dict) -> dict:
@@ -221,44 +208,23 @@ def kiosk(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_completed_order_replays_as_one_outer_skill_call(kiosk):
-    """The whole point: turn two costs one model-visible call, not four."""
+async def test_a_learned_order_is_not_replayed_without_a_checkout_guard(kiosk):
+    """A learned mutation is remembered but never re-sent on its own."""
     await kiosk.turn(ORDER_QUERY, _ordering_script())
     kiosk.orchestrator.close()
 
     assert kiosk.manager.skill_names() == [LEARNED_NAME]
-    assert len(kiosk.memory.records) == 1
     assert kiosk.memory.records[0]["metadata"]["requires_fresh_confirmation"] is True
 
     http_before = len(kiosk.http.calls)
-    display_before = len(kiosk.display.calls)
-
     events = await kiosk.turn(ORDER_QUERY, _replay_script())
 
-    # The agent accumulates only what the model itself called; a skill's inner
-    # steps go straight through the executor and never appear here.
     completed = next(e for e in events if isinstance(e, AgentRunCompleted))
-    assert [t.tool_name for t in completed.result.tool_results] == ["skill_manage"]
-
-    # ... while the saved sequence still ran through the native executor.
-    replayed_http = kiosk.http.calls[http_before:]
-    assert len(replayed_http) == 2
-    assert str(replayed_http[0]["method"]).upper() == "POST"
-    assert str(replayed_http[1]["method"]).upper() == "GET"
-    assert len(kiosk.display.calls) == display_before + 1
-
-
-@pytest.mark.asyncio
-async def test_a_generated_id_is_passed_forward_on_replay(kiosk):
-    """A replay that reuses the first order's id would verify the wrong order."""
-    await kiosk.turn(ORDER_QUERY, _ordering_script())
-    kiosk.orchestrator.close()
-
-    http_before = len(kiosk.http.calls)
-    await kiosk.turn(ORDER_QUERY, _replay_script())
-
-    verification = kiosk.http.calls[http_before + 1]
-    assert "ord-777" in verification["url"]
+    [result] = completed.result.tool_results
+    assert result.tool_name == "skill_manage"
+    assert result.success is False
+    assert "unguarded transaction" in result.content
+    assert kiosk.http.calls[http_before:] == []
 
 
 @pytest.mark.asyncio
@@ -343,8 +309,29 @@ async def test_an_abandoned_turn_is_never_learned(kiosk):
 @pytest.mark.asyncio
 async def test_a_learned_menu_read_refetches_then_displays_fresh_data(tmp_path):
     """Warm replay skips discovery but never replays a frozen menu payload."""
+    from tests.learning.test_skill_discovery import _completed_menu_trace
+
+    class _FreshMenuHttp(_FakeHttp):
+        def execute(self, **params: Any) -> ToolResult:
+            self.calls.append(params)
+            body = {
+                "items": [{"id": "noodles-1", "name": "Fresh noodles v2", "price": 1}],
+                "hasNext": False,
+            }
+            return ToolResult(
+                tool_name="http_request",
+                success=True,
+                content=json.dumps(body),
+                metadata={
+                    "status_code": 200,
+                    "content_type": "application/json",
+                    "final_url": params.get("url"),
+                    "truncated": False,
+                },
+            )
+
     bus = EventBus()
-    http = _ChangingMenuHttp()
+    http = _FreshMenuHttp()
     display = _FakeMenuDisplay()
     manager = SkillManager(bus=bus)
     memory = _Memory()
@@ -360,10 +347,33 @@ async def test_a_learned_menu_read_refetches_then_displays_fresh_data(tmp_path):
         skill_manage_tool=skill_manage,
         skill_manager=manager,
     )
+    try:
+        # Reads are learned only from browser-grounded evidence.
+        bus.publish(EventType.TRACE_COMPLETE, {"trace": _completed_menu_trace()})
+        learner.close()
+        [learned] = manager.skill_names()
+        assert learned.startswith("learned-read-")
+        assert memory.records[0]["metadata"]["requires_fresh_confirmation"] is False
 
-    async def turn(script: list[dict]) -> list:
         agent = OrchestratorAgent(
-            FakeEngine(script),
+            FakeEngine(
+                [
+                    {
+                        "content": "Here is the refreshed food menu.",
+                        "tool_calls": [
+                            _tool_call(
+                                "m3",
+                                "skill_manage",
+                                {
+                                    "action": "run",
+                                    "name": learned,
+                                    "context": {"q": "Fresh noodles"},
+                                },
+                            )
+                        ],
+                    }
+                ]
+            ),
             "test-model",
             tools=[http, display, skill_manage],
             bus=bus,
@@ -371,69 +381,19 @@ async def test_a_learned_menu_read_refetches_then_displays_fresh_data(tmp_path):
         )
         manager.set_tool_executor(agent._executor)
         runtime = NativeAgentRuntime(agent, bus=bus)
-        return [
+        events = [
             event
             async for event in runtime.bind(model="test-model").run_stream(
                 MENU_QUERY, AgentContext()
             )
         ]
-
-    try:
-        await turn(
-            [
-                {
-                    "tool_calls": [
-                        _tool_call(
-                            "m1",
-                            "http_request",
-                            {"method": "GET", "url": "https://shop.example/menu"},
-                        )
-                    ]
-                },
-                {
-                    "tool_calls": [
-                        _tool_call(
-                            "m2",
-                            "display_menu",
-                            {"items": [{"name": "Fresh noodles v1", "price": 59_000}]},
-                        )
-                    ]
-                },
-                {"content": "Here is the food menu."},
-            ]
-        )
-        learner.close()
-
-        assert manager.skill_names() == [LEARNED_MENU_NAME]
-        assert [
-            step.tool_name for step in manager.resolve(LEARNED_MENU_NAME).steps
-        ] == ["http_request", "display_menu"]
-        assert memory.records[0]["metadata"]["requires_fresh_confirmation"] is False
-
-        events = await turn(
-            [
-                {
-                    "content": "Here is the refreshed food menu.",
-                    "tool_calls": [
-                        _tool_call(
-                            "m3",
-                            "skill_manage",
-                            {"action": "run", "name": LEARNED_MENU_NAME},
-                        )
-                    ],
-                }
-            ]
-        )
     finally:
         learner.close()
 
     completed = next(event for event in events if isinstance(event, AgentRunCompleted))
-    assert [result.tool_name for result in completed.result.tool_results] == [
-        "skill_manage"
-    ]
-    assert completed.result.turns == 1
-    assert len(http.calls) == 2
-    assert display.calls == [
-        {"items": [{"name": "Fresh noodles v1", "price": 59_000}]},
-        {"items": [{"name": "Fresh noodles v2", "price": 59_000}]},
-    ]
+    [result] = completed.result.tool_results
+    assert result.tool_name == "skill_manage", result.content
+    assert result.success is True, result.content
+    [call] = http.calls
+    assert "q=Fresh%20noodles" in call["url"]
+    assert display.calls[-1]["items"][0]["name"] == "Fresh noodles v2"

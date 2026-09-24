@@ -7,9 +7,14 @@ import base64
 import json
 from urllib.request import urlopen
 
+import pytest
+
 from openjarvis.kiosk.shared_browser import SharedBrowserProcess
 from openjarvis.mcp.client import MCPClient
 from openjarvis.mcp.transport import StdioTransport
+
+# Launches a real Chrome and Playwright MCP (npx); excluded from default CI.
+pytestmark = pytest.mark.live
 
 
 def test_mcp_navigation_uses_the_preexisting_chrome_page(tmp_path) -> None:

@@ -7,6 +7,8 @@ import json
 from types import SimpleNamespace
 from urllib.request import urlopen
 
+import pytest
+
 import openjarvis.kiosk.shared_browser as shared_browser
 from openjarvis.core.config import JarvisConfig
 
@@ -53,6 +55,7 @@ def test_playwright_mcp_attaches_to_owned_cdp_without_launching_another_browser(
     assert actual[1] == unrelated
 
 
+@pytest.mark.live  # launches a real Chrome
 def test_chrome_exposes_one_page_on_loopback(tmp_path) -> None:
     browser = shared_browser.SharedBrowserProcess(profile_dir=tmp_path / "profile")
     try:
