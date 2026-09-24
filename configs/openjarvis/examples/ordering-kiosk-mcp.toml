@@ -1,20 +1,14 @@
-# ordering-kiosk-mcp.toml -- ordering kiosk with live browser interaction.
+# ordering-kiosk-mcp.toml -- ordering kiosk with a local customer display.
 #
 # Playwright remains connected so PresentationSessionManager can own the
-# customer-display tab. A bounded subset is also exposed for cold discovery on
-# an unknown website; once an API recipe is learned, warm turns use
-# http_request and display_* without rediscovering it.
+# customer-display tab. The ordering Agent uses prepared merchant skills;
+# Playwright tools are not exposed to it.
 
 # Ordering Kiosk — Trend Coffee-backed voice ordering, Phase 1.
 #
-# Text and Voice both reach the same orchestrator Agent. The Agent explores
-# validated Trend Coffee snapshots, recommends, confirms with the customer,
-# and uses the same eight ordering tools -- each step a separate tool call, so
-# no single call both changes an order and reports what it became.
-#
-# Order mutation remains locally quarantined until its explicit approval path
-# is enabled. See configs/openjarvis/prompts/ordering-kiosk.md for how the
-# Agent is expected to use these tools.
+# Text and Voice reach the same orchestrator Agent. Prepared skills perform
+# validated merchant reads and guarded checkout; local draft tools update the
+# customer display. See configs/openjarvis/prompts/ordering-kiosk.md.
 #
 # Eight turns cover the measured order flow while bounding a malformed tool-call
 # loop before it burns another six-figure token total.
@@ -71,14 +65,13 @@ parallel_tools = true
 [tools]
 # The five display_* tools drive the React `/customer-display` route through
 # the WebSocket bridge and are unrelated to the Data Plane; they stay enabled.
-# Shared browsing uses the existing Playwright MCP adapters on the same page.
-# Omit tab/close and redundant verification tools; snapshot supplies grounding.
-# typesafe_decide is on-demand only; obvious intent and menu routing stay on Luna.
+# Playwright stays connected for presentation, outside the ordering Agent.
+# Luna handles menu choices directly; typesafe_decide stays internal.
 # `repl` stays absent (ruling R9: in-process object-graph escape).
-enabled = "http_request,skill_manage,typesafe_decide,display_menu,display_cart,display_bill,display_payment_qr,display_clear,browser_snapshot,browser_navigate,browser_navigate_back,browser_click,browser_type,browser_fill_form,browser_select_option,browser_hover,browser_press_key,browser_wait_for,browser_handle_dialog,browser_drag,browser_network_requests,browser_console_messages"
-# Draft editing, clearing, and guarded public HTTP reads remain interactive.
-# Terminal menu/payment display primitives execute inside prepared procedures.
-model_hidden = "display_menu,display_bill,display_payment_qr"
+enabled = "http_request,skill_manage,typesafe_decide,display_menu,display_cart,display_bill,display_payment_qr,display_clear"
+# Prepared procedures retain these primitives in their internal executor.
+# The Agent sees menu/cart/clear and active merchant skills.
+model_hidden = "http_request,skill_manage,typesafe_decide,display_bill,display_payment_qr"
 # Only this origin may supply a payment QR. Empty would mean no QR can ever be
 # displayed; a wide list would mean the guard proves nothing.
 payment_trusted_origins = "https://trendcoffee.net"
@@ -87,7 +80,7 @@ payment_trusted_origins = "https://trendcoffee.net"
 # Expose only this merchant's prepared menu and guarded checkout procedures.
 # Learned procedures remain available to skill_manage's internal executor.
 enabled = true
-active = "trendcoffee-menu,trendcoffee-add-to-cart,trendcoffee-checkout"
+active = "trendcoffee-menu,trendcoffee-tables,trendcoffee-add-to-cart,trendcoffee-checkout"
 
 [learning]
 # A completed, verified transaction becomes a replayable skill in this same
@@ -207,4 +200,4 @@ custom_vocabulary = [
 
 [tools.mcp]
 enabled = true
-servers = '''[{"name": "playwright", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.79", "--browser", "chromium", "--user-data-dir", ".openjarvis/ordering-kiosk/browser-profile", "--sandbox", "--caps=testing", "--snapshot-mode", "none"], "include_tools": ["browser_snapshot", "browser_find", "browser_navigate", "browser_navigate_back", "browser_click", "browser_type", "browser_fill_form", "browser_select_option", "browser_hover", "browser_press_key", "browser_wait_for", "browser_handle_dialog", "browser_drag", "browser_drop", "browser_resize", "browser_network_requests", "browser_console_messages", "browser_verify_element_visible", "browser_verify_text_visible", "browser_verify_value", "browser_verify_list_visible"]}]'''
+servers = '''[{"name": "playwright", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.79", "--browser", "chromium", "--user-data-dir", ".openjarvis/ordering-kiosk/browser-profile", "--sandbox", "--caps=testing", "--snapshot-mode", "none"], "presentation_only": true}]'''

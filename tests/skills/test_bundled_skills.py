@@ -121,6 +121,9 @@ _CHECKOUT_SKILL = (
 _ADD_TO_CART_SKILL = (
     Path(__file__).resolve().parents[2] / "skills" / "trendcoffee-add-to-cart.toml"
 )
+_TABLES_SKILL = (
+    Path(__file__).resolve().parents[2] / "skills" / "trendcoffee-tables.toml"
+)
 
 
 class _SequenceRecording(BaseTool):
@@ -136,6 +139,39 @@ class _SequenceRecording(BaseTool):
     def execute(self, **params):
         self.calls.append(params)
         return self.results[len(self.calls) - 1]
+
+
+def test_workspace_tables_skill_uses_one_known_read_without_browser() -> None:
+    response = ToolResult(
+        tool_name="http_request",
+        content=json.dumps(
+            {
+                "result": [
+                    {"slug": "table-1", "name": "1", "status": "available"},
+                    {"slug": "table-2", "name": "2", "status": "reserved"},
+                ]
+            }
+        ),
+        metadata={
+            "status_code": 200,
+            "final_url": "https://trendcoffee.net/api/latest/tables?branch=ba9355f797",
+            "content_type": "application/json",
+            "truncated": False,
+        },
+    )
+    http = _SequenceRecording("http_request", [response])
+    bus = EventBus()
+    tool = SkillTool(
+        load_skill(_TABLES_SKILL), SkillExecutor(ToolExecutor([http], bus))
+    )
+
+    result = tool.execute()
+
+    assert result.success
+    assert [call["method"] for call in http.calls] == ["GET"]
+    assert http.calls[0]["url"] == response.metadata["final_url"]
+    assert "table-1" in result.content
+    assert "reserved" in result.content
 
 
 def _run_batch_add(

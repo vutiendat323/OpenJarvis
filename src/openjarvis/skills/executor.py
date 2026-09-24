@@ -49,8 +49,19 @@ def _search_matches(text: object, terms: object) -> bool:
         return False
 
     text_tokens = set(_fold_search_text(text).split())
+    exact_tokens = set(
+        re.sub(
+            r"[^\w]+", " ", unicodedata.normalize("NFKC", text).casefold()
+        ).split()
+    )
     for term in terms:
         term_tokens = _fold_search_text(term).split()
+        if len(term_tokens) == 1:
+            exact_term = unicodedata.normalize("NFKC", term).casefold().strip()
+            if exact_term != term_tokens[0]:
+                if exact_term in exact_tokens:
+                    return True
+                continue
         if term_tokens and all(token in text_tokens for token in term_tokens):
             return True
     return False

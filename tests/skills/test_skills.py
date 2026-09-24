@@ -487,6 +487,24 @@ class TestSkillExecutor:
 
         assert rendered == [rows[0]]
 
+    def test_search_matches_distinguishes_accented_single_word_topics(self):
+        expression = {
+            "$filter": "{rows}",
+            "as": "row",
+            "where": {"search_matches": ["{row.text}", "{terms}"]},
+        }
+        rows = [
+            {"text": "Cà phê đen"},
+            {"text": "Cá hồi áp chảo"},
+            {"text": "Salad cá hồi"},
+        ]
+
+        rendered = SkillExecutor._render_json_value(
+            expression, {"rows": rows, "terms": ["cá"]}
+        )
+
+        assert rendered == rows[1:]
+
     def test_search_matches_any_agent_classified_term(self):
         expression = {
             "$filter": "{rows}",

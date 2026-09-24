@@ -39,6 +39,7 @@ from openjarvis.core.registry import AgentRegistry
 from openjarvis.core.types import Message, Role, ToolCall, ToolResult
 from openjarvis.engine._stubs import InferenceEngine, merge_tool_call_fragments
 from openjarvis.tools._stubs import BaseTool
+from openjarvis.tools.display import DisplayMenuMemoryTool
 from openjarvis.tools.result_projection import project_tool_content
 
 
@@ -103,6 +104,35 @@ class OrchestratorAgent(ToolUsingAgent):
         self._mode = mode
         self._system_prompt = system_prompt
         self._parallel_tools = parallel_tools
+
+    def _turn_reasoning_effort(self, input: str, model: str) -> str | None:
+        """Use less reasoning for verified menu work; keep checkout at high."""
+        if model.lower() != "gpt-6-luna":
+            return None
+        utterance = input.casefold()
+        if any(
+            marker in utterance
+            for marker in (
+                "thanh toán",
+                "trả tiền",
+                "mua ngay",
+                "đặt hàng",
+                "đặt món",
+                "mang về",
+                "tại bàn",
+                "qr",
+                "checkout",
+                "pay now",
+            )
+        ):
+            return None
+        if any(
+            isinstance(tool, DisplayMenuMemoryTool)
+            and tool.agent_context().get("displayed_menu")
+            for tool in self._tools
+        ):
+            return "medium" if "giỏ" in utterance else "low"
+        return None
 
     def run(
         self,
@@ -186,6 +216,7 @@ class OrchestratorAgent(ToolUsingAgent):
         )
         runtime_message = None
         openai_tools = self._executor.get_openai_tools() if self._tools else []
+        reasoning_effort = self._turn_reasoning_effort(input, model)
         all_tool_results: list[ToolResult] = []
         total_prompt_tokens = 0
         total_completion_tokens = 0
@@ -198,6 +229,8 @@ class OrchestratorAgent(ToolUsingAgent):
             gen_kwargs: dict[str, Any] = {}
             if openai_tools:
                 gen_kwargs["tools"] = openai_tools
+            if reasoning_effort:
+                gen_kwargs["reasoning_effort"] = reasoning_effort
 
             visible_parts: list[str] = []
             continuations = 0
@@ -632,6 +665,7 @@ class OrchestratorAgent(ToolUsingAgent):
 
         # Get OpenAI-format tool definitions
         openai_tools = self._executor.get_openai_tools() if self._tools else []
+        reasoning_effort = self._turn_reasoning_effort(input, self._effective_model())
 
         all_tool_results: list[ToolResult] = []
         turns = 0
@@ -649,6 +683,8 @@ class OrchestratorAgent(ToolUsingAgent):
             gen_kwargs: dict[str, Any] = {}
             if openai_tools:
                 gen_kwargs["tools"] = openai_tools
+            if reasoning_effort:
+                gen_kwargs["reasoning_effort"] = reasoning_effort
 
             result = self._generate(messages, **gen_kwargs)
 

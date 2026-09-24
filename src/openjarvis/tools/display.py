@@ -14,11 +14,12 @@ from __future__ import annotations
 import json
 from collections import OrderedDict
 from contextvars import ContextVar
+from dataclasses import replace
 from threading import RLock
 from typing import TYPE_CHECKING, Any, Callable, Optional
 from uuid import uuid4
 
-from openjarvis.core.conversation import current_conversation_id
+from openjarvis.core.conversation import current_conversation_id, current_turn_nonce
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
@@ -229,7 +230,10 @@ class DisplayMenuTool(_DisplayTool):
             name="display_menu",
             description=(
                 "Show one or more freshly retrieved items on the customer's "
-                "screen. For a category browse, omit items and set "
+                "screen. To refine the current displayed_menu without HTTP, "
+                "set from_displayed_menu=true and pass only ordered item_ids "
+                "from that working set; stored item facts are reused. "
+                "For a category browse, omit items and set "
                 "all_from_latest_http=true to show every product directly from "
                 "the latest successful HTTP menu response. For a filtered search "
                 "or recommendation, pass only the matching items. "
@@ -241,6 +245,8 @@ class DisplayMenuTool(_DisplayTool):
             parameters={
                 "type": "object",
                 "properties": {
+                    "from_displayed_menu": {"type": "boolean"},
+                    "item_ids": {"type": "array", "items": {"type": "string"}},
                     "items": {
                         "type": "array",
                         "description": "Items to show, in the order to show them.",
@@ -271,6 +277,31 @@ class DisplayMenuTool(_DisplayTool):
         )
 
     def execute(self, **params: Any) -> ToolResult:
+        if params.get("from_displayed_menu") is True:
+            ids = params.get("item_ids")
+            if (
+                set(params) - {"from_displayed_menu", "item_ids"}
+                or not isinstance(ids, list)
+                or any(not isinstance(item_id, str) for item_id in ids)
+                or len(ids) != len(set(ids))
+            ):
+                return ToolResult(
+                    tool_name="display_menu",
+                    content="menu_refinement_invalid",
+                    success=False,
+                )
+            conversation_id = current_conversation_id()
+            with self._displayed_lock:
+                current = self._displayed.get(conversation_id, [])
+                by_id = {row.get("id"): row for row in current}
+                if not current or any(item_id not in by_id for item_id in ids):
+                    return ToolResult(
+                        tool_name="display_menu",
+                        content="menu_refinement_unverified",
+                        success=False,
+                    )
+                selected = [dict(by_id[item_id]) for item_id in ids]
+            return self.execute(items=selected, result_complete=True)
         rows = params.get("items") or []
         result_complete = params.get("result_complete") is True
         from_http = bool(params.get("all_from_latest_http")) and not rows
@@ -365,6 +396,70 @@ class DisplayMenuTool(_DisplayTool):
         return result
 
 
+class DisplayMenuMemoryTool(BaseTool):
+    """Agent-facing menu selection; prepared skills retain the full display tool."""
+
+    tool_id = "display_menu"
+
+    def __init__(self, display: DisplayMenuTool) -> None:
+        self._display = display
+
+    @property
+    def _presentation(self) -> Optional[PresentationSessionManager]:
+        return self._display._presentation
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="display_menu",
+            description=(
+                "Refine the current displayed_menu without HTTP. Pass 1-based "
+                "positions from that list in the order to show them; item IDs, "
+                "names and prices come from RAM. An empty list shows zero matches."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "item_indices": {
+                        "type": "array",
+                        "items": {"type": "integer", "minimum": 1},
+                        "uniqueItems": True,
+                    },
+                },
+                "required": ["item_indices"],
+                "additionalProperties": False,
+            },
+            category="display",
+            metadata=dict(DISPLAYS),
+        )
+
+    def agent_context(self) -> dict[str, Any]:
+        return self._display.agent_context()
+
+    def execute(self, **params: Any) -> ToolResult:
+        indices = params.get("item_indices")
+        rows = self._display.agent_context().get("displayed_menu", [])
+        if (
+            set(params) != {"item_indices"}
+            or not isinstance(indices, list)
+            or not rows
+            or any(
+                type(index) is not int or index < 1 or index > len(rows)
+                for index in indices
+            )
+            or len(indices) != len(set(indices))
+        ):
+            return ToolResult(
+                tool_name="display_menu",
+                content="menu_refinement_invalid",
+                success=False,
+            )
+        ids = [rows[index - 1].get("id") for index in indices]
+        return self._display.execute(
+            from_displayed_menu=True, item_ids=ids
+        )
+
+
 @ToolRegistry.register("display_cart")
 class DisplayCartTool(_DisplayTool):
     """Own and show the current conversation's local draft cart."""
@@ -384,6 +479,7 @@ class DisplayCartTool(_DisplayTool):
         self._checkout_claims: dict[str, int] = {}
         self._checkout_pending: set[str] = set()
         self._checkout_contracts: set[bytes] | None = None
+        self._add_claims: dict[str, tuple[str, set[tuple[Any, ...]]]] = {}
         self._cart_lock = RLock()
 
     @property
@@ -483,9 +579,9 @@ class DisplayCartTool(_DisplayTool):
                     "finish_turn": {
                         "type": "boolean",
                         "description": (
-                            "Only for a standalone cart action with no further "
-                            "menu, order, or payment work in this utterance. "
-                            "Finish after the verified cart update succeeds."
+                            "Finish after a standalone verified cart update. "
+                            "Defaults to true for an add with open_cart=false; "
+                            "pass false when more work follows in this turn."
                         ),
                     },
                     "lines": {
@@ -566,7 +662,7 @@ class DisplayCartTool(_DisplayTool):
                 success=False,
             )
         open_cart = open_cart or action == "view"
-        finish_turn = params.get("finish_turn", False)
+        finish_turn = params.get("finish_turn", action == "add" and not open_cart)
         if not isinstance(finish_turn, bool):
             return ToolResult(
                 tool_name=self.spec.name,
@@ -593,6 +689,7 @@ class DisplayCartTool(_DisplayTool):
             table = stored_table
             table_name = stored_table_name
             pickup_minutes = stored_pickup_minutes
+            add_signatures: list[tuple[Any, ...]] = []
             if action == "add":
                 raw_items = params.get("items")
                 if raw_items is None:
@@ -613,8 +710,22 @@ class DisplayCartTool(_DisplayTool):
                         content=invalid_content,
                         success=False,
                     )
+                nonce = current_turn_nonce()
+                prior_nonce, seen = self._add_claims.get(conversation_id, ("", set()))
+                if prior_nonce != nonce or not nonce:
+                    seen = set()
                 for item in items:
                     assert item is not None
+                    signature = (
+                        item["variant_id"],
+                        item["size"],
+                        item["note"],
+                        item["quantity"],
+                        item["unit_price"],
+                    )
+                    if nonce and signature in seen:
+                        continue
+                    add_signatures.append(signature)
                     identity = (item["variant_id"], item["size"], item["note"])
                     existing = next(
                         (
@@ -807,6 +918,13 @@ class DisplayCartTool(_DisplayTool):
             self._tables[conversation_id] = table
             self._table_names[conversation_id] = table_name
             self._pickup_minutes[conversation_id] = pickup_minutes
+            if action == "add" and nonce:
+                self._add_claims[conversation_id] = (
+                    nonce,
+                    seen | set(add_signatures),
+                )
+            elif action not in {"add", "view"}:
+                self._add_claims.pop(conversation_id, None)
             revision = self._cart_revisions.get(conversation_id, 0)
             if (
                 lines != stored_lines
@@ -829,6 +947,7 @@ class DisplayCartTool(_DisplayTool):
                 self._tables.pop(stale_id, None)
                 self._table_names.pop(stale_id, None)
                 self._pickup_minutes.pop(stale_id, None)
+                self._add_claims.pop(stale_id, None)
 
             cart = {
                 "lines": lines,
@@ -1122,6 +1241,100 @@ class DisplayCartTool(_DisplayTool):
             "unit_price": unit_price,
             "line_total": unit_price * quantity,
         }
+
+
+class DisplayCartMemoryTool(BaseTool):
+    """Agent-facing cart; prepared skills retain the full draft cart tool."""
+
+    tool_id = "display_cart"
+
+    def __init__(self, cart: DisplayCartTool, menu: DisplayMenuTool) -> None:
+        self._cart = cart
+        self._menu = menu
+
+    @property
+    def _presentation(self) -> Optional[PresentationSessionManager]:
+        return self._cart._presentation
+
+    @property
+    def spec(self) -> ToolSpec:
+        return replace(
+            self._cart.spec,
+            description=(
+                "Manage the local draft cart. Direct add items must use exact "
+                "variant IDs and prices from runtime_context.displayed_menu or "
+                "customer_screen_search.visible_items; otherwise use the "
+                "prepared menu skill. Other cart actions use the saved draft."
+            ),
+        )
+
+    def agent_context(self) -> dict[str, Any]:
+        return self._cart.agent_context()
+
+    def execute(self, **params: Any) -> ToolResult:
+        if params.get("action") != "add":
+            return self._cart.execute(**params)
+        raw_items = params.get("items")
+        multiple = raw_items is not None
+        if not multiple:
+            raw_items = [params.get("item")]
+        if not isinstance(raw_items, list) or not raw_items:
+            return self._cart.execute(**params)
+        context = self._menu.agent_context()
+        rows = [
+            *context.get("displayed_menu", []),
+            *context.get("customer_screen_search", {}).get("visible_items", []),
+        ]
+        verified: dict[str, dict[str, Any]] = {}
+        conflicts: set[str] = set()
+        for row in rows:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("id"), str)
+                or not isinstance(row.get("name"), str)
+                or type(row.get("price")) is not int
+            ):
+                continue
+            item_id = row["id"]
+            earlier = verified.get(item_id)
+            if earlier is not None and (
+                earlier["price"] != row["price"]
+                or earlier["name"].casefold() != row["name"].casefold()
+                or earlier.get("available", True) != row.get("available", True)
+            ):
+                conflicts.add(item_id)
+            verified[item_id] = row
+        items = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                return ToolResult(
+                    tool_name="display_cart",
+                    content="cart_item_unverified",
+                    success=False,
+                )
+            row = verified.get(item.get("variant_id"))
+            if (
+                row is None
+                or item.get("variant_id") in conflicts
+                or item.get("unit_price") != row["price"]
+                or row.get("available") is False
+            ):
+                return ToolResult(
+                    tool_name="display_cart",
+                    content="cart_item_unverified",
+                    success=False,
+                )
+            items.append(
+                {
+                    **item,
+                    "name": row["name"],
+                    "unit_price": row["price"],
+                    "available": row.get("available", True),
+                }
+            )
+        return self._cart.execute(
+            **{**params, **({"items": items} if multiple else {"item": items[0]})}
+        )
 
 
 @ToolRegistry.register("display_bill")

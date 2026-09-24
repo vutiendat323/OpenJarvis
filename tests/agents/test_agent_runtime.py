@@ -20,11 +20,13 @@ from openjarvis.agents.monitor_operative import MonitorOperativeAgent
 from openjarvis.agents.operative import OperativeAgent
 from openjarvis.agents.orchestrator import OrchestratorAgent
 from openjarvis.agents.runtime import NativeAgentRuntime
+from openjarvis.core.conversation import conversation_scope
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import Message, Role, ToolResult
 from openjarvis.engine._stubs import StreamChunk
 from openjarvis.sessions.session import SessionStore
 from openjarvis.tools._stubs import BaseTool, ToolSpec
+from openjarvis.tools.display import DisplayMenuMemoryTool, DisplayMenuTool
 from openjarvis.tools.storage._stubs import RetrievalResult
 from openjarvis.traces.store import TraceStore
 
@@ -47,6 +49,61 @@ class RecordingEngine:
 
     def supports_semantic_reasoning_stream(self, model: str) -> bool:
         return False
+
+
+def test_verified_cart_followup_uses_medium_reasoning_but_checkout_keeps_high():
+    class CapturingEngine(RecordingEngine):
+        def __init__(self):
+            super().__init__()
+            self.efforts = []
+
+        def generate(self, messages, *, model, **kwargs):
+            self.efforts.append(kwargs.get("reasoning_effort"))
+            return {"content": "OK"}
+
+    display = DisplayMenuTool()
+    display._bus = EventBus()
+    engine = CapturingEngine()
+    agent = OrchestratorAgent(
+        engine, "gpt-6-luna", tools=[DisplayMenuMemoryTool(display)]
+    )
+    with conversation_scope("reasoning-menu"):
+        assert display.execute(
+            items=[{"id": "coffee", "name": "Cà phê", "price": 40_000}],
+            result_complete=True,
+        ).success
+        agent.run("Cho món này vào giỏ.")
+        agent.run("Thanh toán ngay.")
+    assert engine.efforts == ["medium", None]
+
+
+@pytest.mark.asyncio
+async def test_streaming_menu_followup_uses_low_reasoning():
+    class CapturingStreamEngine(RecordingEngine):
+        def __init__(self):
+            super().__init__()
+            self.efforts = []
+
+        def supports_semantic_reasoning_stream(self, model):
+            return True
+
+        async def stream_full(self, messages, *, model, **kwargs):
+            self.efforts.append(kwargs.get("reasoning_effort"))
+            yield StreamChunk(content="OK", finish_reason="stop")
+
+    display = DisplayMenuTool()
+    display._bus = EventBus()
+    engine = CapturingStreamEngine()
+    agent = OrchestratorAgent(
+        engine, "gpt-6-luna", tools=[DisplayMenuMemoryTool(display)]
+    )
+    with conversation_scope("reasoning-stream"):
+        assert display.execute(
+            items=[{"id": "coffee", "name": "Cà phê", "price": 40_000}],
+            result_complete=True,
+        ).success
+        _ = [event async for event in agent.run_stream("Loại món này ra.")]
+    assert engine.efforts == ["low"]
 
 
 def test_discarded_staging_rejects_late_worker_writes():

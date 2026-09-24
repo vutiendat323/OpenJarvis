@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from openjarvis.core.conversation import conversation_scope
+from openjarvis.core.conversation import agent_turn_scope, conversation_scope
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolResult
 from openjarvis.kiosk.presentation import PresentationSessionManager
@@ -15,6 +15,7 @@ from openjarvis.tools.display import (
     DisplayBillTool,
     DisplayCartTool,
     DisplayClearTool,
+    DisplayMenuMemoryTool,
     DisplayMenuTool,
     DisplayPaymentQrTool,
 )
@@ -769,6 +770,8 @@ def test_display_cart_can_save_an_add_without_leaving_the_current_screen():
         True,
         True,
     ]
+    assert stay.metadata["continue_agent"] is False
+    assert buy.metadata["continue_agent"] is True
     assert recorder.events[0].data["lines"][0]["quantity"] == 1
     assert snapshot["lines"][0]["quantity"] == 3
     assert json.loads(stay.content)["shown"] == "cart_badge"
@@ -1282,6 +1285,194 @@ def test_display_menu_remembers_the_latest_complete_menu_per_conversation():
         assert tool.agent_context() == {"displayed_menu": second}
     with conversation_scope("next-customer"):
         assert tool.agent_context() == {}
+
+
+def test_display_menu_refines_verified_rows_in_requested_order_without_http():
+    tool, recorder = _wired(DisplayMenuTool)
+    rows = [
+        {"id": "latte", "name": "Latte", "price": 60_000, "available": True},
+        {"id": "mocha", "name": "Mocha", "price": 65_000, "available": True},
+        {"id": "black", "name": "Cà phê đen", "price": 35_000, "available": True},
+        {"id": "yogurt", "name": "Yaourt dâu", "price": 55_000, "available": True},
+    ]
+    with conversation_scope("menu-refinement"):
+        assert tool.execute(items=rows, result_complete=True).success
+        # Price threshold, exclusion, then highest price: each step uses only
+        # the previously published working set.
+        for ids in (["latte", "mocha", "yogurt"], ["mocha", "yogurt"], ["mocha"]):
+            result = tool.execute(from_displayed_menu=True, item_ids=ids)
+            assert result.success
+            assert [row["id"] for row in tool.agent_context()["displayed_menu"]] == ids
+
+    assert [row["id"] for row in recorder.events[-1].data["items"]] == ["mocha"]
+    assert recorder.events[-1].data["items"][0]["price"] == 65_000
+    assert all(event.data["view"] == "menu" for event in recorder.events)
+
+
+def test_display_menu_refinement_rejects_unverified_or_forged_rows():
+    tool, recorder = _wired(DisplayMenuTool)
+    row = {"id": "yogurt", "name": "Yaourt dâu", "price": 55_000}
+    with conversation_scope("menu-guard"):
+        assert not tool.execute(from_displayed_menu=True, item_ids=["yogurt"]).success
+        assert tool.execute(items=[row], result_complete=True).success
+        for params in (
+            {"item_ids": ["unknown"]},
+            {"item_ids": ["yogurt", "yogurt"]},
+            {"item_ids": ["yogurt"], "items": [{"id": "fake", "price": 1}]},
+        ):
+            result = tool.execute(from_displayed_menu=True, **params)
+            assert not result.success
+            assert tool.agent_context() == {"displayed_menu": [row]}
+    assert len(recorder.events) == 1
+
+
+def test_display_menu_refinement_can_publish_verified_empty_result():
+    tool, recorder = _wired(DisplayMenuTool)
+    with conversation_scope("menu-empty"):
+        assert tool.execute(
+            items=[{"id": "latte", "name": "Latte", "price": 50_000}],
+            result_complete=True,
+        ).success
+        result = tool.execute(from_displayed_menu=True, item_ids=[])
+        assert result.success
+        assert recorder.events[-1].data["items"] == []
+        assert tool.agent_context() == {}
+
+
+def test_agent_menu_tool_cannot_publish_invented_item_facts():
+    display, recorder = _wired(DisplayMenuTool)
+    agent_tool = DisplayMenuMemoryTool(display)
+    row = {"id": "yogurt", "name": "Yaourt dâu", "price": 55_000}
+    other = {"id": "mango", "name": "Yaourt xoài", "price": 60_000}
+    with conversation_scope("agent-menu"):
+        assert display.execute(items=[row, other], result_complete=True).success
+        assert agent_tool.agent_context() == {"displayed_menu": [row, other]}
+        assert not agent_tool.execute(
+            item_indices=[1],
+            items=[{"id": "yogurt", "name": "Yaourt dâu", "price": 1}],
+        ).success
+        assert not agent_tool.execute(item_indices=[3]).success
+        assert not agent_tool.execute(item_indices=[1, 1]).success
+        assert agent_tool.execute(item_indices=[2, 1]).success
+    assert recorder.events[-1].data["items"] == [other, row]
+    assert len(recorder.events) == 2
+
+
+def test_identical_cart_add_is_applied_once_within_one_agent_turn():
+    cart, _ = _wired(DisplayCartTool)
+    item = {
+        "variant_id": "coffee-1",
+        "name": "Cà phê sữa",
+        "size": "tiêu chuẩn",
+        "note": "",
+        "unit_price": 40_000,
+        "quantity": 1,
+    }
+    with conversation_scope("same-turn-add"):
+        with agent_turn_scope():
+            assert cart.execute(action="add", items=[item], open_cart=False).success
+            repeated = cart.execute(
+                action="add", item=item, open_cart=False, finish_turn=True
+            )
+            assert repeated.success
+            assert json.loads(repeated.content)["cart"]["total"] == 40_000
+        with agent_turn_scope():
+            later = cart.execute(action="add", item=item, open_cart=False)
+            assert json.loads(later.content)["cart"]["total"] == 80_000
+
+
+def test_agent_cart_add_requires_exact_verified_item_id_and_price():
+    from openjarvis.tools import display as display_module
+
+    menu, _ = _wired(DisplayMenuTool)
+    cart, _ = _wired(DisplayCartTool)
+    agent_cart = display_module.DisplayCartMemoryTool(cart, menu)
+    row = {
+        "id": "strawberry",
+        "name": "Yaourt Dâu",
+        "price": 65_000,
+        "available": True,
+    }
+    with conversation_scope("verified-cart"):
+        assert menu.execute(items=[row], result_complete=True).success
+        valid = {
+            "variant_id": "strawberry",
+            "name": "Unverified model label",
+            "unit_price": 65_000,
+            "quantity": 1,
+            "note": "",
+            "size": "",
+        }
+        assert not agent_cart.execute(
+            action="add", item={**valid, "variant_id": "invented"}
+        ).success
+        assert not agent_cart.execute(
+            action="add", item={**valid, "unit_price": 1}
+        ).success
+        assert agent_cart.execute(action="add", item=valid, open_cart=False).success
+        assert cart.current_snapshot()["total"] == 65_000
+        assert cart.current_snapshot()["lines"][0]["name"] == "Yaourt Dâu"
+
+
+def test_agent_cart_can_add_customer_screen_search_result():
+    from openjarvis.tools import display as display_module
+
+    class Screen:
+        def screen_search(self):
+            return [
+                {"id": "strawberry", "name": "Yaourt Dâu", "price": 65_000}
+            ]
+
+    menu = DisplayMenuTool()
+    menu._presentation = Screen()
+    cart, _ = _wired(DisplayCartTool)
+    agent_cart = display_module.DisplayCartMemoryTool(cart, menu)
+    with conversation_scope("typed-cart"):
+        result = agent_cart.execute(
+            action="add",
+            item={
+                "variant_id": "strawberry",
+                "name": "Yaourt Dâu",
+                "unit_price": 65_000,
+                "quantity": 1,
+            },
+            open_cart=False,
+        )
+        assert result.success
+        assert cart.current_snapshot()["total"] == 65_000
+
+
+def test_agent_cart_rejects_conflicting_prices_for_the_same_visible_id():
+    from openjarvis.tools import display as display_module
+
+    menu, _ = _wired(DisplayMenuTool)
+    cart, _ = _wired(DisplayCartTool)
+    agent_cart = display_module.DisplayCartMemoryTool(cart, menu)
+    with conversation_scope("conflicting-evidence"):
+        assert menu.execute(
+            items=[{"id": "strawberry", "name": "Yaourt Dâu", "price": 65_000}],
+            result_complete=True,
+        ).success
+        menu._presentation = type(
+            "Screen",
+            (),
+            {
+                "screen_search": lambda self: [
+                    {"id": "strawberry", "name": "Yaourt Dâu", "price": 1}
+                ]
+            },
+        )()
+        result = agent_cart.execute(
+            action="add",
+            item={
+                "variant_id": "strawberry",
+                "name": "Yaourt Dâu",
+                "unit_price": 1,
+                "quantity": 1,
+            },
+        )
+        assert not result.success
+        assert cart.current_snapshot()["lines"] == []
 
 
 def test_agent_sees_the_customers_typed_search_apart_from_its_own_display():

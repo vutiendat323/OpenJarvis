@@ -1,6 +1,6 @@
 [skill]
 name = "trendcoffee-add-to-cart"
-description = "Resolve one or more requested TrendCoffee items from one fresh complete menu read and add the verified batch to the local draft cart. Each contains value must match exactly one current product; otherwise nothing is added. open_cart=true switches the customer's screen to the cart (they want to review or pay now); false keeps their current screen and only updates the cart badge (they are still choosing)."
+description = "Use only when at least one requested item is absent from runtime_context.displayed_menu and customer_screen_search.visible_items. Resolve names from one fresh complete menu read and add the verified batch to the local draft cart. For an item already shown, call display_cart directly instead; do not read HTTP. Each contains value must match exactly one current product; otherwise nothing is added. open_cart=true switches the customer's screen to the cart (they want to review or pay now); false keeps their current screen and only updates the cart badge (they are still choosing)."
 required_capabilities = ["network:fetch"]
 input_schema_json = '''
 {

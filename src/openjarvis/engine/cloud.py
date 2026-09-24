@@ -686,14 +686,16 @@ class CloudEngine(InferenceEngine):
         tool_choice = kwargs.pop("tool_choice", None)
         requested_include = kwargs.pop("include", [])
         kwargs.pop("reasoning", None)
-        kwargs.pop("reasoning_effort", None)
+        reasoning_effort = kwargs.pop("reasoning_effort", None)
+        if reasoning_effort not in {"low", "medium", "high", "xhigh", "max"}:
+            reasoning_effort = "high"
         kwargs.pop("store", None)
         create_kwargs: Dict[str, Any] = {
             "model": model,
             "input": input_items,
             "max_output_tokens": max_tokens,
             **kwargs,
-            "reasoning": {"effort": "high"},
+            "reasoning": {"effort": reasoning_effort},
             "include": list(
                 dict.fromkeys([*requested_include, "reasoning.encrypted_content"])
             ),
@@ -1917,11 +1919,14 @@ class CloudEngine(InferenceEngine):
         instructions, input_items = self._openai_responses_input(messages)
         tools = kwargs.pop("tools", None)
         tool_choice = kwargs.pop("tool_choice", None)
+        reasoning_effort = kwargs.pop("reasoning_effort", None)
+        if reasoning_effort not in {"low", "medium", "high", "xhigh", "max"}:
+            reasoning_effort = "high"
         create_kwargs: Dict[str, Any] = {
             "model": model,
             "input": input_items,
             "max_output_tokens": max_tokens,
-            "reasoning": {"effort": "high"},
+            "reasoning": {"effort": reasoning_effort},
             "include": ["reasoning.encrypted_content"],
             "store": False,
             "stream": True,

@@ -64,6 +64,59 @@ class TestCloudEngineListModels:
 
 
 class TestCloudEngineGenerate:
+    def test_gpt_6_responses_accepts_low_reasoning_for_verified_followup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        client = mock.MagicMock()
+        client.responses.create.return_value = SimpleNamespace(
+            output_text="OK",
+            output=[],
+            usage=None,
+            model="gpt-6-luna",
+            status="completed",
+        )
+        engine = CloudEngine()
+        engine._openai_client = client
+
+        engine.generate(
+            [Message(role=Role.USER, content="Filter this list")],
+            model="gpt-6-luna",
+            reasoning_effort="low",
+        )
+
+        assert client.responses.create.call_args.kwargs["reasoning"] == {
+            "effort": "low"
+        }
+
+    @pytest.mark.asyncio
+    async def test_gpt_6_stream_accepts_low_reasoning_for_verified_followup(
+        self,
+    ) -> None:
+        async def events():
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(output=[], usage=None),
+            )
+
+        client = mock.MagicMock()
+        client.responses.create = mock.AsyncMock(return_value=events())
+        engine = CloudEngine()
+        engine._openai_async_client = client
+
+        _ = [
+            chunk
+            async for chunk in engine.stream_full(
+                [Message(role=Role.USER, content="Filter this list")],
+                model="gpt-6-luna",
+                reasoning_effort="low",
+            )
+        ]
+
+        assert client.responses.create.call_args.kwargs["reasoning"] == {
+            "effort": "low"
+        }
+
     def test_generate_openai(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

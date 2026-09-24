@@ -690,8 +690,25 @@ class SystemBuilder:
     @staticmethod
     def _model_visible_tools(tools, hidden: str):
         """Keep skill primitives in the internal executor, outside agent schemas."""
+        from openjarvis.tools.display import (
+            DisplayCartMemoryTool,
+            DisplayCartTool,
+            DisplayMenuMemoryTool,
+            DisplayMenuTool,
+        )
+
         names = {name.strip() for name in hidden.split(",") if name.strip()}
-        return [tool for tool in tools if tool.spec.name not in names]
+        menu = next((tool for tool in tools if isinstance(tool, DisplayMenuTool)), None)
+        visible = []
+        for tool in tools:
+            if tool.spec.name in names:
+                continue
+            if isinstance(tool, DisplayMenuTool):
+                tool = DisplayMenuMemoryTool(tool)
+            elif isinstance(tool, DisplayCartTool) and menu is not None:
+                tool = DisplayCartMemoryTool(tool, menu)
+            visible.append(tool)
+        return visible
 
     @staticmethod
     def _drop_unguarded_wildcard_checkout(skill_tools, tools, active: str):
@@ -950,6 +967,9 @@ class SystemBuilder:
         client.initialize()
 
         self._mcp_clients.append(client)
+        if cfg.get("presentation_only"):
+            # The display calls this client directly; agents need no adapters.
+            return []
 
         provider = MCPToolProvider(client)
         discovered = provider.discover()

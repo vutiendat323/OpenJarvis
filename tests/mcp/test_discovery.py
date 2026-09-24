@@ -153,6 +153,28 @@ class TestClientPersistence:
     @patch(_PATCH_PROVIDER)
     @patch(_PATCH_CLIENT)
     @patch(_PATCH_HTTP)
+    def test_presentation_only_keeps_client_without_agent_tools(
+        self, mock_transport_cls, mock_client_cls, mock_provider_cls, builder
+    ):
+        mock_provider_cls.return_value.discover.return_value = [
+            _make_mock_tool("browser_navigate")
+        ]
+
+        result = builder._discover_external_mcp(
+            {
+                "name": "playwright",
+                "url": "http://localhost:8080/mcp",
+                "presentation_only": True,
+            }
+        )
+
+        assert result == []
+        assert builder._mcp_clients == [mock_client_cls.return_value]
+        mock_provider_cls.return_value.discover.assert_not_called()
+
+    @patch(_PATCH_PROVIDER)
+    @patch(_PATCH_CLIENT)
+    @patch(_PATCH_HTTP)
     def test_client_stored_in_mcp_clients(
         self, mock_transport_cls, mock_client_cls, mock_provider_cls, builder
     ):
