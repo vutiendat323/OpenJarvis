@@ -102,6 +102,13 @@ jobs:
             curl -fsS http://localhost:8000/health && exit_code=0 && break
             exit_code=1; sleep 2
           done
+          # State and model caches must survive container recreation (every deploy).
+          if [ "$exit_code" = 0 ]; then
+            f="/home/openjarvis/.openjarvis/.persist /home/openjarvis/.cache/.persist"
+            $compose exec -T jarvis touch $f \
+              && $compose up -d --no-build --force-recreate jarvis \
+              && $compose exec -T jarvis ls $f || exit_code=1
+          fi
           [ "$exit_code" = 0 ] || $compose logs
           $compose down -v
           exit $exit_code

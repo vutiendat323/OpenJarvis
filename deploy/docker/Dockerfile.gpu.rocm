@@ -81,7 +81,8 @@ RUN groupadd --system --gid 10001 openjarvis && \
         --create-home --home-dir /home/openjarvis openjarvis && \
     (getent group video  >/dev/null || groupadd --system video) && \
     (getent group render >/dev/null || groupadd --system render) && \
-    usermod -aG video,render openjarvis
+    usermod -aG video,render openjarvis && \
+    install -d -o openjarvis -g openjarvis /home/openjarvis/.openjarvis /home/openjarvis/.cache
 ENV HOME=/home/openjarvis
 USER openjarvis
 
