@@ -40,6 +40,7 @@ class SharedBrowserProcess:
             self._chrome_executable
             or shutil.which("google-chrome")
             or shutil.which("chromium")
+            or shutil.which("chromium-browser")  # Fedora's binary name
         )
         if not executable:
             raise RuntimeError("Chrome is required for the shared browser")
