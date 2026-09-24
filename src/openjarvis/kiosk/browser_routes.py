@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from openjarvis.server.auth_middleware import is_loopback_host, websocket_authorized
+from openjarvis.server.auth_middleware import authenticate_websocket, is_loopback_host
 
 
 def create_browser_router(bridge: Any) -> APIRouter:
@@ -29,10 +29,14 @@ def create_browser_router(bridge: Any) -> APIRouter:
                 await websocket.close(code=1008)
                 return
         expected_key = getattr(websocket.app.state, "api_key", "")
-        if not websocket_authorized(websocket, expected_key, allow_loopback=True):
+        authorized, subprotocol = authenticate_websocket(websocket, expected_key)
+        client = getattr(websocket, "client", None)
+        if not authorized and is_loopback_host(getattr(client, "host", None)):
+            authorized = True
+        if not authorized:
             await websocket.close(code=1008)
             return
-        await websocket.accept()
+        await websocket.accept(subprotocol=subprotocol)
         if active_viewer is not None:
             try:
                 await active_viewer.close(code=1012)

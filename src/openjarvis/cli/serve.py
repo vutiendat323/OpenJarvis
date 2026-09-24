@@ -375,6 +375,13 @@ def serve(
         # worse than a startup error) while genuinely optional construction
         # failures below keep their existing tolerant handling.
         system_prompt = resolve_agent_system_prompt(system.config.agent)
+        from openjarvis.prompt.builder import SystemPromptBuilder
+
+        prompt_builder = SystemPromptBuilder(
+            agent_template=system.config.agent.default_system_prompt or "",
+            memory_files_config=system.config.memory_files,
+            system_prompt_config=system.config.system_prompt,
+        )
         try:
             agent = construct_registered_agent(
                 agent_name=system.agent_name,
@@ -388,6 +395,7 @@ def serve(
                 session_store=system.session_store,
                 system_prompt=system_prompt,
                 parallel_tools=system.config.agent.parallel_tools,
+                prompt_builder=prompt_builder,
                 extra_kwargs={
                     "skill_few_shot_examples": system._skill_few_shot_examples,
                 },

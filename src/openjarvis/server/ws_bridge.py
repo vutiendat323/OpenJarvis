@@ -90,18 +90,22 @@ def create_ws_router(
 
     @router.websocket("/v1/agents/events")
     async def agent_events(websocket: WebSocket) -> None:
-        from openjarvis.server.auth_middleware import websocket_authorized
+        from openjarvis.server.auth_middleware import (
+            authenticate_websocket,
+            is_loopback_host,
+        )
 
         expected_key = getattr(websocket.app.state, "api_key", "")
-        if not websocket_authorized(
-            websocket,
-            expected_key,
-            allow_loopback=True,
-        ):
-            # 1008 = policy violation; reject before accepting the connection.
+        authorized, subprotocol = authenticate_websocket(websocket, expected_key)
+        # Loopback clients (the kiosk on this machine) may connect keyless.
+        client = getattr(websocket, "client", None)
+        if not authorized and is_loopback_host(getattr(client, "host", None)):
+            authorized = True
+        if not authorized:
+            # Closing before accept rejects the HTTP upgrade request.
             await websocket.close(code=1008)
             return
-        await websocket.accept()
+        await websocket.accept(subprotocol=subprotocol)
         # Parse agent_id filter from query string
         agent_id = websocket.query_params.get("agent_id")
         websocket._agent_filter = agent_id  # type: ignore[attr-defined]

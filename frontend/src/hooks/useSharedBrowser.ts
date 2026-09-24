@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getApiKey, getBase } from '@/lib/api';
+import { getBase } from '@/lib/api';
+import { buildWsProtocols } from '@/lib/useAgentEvents';
 
 export interface BrowserViewState {
   status: 'connecting' | 'connected' | 'disconnected';
@@ -110,8 +111,7 @@ export function useSharedBrowser(): BrowserViewState & { send: (command: Browser
     let timer: ReturnType<typeof setTimeout> | null = null;
     const connect = () => {
       if (disposed) return;
-      const key = getApiKey();
-      const socket = new WebSocket(`${browserWsUrl()}${key ? `?token=${encodeURIComponent(key)}` : ''}`);
+      const socket = new WebSocket(browserWsUrl(), buildWsProtocols());
       socketRef.current = socket;
       socket.onopen = () => setState((current) => ({ ...current, status: 'connected' }));
       socket.onmessage = (event) => {

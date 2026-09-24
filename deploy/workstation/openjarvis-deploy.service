@@ -1,0 +1,7 @@
+[Unit]
+Description=OpenJarvis pull-based deploy
+
+[Service]
+Type=oneshot
+ExecStart=%h/openjarvis/repo/deploy/workstation/deploy.sh
+TimeoutStartSec=30min

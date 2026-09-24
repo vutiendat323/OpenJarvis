@@ -74,7 +74,8 @@ WORKDIR /app
 # $HOME (config/cache/state), which is owned by this user.
 RUN groupadd --system --gid 10001 openjarvis && \
     useradd --system --uid 10001 --gid openjarvis \
-        --create-home --home-dir /home/openjarvis openjarvis
+        --create-home --home-dir /home/openjarvis openjarvis && \
+    install -d -o openjarvis -g openjarvis /home/openjarvis/.openjarvis /home/openjarvis/.cache
 ENV HOME=/home/openjarvis
 USER openjarvis
 

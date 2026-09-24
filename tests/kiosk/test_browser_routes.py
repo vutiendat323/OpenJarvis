@@ -67,7 +67,7 @@ def test_browser_socket_rejects_missing_api_key() -> None:
     assert denied.value.code == 1008
 
     with TestClient(app).websocket_connect(
-        "/api/kiosk/browser/ws?token=test-secret"
+        "/api/kiosk/browser/ws", headers={"Authorization": "Bearer test-secret"}
     ) as ws:
         assert ws.receive_json()["url"] == "about:blank"
 

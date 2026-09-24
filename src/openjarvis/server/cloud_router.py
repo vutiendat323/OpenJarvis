@@ -101,6 +101,17 @@ def is_cloud_model(model: str) -> bool:
     return get_provider(model) is not None
 
 
+def _openrouter_model_id(model: str) -> str:
+    """Return the provider-facing ID for an OpenRouter model."""
+    prefix = "openrouter/"
+    candidate = model.removeprefix(prefix)
+    # OpenRouter owns IDs such as "openrouter/auto" itself. Only remove the
+    # LiteLLM routing prefix when the remainder is still a provider/model ID.
+    if model.startswith(prefix) and "/" in candidate:
+        return candidate
+    return model
+
+
 # ---------------------------------------------------------------------------
 # Message conversion
 # ---------------------------------------------------------------------------

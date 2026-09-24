@@ -25,6 +25,7 @@ jobs:
       - run: uv sync --frozen --extra dev --extra server
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
+      - run: shellcheck deploy/workstation/deploy.sh
 
   test:
     runs-on: ubuntu-latest

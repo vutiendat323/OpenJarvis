@@ -66,6 +66,7 @@ class OperativeAgent(ToolUsingAgent):
         interactive: bool = False,
         confirm_callback=None,
         capability_policy: Any = None,
+        prompt_builder: Optional[Any] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -78,7 +79,7 @@ class OperativeAgent(ToolUsingAgent):
             max_tokens=max_tokens,
             interactive=interactive,
             confirm_callback=confirm_callback,
-            prompt_builder=kwargs.get("prompt_builder"),
+            prompt_builder=prompt_builder,
             capability_policy=capability_policy,
         )
         self._system_prompt = system_prompt or ""

@@ -493,6 +493,20 @@ class Jarvis:
             build_morning_digest_kwargs(agent_name, self._config, tool_objects)
         )
 
+        # Wire the SystemPromptBuilder so SOUL.md / MEMORY.md / USER.md reach
+        # the model — mirrors ``cli/ask.py`` and ``cli/serve.py``. Guarded so
+        # agents whose ``__init__`` doesn't accept the kwarg opt out.
+        import inspect as _inspect
+
+        if "prompt_builder" in _inspect.signature(agent_cls.__init__).parameters:
+            from openjarvis.prompt.builder import SystemPromptBuilder
+
+            agent_kwargs["prompt_builder"] = SystemPromptBuilder(
+                agent_template=self._config.agent.default_system_prompt or "",
+                memory_files_config=self._config.memory_files,
+                system_prompt_config=self._config.system_prompt,
+            )
+
         agent_obj = agent_cls(self._engine, model_name, **agent_kwargs)
         ctx = AgentContext()
 
