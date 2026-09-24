@@ -5,7 +5,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
     ports:
-      - "8000:8000"
+      - "${OPENJARVIS_BIND:-0.0.0.0}:8000:8000"
     environment:
       - OPENJARVIS_ENGINE_DEFAULT=ollama
       - OLLAMA_HOST=http://ollama:11434
@@ -27,7 +27,7 @@ services:
     # predictable rollbacks (#563). Bump deliberately, not implicitly via :latest.
     image: ollama/ollama:0.30.10@sha256:bfc9c6d53cc6989aa5131a6fde6b162b2802d4d337657f3253b5f69579bddeee
     ports:
-      - "11434:11434"
+      - "${OPENJARVIS_BIND:-0.0.0.0}:11434:11434"
     volumes:
       - ollama-models:/root/.ollama
     healthcheck:
