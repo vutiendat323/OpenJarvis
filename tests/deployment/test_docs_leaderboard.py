@@ -35,4 +35,3 @@ def test_config_is_loaded_before_leaderboard_in_mkdocs():
     cfg = content.index("javascripts/leaderboard-config.js")
     lb = content.index("javascripts/leaderboard.js")
     assert cfg < lb, "leaderboard-config.js must be listed before leaderboard.js"
-
