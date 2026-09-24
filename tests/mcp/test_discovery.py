@@ -37,7 +37,7 @@ _PATCH_HTTP = "openjarvis.mcp.transport.StreamableHTTPTransport"
 _PATCH_STDIO = "openjarvis.mcp.transport.StdioTransport"
 _PATCH_CLIENT = "openjarvis.mcp.client.MCPClient"
 _PATCH_PROVIDER = "openjarvis.tools.mcp_adapter.MCPToolProvider"
-_PATCH_LOGGER = "openjarvis.system.builder.logger"
+_PATCH_LOGGER = "openjarvis.mcp.factory.logger"
 
 
 class TestDiscoverHTTPServer:
@@ -213,6 +213,35 @@ def test_builder_retains_full_mcp_pool_for_managed_agents() -> None:
 
     assert primary_tools == []
     assert builder._mcp_tools == [external]
+
+
+def test_model_visible_mcp_tool_replaces_a_native_tool_with_the_same_name() -> None:
+    """Duplicate function schemas waste tokens and make dispatch ambiguous."""
+    from openjarvis.core.config import JarvisConfig
+    from openjarvis.system import SystemBuilder
+
+    config = JarvisConfig()
+    config.tools.enabled = ["browser_navigate"]
+    config.tools.mcp.servers = json.dumps(
+        [{"name": "playwright", "url": "http://localhost:8080/mcp"}]
+    )
+    native = _make_mock_tool("browser_navigate")
+    external = _make_mock_tool("browser_navigate")
+    builder = SystemBuilder(config)
+
+    with (
+        patch("openjarvis.mcp.server.MCPServer") as mcp_server_cls,
+        patch.object(builder, "_discover_external_mcp", return_value=[external]),
+    ):
+        mcp_server_cls.return_value.get_tools.return_value = [native]
+        tools = builder._resolve_tools(
+            config,
+            engine=MagicMock(),
+            model="test-model",
+            memory_backend=None,
+        )
+
+    assert tools == [external]
 
 
 def test_builder_global_mcp_disable_prevents_discovery() -> None:

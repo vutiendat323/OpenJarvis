@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional
@@ -53,6 +54,7 @@ class LoopGuard:
         self._per_tool_counts: dict[str, int] = {}
         # Track cycle keys that have already been warned (for warn-before-block)
         self._warned_cycles: set[str] = set()
+        self._failed_sync_sources: set[str] = set()
 
         try:
             from openjarvis._rust_bridge import get_rust_module
@@ -68,20 +70,47 @@ class LoopGuard:
         except Exception:
             self._rust_impl = None
 
-    def check_call(self, tool_name: str, arguments: str) -> LoopVerdict:
+    def check_call(
+        self,
+        tool_name: str,
+        arguments: str,
+        *,
+        polling: bool = False,
+    ) -> LoopVerdict:
         """Check whether a tool call should proceed or be blocked."""
+        sync_source = self._source_sync_key(tool_name, arguments)
+        if sync_source is not None and sync_source in self._failed_sync_sources:
+            return LoopVerdict(
+                blocked=True,
+                reason=(
+                    f"source_sync for '{sync_source}' already failed in this turn; "
+                    "do not retry it without a new source id or explicit recovery."
+                ),
+            )
         if self._rust_impl is not None:
-            rust_result = self._rust_impl.check(tool_name, arguments)
-            # Support both raw Rust return (str | None) and LoopVerdict
-            if isinstance(rust_result, LoopVerdict):
-                verdict = rust_result
-            elif rust_result is not None:
-                self._emit_triggered("rust_guard", tool_name)
-                verdict = LoopVerdict(blocked=True, reason=rust_result)
+            try:
+                rust_result = self._rust_impl.check(tool_name, arguments, polling)
+            except TypeError:
+                # An older installed extension has the two-argument API and
+                # charges every tool against the poll budget. Falling back is
+                # safer than silently retaining that incorrect behavior.
+                self._rust_impl = None
+                verdict = self._python_check(
+                    tool_name,
+                    arguments,
+                    polling=polling,
+                )
             else:
-                verdict = LoopVerdict()
+                # Support both raw Rust return (str | None) and LoopVerdict.
+                if isinstance(rust_result, LoopVerdict):
+                    verdict = rust_result
+                elif rust_result is not None:
+                    self._emit_triggered("rust_guard", tool_name)
+                    verdict = LoopVerdict(blocked=True, reason=rust_result)
+                else:
+                    verdict = LoopVerdict()
         else:
-            verdict = self._python_check(tool_name, arguments)
+            verdict = self._python_check(tool_name, arguments, polling=polling)
 
         # Wrap with warn-before-block logic
         if verdict.blocked and self._config.warn_before_block:
@@ -91,7 +120,34 @@ class LoopGuard:
                 return LoopVerdict(blocked=False, warned=True, reason=verdict.reason)
         return verdict
 
-    def _python_check(self, tool_name: str, arguments: str) -> LoopVerdict:
+    def note_result(self, tool_name: str, arguments: str, *, success: bool) -> None:
+        """Remember failed sync sources so a model cannot hammer them this turn."""
+        if success:
+            return
+        sync_source = self._source_sync_key(tool_name, arguments)
+        if sync_source is not None:
+            self._failed_sync_sources.add(sync_source)
+
+    @staticmethod
+    def _source_sync_key(tool_name: str, arguments: str) -> str | None:
+        if tool_name != "source_sync":
+            return None
+        try:
+            params = json.loads(arguments) if arguments else {}
+        except json.JSONDecodeError:
+            return "<invalid>"
+        source_id = params.get("source_id") if isinstance(params, dict) else None
+        if isinstance(source_id, str) and source_id.strip():
+            return source_id.strip()
+        return "<missing>"
+
+    def _python_check(
+        self,
+        tool_name: str,
+        arguments: str,
+        *,
+        polling: bool = False,
+    ) -> LoopVerdict:
         """Pure-Python fallback when Rust backend is not available."""
         # 1. Hash tracking — identical calls
         call_hash = hashlib.sha256(f"{tool_name}:{arguments}".encode()).hexdigest()[:16]
@@ -108,16 +164,19 @@ class LoopGuard:
             )
 
         # 2. Per-tool budget (polling tools)
-        self._per_tool_counts[tool_name] = self._per_tool_counts.get(tool_name, 0) + 1
-        if self._per_tool_counts[tool_name] > self._config.poll_tool_budget:
-            self._emit_triggered("poll_budget", tool_name)
-            return LoopVerdict(
-                blocked=True,
-                reason=(
-                    f"Tool '{tool_name}' exceeded poll budget "
-                    f"({self._config.poll_tool_budget})."
-                ),
+        if polling:
+            self._per_tool_counts[tool_name] = (
+                self._per_tool_counts.get(tool_name, 0) + 1
             )
+            if self._per_tool_counts[tool_name] > self._config.poll_tool_budget:
+                self._emit_triggered("poll_budget", tool_name)
+                return LoopVerdict(
+                    blocked=True,
+                    reason=(
+                        f"Tool '{tool_name}' exceeded poll budget "
+                        f"({self._config.poll_tool_budget})."
+                    ),
+                )
 
         # 3. Ping-pong detection
         self._tool_sequence.append(tool_name)
@@ -215,6 +274,7 @@ class LoopGuard:
         self._tool_sequence.clear()
         self._per_tool_counts.clear()
         self._warned_cycles.clear()
+        self._failed_sync_sources.clear()
         if self._rust_impl is not None:
             self._rust_impl.reset()
 

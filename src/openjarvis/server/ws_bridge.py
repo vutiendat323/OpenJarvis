@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from openjarvis.core.events import Event, EventBus, EventType
+from openjarvis.kiosk.presentation import PresentationSessionManager
 
 try:
     from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -28,22 +30,37 @@ _AGENT_EVENTS = {
     EventType.TOOL_CALL_END,
     EventType.INFERENCE_START,
     EventType.INFERENCE_END,
+    EventType.KIOSK_STATE_CHANGED,
+    EventType.DISPLAY_UPDATE,
 }
 
 
-def create_ws_router(event_bus: EventBus) -> Any:
+def create_ws_router(
+    event_bus: EventBus,
+    *,
+    presentation_manager: PresentationSessionManager | None = None,
+) -> Any:
     """Create a FastAPI router with a WebSocket endpoint for agent events."""
     router = APIRouter()
     # Each connected client gets a queue + loop ref for thread-safe event delivery
     clients: dict[WebSocket, tuple[asyncio.Queue, asyncio.AbstractEventLoop]] = {}
+    # The kiosk FSM publishes its state only on a transition. A client that
+    # connects mid-state would otherwise stay on its default ("idle", mic off)
+    # until the next transition — so a person already standing in the zone when
+    # the page loads never gets the consent popup. Keep the last payload and
+    # replay it on connect, the way display events are replayed below.
+    last_kiosk_state: dict[str, Any] | None = None
 
     def _on_event(event: Event) -> None:
         """Forward event to all connected WebSocket client queues (thread-safe)."""
+        nonlocal last_kiosk_state
         payload = {
             "type": event.event_type.value,
             "timestamp": event.timestamp,
             "data": event.data or {},
         }
+        if event.event_type is EventType.KIOSK_STATE_CHANGED:
+            last_kiosk_state = payload
         for ws, (queue, loop) in list(clients.items()):
             agent_filter = getattr(ws, "_agent_filter", None)
             # Tick events carry "agent_id"; tool-call events carry "agent".
@@ -53,6 +70,14 @@ def create_ws_router(event_bus: EventBus) -> Any:
             data = event.data or {}
             event_agent = data.get("agent_id") or data.get("agent")
             if agent_filter and event_agent != agent_filter:
+                continue
+            presentation_filter = getattr(ws, "_presentation_session_filter", None)
+            if presentation_filter and (
+                event.event_type is not EventType.DISPLAY_UPDATE
+                or data.get("presentation_session_id") != presentation_filter
+            ):
+                continue
+            if event.event_type is EventType.DISPLAY_UPDATE and not presentation_filter:
                 continue
             try:
                 loop.call_soon_threadsafe(queue.put_nowait, payload)
@@ -65,10 +90,17 @@ def create_ws_router(event_bus: EventBus) -> Any:
 
     @router.websocket("/v1/agents/events")
     async def agent_events(websocket: WebSocket) -> None:
-        from openjarvis.server.auth_middleware import authenticate_websocket
+        from openjarvis.server.auth_middleware import (
+            authenticate_websocket,
+            is_loopback_host,
+        )
 
         expected_key = getattr(websocket.app.state, "api_key", "")
         authorized, subprotocol = authenticate_websocket(websocket, expected_key)
+        # Loopback clients (the kiosk on this machine) may connect keyless.
+        client = getattr(websocket, "client", None)
+        if not authorized and is_loopback_host(getattr(client, "host", None)):
+            authorized = True
         if not authorized:
             # Closing before accept rejects the HTTP upgrade request.
             await websocket.close(code=1008)
@@ -77,6 +109,8 @@ def create_ws_router(event_bus: EventBus) -> Any:
         # Parse agent_id filter from query string
         agent_id = websocket.query_params.get("agent_id")
         websocket._agent_filter = agent_id  # type: ignore[attr-defined]
+        presentation_session_id = websocket.query_params.get("presentation_session_id")
+        websocket._presentation_session_filter = presentation_session_id  # type: ignore[attr-defined]
         queue: asyncio.Queue = asyncio.Queue(maxsize=100)
         loop = asyncio.get_running_loop()
         clients[websocket] = (queue, loop)
@@ -84,6 +118,25 @@ def create_ws_router(event_bus: EventBus) -> Any:
         payload: asyncio.Task | None = None
         disconnected = False
         try:
+            if presentation_session_id and presentation_manager is not None:
+                presentation_manager.mark_display_connected(presentation_session_id)
+                replay = presentation_manager.replay(presentation_session_id)
+                if replay is not None:
+                    queue.put_nowait(
+                        {
+                            "type": EventType.DISPLAY_UPDATE.value,
+                            "timestamp": time.time(),
+                            "data": replay,
+                        }
+                    )
+            # Only unfiltered subscribers receive kiosk state, so only they
+            # need the snapshot — the filters below would drop it anyway.
+            if (
+                last_kiosk_state is not None
+                and not agent_id
+                and not presentation_session_id
+            ):
+                queue.put_nowait(last_kiosk_state)
             recv = asyncio.create_task(websocket.receive())
             payload = asyncio.create_task(queue.get())
             while True:
@@ -105,6 +158,8 @@ def create_ws_router(event_bus: EventBus) -> Any:
         except WebSocketDisconnect:
             disconnected = True
         finally:
+            if presentation_session_id and presentation_manager is not None:
+                presentation_manager.mark_display_disconnected(presentation_session_id)
             clients.pop(websocket, None)
             pending = [task for task in (recv, payload) if task is not None]
             for task in pending:

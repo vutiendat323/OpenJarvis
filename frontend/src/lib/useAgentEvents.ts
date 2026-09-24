@@ -20,12 +20,18 @@ function utf8ToBase64Url(value: string): string {
     .replace(/=+$/, '');
 }
 
-export function buildWsUrl(agentId?: string): string {
+export function buildWsUrl(
+  agentId?: string,
+  presentationSessionId?: string,
+): string {
   const base = getBase();
   const url = new URL('/v1/agents/events', base || window.location.origin);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
 
   if (agentId) url.searchParams.set('agent_id', agentId);
+  if (presentationSessionId) {
+    url.searchParams.set('presentation_session_id', presentationSessionId);
+  }
 
   return url.toString();
 }
@@ -54,6 +60,7 @@ export function useAgentEvents(
   agentId: string | undefined,
   onEvent: (event: AgentEvent) => void,
   eventTypes?: readonly string[],
+  presentationSessionId?: string,
 ): void {
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
@@ -61,7 +68,7 @@ export function useAgentEvents(
   typesRef.current = eventTypes;
 
   useEffect(() => {
-    if (!agentId) return;
+    if (!agentId && !presentationSessionId) return;
     let ws: WebSocket | null = null;
     let closed = false;
     let retry = 0;
@@ -70,7 +77,10 @@ export function useAgentEvents(
     const connect = () => {
       if (closed) return;
       try {
-        ws = new WebSocket(buildWsUrl(agentId), buildWsProtocols());
+        ws = new WebSocket(
+          buildWsUrl(agentId, presentationSessionId),
+          buildWsProtocols(),
+        );
       } catch {
         schedule();
         return;
@@ -110,5 +120,5 @@ export function useAgentEvents(
       if (reconnectTimer) clearTimeout(reconnectTimer);
       ws?.close();
     };
-  }, [agentId]);
+  }, [agentId, presentationSessionId]);
 }

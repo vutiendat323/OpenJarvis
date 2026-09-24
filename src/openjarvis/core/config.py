@@ -984,6 +984,10 @@ class ToolsConfig:
     mcp: MCPConfig = field(default_factory=MCPConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     enabled: str = ""  # comma-separated default tools
+    model_hidden: str = ""  # registered for internal skills, absent from model schemas
+    # Origins whose HTTP responses may supply a payment QR. Each entry includes
+    # scheme and optional port. Empty means no QR can be displayed.
+    payment_trusted_origins: str = ""
 
 
 @dataclass
@@ -993,6 +997,7 @@ class AgentConfig:
     default_agent: str = "simple"
     max_turns: int = 10
     tools: str = ""  # comma-separated tool names
+    parallel_tools: bool = True  # False runs a turn's tool calls one at a time
     objective: str = ""  # concise purpose for routing/learning/docs
     system_prompt: str = ""  # inline system prompt (takes precedence if set)
     system_prompt_path: str = ""  # path to system prompt file (.txt, .md)

@@ -34,11 +34,12 @@ interface CloudProvider {
   models: Array<{ id: string; desc: string }>;
 }
 
-const CLOUD_PROVIDERS: CloudProvider[] = [
+export const CLOUD_PROVIDERS: CloudProvider[] = [
   {
     name: 'OpenAI',
     envKey: 'OPENAI_API_KEY',
     models: [
+      { id: 'gpt-6-luna', desc: 'GPT-6 Luna — fast agentic reasoning' },
       { id: 'gpt-4o', desc: 'GPT-4o — fast, multimodal' },
       { id: 'gpt-4o-mini', desc: 'GPT-4o Mini — cheap, fast' },
       { id: 'o3-mini', desc: 'o3-mini — reasoning' },
@@ -66,6 +67,7 @@ const CLOUD_PROVIDERS: CloudProvider[] = [
     name: 'OpenRouter',
     envKey: 'OPENROUTER_API_KEY',
     models: [
+      { id: 'openrouter/openai/gpt-5.6-luna', desc: 'GPT-5.6 Luna via OpenRouter' },
       { id: 'openrouter/auto', desc: 'Auto — best model for the task' },
       { id: 'openrouter/anthropic/claude-sonnet-4', desc: 'Claude Sonnet 4 via OpenRouter' },
       { id: 'openrouter/deepseek/deepseek-r1', desc: 'DeepSeek R1 via OpenRouter' },
@@ -101,10 +103,6 @@ export function CommandPalette() {
   const desktopKeyStorage = isTauri();
 
   const refreshCloudKeyStatus = useCallback(async () => {
-    if (!desktopKeyStorage) {
-      setCloudKeyStatus({});
-      return;
-    }
     try {
       setCloudKeyStatus(await getCloudKeyStatus());
       setCloudKeyError(null);

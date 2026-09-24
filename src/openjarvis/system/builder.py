@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, List, Optional
+from urllib.parse import urlsplit
 
 from openjarvis.core.config import JarvisConfig, load_config
 from openjarvis.core.events import EventBus, get_event_bus
@@ -13,6 +14,11 @@ from openjarvis.system.core import JarvisSystem
 from openjarvis.tools._stubs import BaseTool, ToolExecutor
 
 logger = logging.getLogger(__name__)
+
+
+def _is_checkout_skill(tool) -> bool:
+    """True only for a skill whose manifest sets ``checkout = true``."""
+    return getattr(getattr(tool, "_manifest", None), "checkout", False) is True
 
 
 class SystemBuilder:
@@ -38,6 +44,7 @@ class SystemBuilder:
         self._engine_instance_key: Optional[str] = None
         self._model: Optional[str] = None
         self._agent_name: Optional[str] = None
+        self._operators: bool = False
         self._tool_names: Optional[List[str]] = None
         self._telemetry: Optional[bool] = None
         self._traces: Optional[bool] = None
@@ -49,6 +56,12 @@ class SystemBuilder:
         self._speech: Optional[bool] = None
         self._mcp_clients: List = []
         self._mcp_tools: List[BaseTool] = []
+        self._shared_browser = None
+
+    def shared_browser(self, bridge: Any) -> SystemBuilder:
+        """Use one server-owned browser page for kiosk presentation."""
+        self._shared_browser = bridge
+        return self
 
     def engine(self, key: str) -> SystemBuilder:
         self._engine_key = key
@@ -66,6 +79,11 @@ class SystemBuilder:
         """
         self._engine_instance = engine
         self._engine_instance_key = key
+        return self
+
+    def operators(self, enabled: bool = True) -> SystemBuilder:
+        """Attach an ``OperatorManager`` bound to the built system."""
+        self._operators = enabled
         return self
 
     def model(self, name: str) -> SystemBuilder:
@@ -209,12 +227,49 @@ class SystemBuilder:
             model,
             memory_backend,
             channel_backend,
+            bus,
         )
-        tool_executor = ToolExecutor(tool_list, bus) if tool_list else None
+        from openjarvis.kiosk.presentation import (
+            PresentationSessionManager,
+            find_playwright_client,
+        )
+
+        presentation = PresentationSessionManager(
+            bus,
+            find_playwright_client(self._mcp_clients),
+            shared_page=self._shared_browser is not None,
+            current_page_url=(
+                (lambda bridge=self._shared_browser: bridge.state().get("url", ""))
+                if self._shared_browser is not None
+                else None
+            ),
+        )
+        for tool in tool_list:
+            self._inject_display_presentation(tool, presentation)
+            if self._shared_browser is not None and tool.spec.name.startswith(
+                "browser_"
+            ):
+                bind = getattr(tool, "bind_shared_browser", None)
+                if callable(bind):
+                    bind(self._shared_browser)
+        self._inject_draft_cart_settler(tool_list)
+        # The policy has to travel with the executor: ToolExecutor.execute()
+        # consults it before dispatch, and a None policy silently disables the
+        # capability check for every tool routed through this executor.
+        tool_executor = (
+            ToolExecutor(tool_list, bus, capability_policy=sec.capability_policy)
+            if tool_list
+            else None
+        )
 
         skill_manager = None
+        skill_manage_tool = None
         skill_few_shot_examples: List[str] = []
-        if config.skills.enabled:
+        skill_manage_enabled = any(
+            tool.spec.name == "skill_manage" for tool in tool_list
+        )
+        learning_needs_skills = config.learning.enabled and config.learning.auto_update
+        if config.skills.enabled or skill_manage_enabled or learning_needs_skills:
             try:
                 from pathlib import Path
 
@@ -224,21 +279,51 @@ class SystemBuilder:
                     bus, capability_policy=sec.capability_policy
                 )
                 skill_paths = [Path(config.skills.skills_dir).expanduser()]
-                workspace_skills = Path("./skills")
-                if workspace_skills.exists():
-                    skill_paths.insert(0, workspace_skills)
+                if config.skills.enabled:
+                    workspace_skills = Path("./skills")
+                    if workspace_skills.exists():
+                        skill_paths.insert(0, workspace_skills)
                 skill_manager.discover(paths=skill_paths)
                 if tool_executor:
                     skill_manager.set_tool_executor(tool_executor)
-                skill_tools = skill_manager.get_skill_tools(
-                    tool_executor=tool_executor,
-                )
-                tool_list.extend(skill_tools)
-                if tool_list:
-                    tool_executor = ToolExecutor(tool_list, bus)
-                skill_few_shot_examples = skill_manager.get_few_shot_examples()
+                for tool in tool_list:
+                    if tool.spec.name == "skill_manage" and hasattr(
+                        tool, "bind_runtime"
+                    ):
+                        tool.bind_runtime(
+                            skill_manager=skill_manager,
+                            memory_backend=memory_backend,
+                            skills_dir=config.skills.skills_dir,
+                        )
+                        skill_manage_tool = tool
+                if config.skills.enabled:
+                    skill_tools = skill_manager.get_skill_tools(
+                        tool_executor=tool_executor,
+                        active=config.skills.active,
+                    )
+                    skill_tools = self._drop_unguarded_wildcard_checkout(
+                        skill_tools, tool_list, config.skills.active
+                    )
+                    tool_list.extend(skill_tools)
+                    if tool_list:
+                        tool_executor = ToolExecutor(
+                            tool_list, bus, capability_policy=sec.capability_policy
+                        )
+                    self._configure_initial_display(presentation, tool_list)
+                    self._configure_touch_checkout(presentation, tool_list)
+                    skill_few_shot_examples = skill_manager.get_few_shot_examples()
             except Exception as exc:
+                if config.skills.enabled and config.skills.active != "*":
+                    raise
                 logger.warning("Failed to initialize skills: %s", exc)
+
+        trusted_origins = self._parse_trusted_origins(
+            config.tools.payment_trusted_origins
+        )
+        for tool in tool_list:
+            self._inject_payment_trusted_origins(tool, trusted_origins)
+        if any(_is_checkout_skill(t) for t in tool_list):
+            self._inject_checkout_guard(tool_list)
 
         agent_name = self._agent_name or config.agent.default_agent
         container_runner = self._setup_sandbox(config)
@@ -256,7 +341,13 @@ class SystemBuilder:
                 logger.warning("Failed to initialize TraceStore", exc_info=True)
 
         capability_policy = sec.capability_policy
-        learning_orchestrator = self._setup_learning_orchestrator(config)
+        learning_orchestrator = self._setup_learning_orchestrator(
+            config,
+            bus=bus,
+            trace_store=trace_store,
+            skill_manage_tool=skill_manage_tool,
+            skill_manager=skill_manager,
+        )
 
         agent_manager = None
         if config.agent_manager.enabled:
@@ -297,6 +388,7 @@ class SystemBuilder:
                 agent_scheduler = AgentScheduler(
                     manager=agent_manager,
                     executor=agent_executor,
+                    event_bus=bus,
                 )
             except Exception:
                 logger.warning("Failed to initialize agent scheduler", exc_info=True)
@@ -318,7 +410,7 @@ class SystemBuilder:
             engine_key=engine_key,
             model=model,
             agent_name=agent_name,
-            tools=tool_list,
+            tools=self._model_visible_tools(tool_list, config.tools.model_hidden),
             mcp_tools=list(self._mcp_tools),
             tool_executor=tool_executor,
             memory_backend=memory_backend,
@@ -338,12 +430,20 @@ class SystemBuilder:
             agent_executor=agent_executor,
             speech_backend=speech_backend,
             skill_manager=skill_manager,
+            presentation_session_manager=presentation,
         )
         system._learning_orchestrator = learning_orchestrator
         system._skill_few_shot_examples = skill_few_shot_examples
         system._mcp_clients = list(getattr(self, "_mcp_clients", []))
         if system.agent_executor is not None:
             system.agent_executor.set_system(system)
+        if self._operators:
+            try:
+                from openjarvis.operators.manager import OperatorManager
+
+                system.operator_manager = OperatorManager(system)
+            except Exception as exc:
+                logger.warning("Failed to initialize operator manager: %s", exc)
         return system
 
     def _resolve_engine(self, config: JarvisConfig):
@@ -441,7 +541,13 @@ class SystemBuilder:
             return None
 
     def _resolve_tools(
-        self, config, engine, model, memory_backend, channel_backend=None
+        self,
+        config,
+        engine,
+        model,
+        memory_backend,
+        channel_backend=None,
+        bus=None,
     ):
         """Resolve tool instances via MCPServer (primary) + external MCP servers."""
         from openjarvis.mcp.server import MCPServer
@@ -485,6 +591,12 @@ class SystemBuilder:
                                     for t in external_tools
                                     if t.spec.name in tool_names
                                 ]
+                            external_names = {tool.spec.name for tool in external_tools}
+                            tools = [
+                                tool
+                                for tool in tools
+                                if tool.spec.name not in external_names
+                            ]
                             tools.extend(external_tools)
                         except Exception as exc:
                             logger.warning(
@@ -521,6 +633,157 @@ class SystemBuilder:
             "cancel_scheduled_task",
         ):
             pass  # scheduler injection handled post-build
+
+    @staticmethod
+    def _inject_display_presentation(tool, presentation) -> None:
+        """Hand the session-scoped presentation manager to every display tool."""
+        if tool.spec.category == "display" and hasattr(tool, "_presentation"):
+            tool._presentation = presentation
+
+    @staticmethod
+    def _configure_initial_display(presentation, tools) -> None:
+        """Bind the first recipe that declares initial customer-display inputs."""
+        for tool in tools:
+            manifest = getattr(tool, "_manifest", None)
+            metadata = getattr(manifest, "metadata", {})
+            openjarvis = (
+                metadata.get("openjarvis", {}) if isinstance(metadata, dict) else {}
+            )
+            initial = (
+                openjarvis.get("initial_display", {})
+                if isinstance(openjarvis, dict)
+                else {}
+            )
+            inputs = initial.get("inputs") if isinstance(initial, dict) else None
+            if not isinstance(inputs, dict):
+                continue
+            presentation.configure_initial_display(
+                lambda tool=tool, inputs=dict(inputs): tool.execute(**inputs)
+            )
+            return
+
+    @staticmethod
+    def _configure_touch_checkout(presentation, tools) -> None:
+        """Bind the guarded checkout recipe that declares its kiosk reads."""
+        from openjarvis.kiosk.presentation import TouchCheckout
+
+        for tool in tools:
+            manifest = getattr(tool, "_manifest", None)
+            if not _is_checkout_skill(tool):
+                continue
+            openjarvis = manifest.metadata.get("openjarvis", {})
+            kiosk = openjarvis.get("kiosk") if isinstance(openjarvis, dict) else None
+            if not isinstance(kiosk, dict):
+                continue
+            tables_url = kiosk.get("tables_url")
+            order_url = kiosk.get("order_url")
+            if isinstance(tables_url, str) and isinstance(order_url, str):
+                presentation.configure_touch_checkout(
+                    TouchCheckout(
+                        run=tool.execute,
+                        tables_url=tables_url,
+                        order_url=order_url,
+                    )
+                )
+                return
+
+    @staticmethod
+    def _model_visible_tools(tools, hidden: str):
+        """Keep skill primitives in the internal executor, outside agent schemas."""
+        names = {name.strip() for name in hidden.split(",") if name.strip()}
+        return [tool for tool in tools if tool.spec.name not in names]
+
+    @staticmethod
+    def _drop_unguarded_wildcard_checkout(skill_tools, tools, active: str):
+        """Leave checkout skills out when only wildcard discovery found them.
+
+        A checkout skill must never run without the display_cart write guard.
+        An explicitly activated one still fails the build in the guard below.
+        """
+        if active != "*" or any(t.spec.name == "display_cart" for t in tools):
+            return skill_tools
+        kept = []
+        for tool in skill_tools:
+            if _is_checkout_skill(tool):
+                logger.warning(
+                    "Skipping checkout skill %s: display_cart is not enabled",
+                    tool.spec.name,
+                )
+            else:
+                kept.append(tool)
+        return kept
+
+    @staticmethod
+    def _inject_checkout_guard(tools) -> None:
+        cart = next((t for t in tools if t.spec.name == "display_cart"), None)
+        if cart is None:
+            raise ValueError("guarded checkout requires display_cart")
+        cart._checkout_contracts = {
+            t._manifest.manifest_bytes() for t in tools if _is_checkout_skill(t)
+        }
+        for tool in tools:
+            if tool.spec.name == "http_request":
+                tool._checkout_guard = cart.checkout_write_allowed
+
+    @staticmethod
+    def _inject_draft_cart_settler(tools) -> None:
+        """Settle the conversation draft once payment evidence is verified."""
+        settler = next(
+            (
+                tool.settle_current
+                for tool in tools
+                if tool.spec.name == "display_cart"
+                and callable(getattr(tool, "settle_current", None))
+            ),
+            None,
+        )
+        if settler is None:
+            return
+        for tool in tools:
+            if tool.spec.name == "display_payment_qr" and hasattr(
+                tool, "_cart_settler"
+            ):
+                tool._cart_settler = settler
+
+    @staticmethod
+    def _parse_trusted_origins(raw: str) -> tuple:
+        """Parse explicit HTTP origins into ``(scheme, host, effective_port)``."""
+        origins = []
+        for value in (part.strip() for part in raw.split(",")):
+            if not value:
+                continue
+            parsed = urlsplit(value)
+            scheme = parsed.scheme.lower()
+            host = parsed.hostname
+            if scheme not in {"http", "https"} or host is None:
+                raise ValueError(
+                    "payment trusted origin requires an http/https scheme and host"
+                )
+            if (
+                parsed.username is not None
+                or parsed.password is not None
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError("payment trusted origin must contain only an origin")
+            port = parsed.port or (443 if scheme == "https" else 80)
+            origins.append((scheme, host, port))
+        return tuple(origins)
+
+    @staticmethod
+    def _inject_payment_trusted_origins(tool, trusted_origins: tuple) -> None:
+        """Configuration is the only thing display_payment_qr needs handed to it.
+
+        The evidence store is imported directly by the tool, because it belongs
+        to the conversation rather than to any executor -- so there is no
+        executor to choose between here, and no way to choose wrongly.
+        """
+        if tool.spec.name != "display_payment_qr" or not hasattr(
+            tool, "_payment_trusted_origins"
+        ):
+            return
+        tool._payment_trusted_origins = trusted_origins
 
     def _setup_sandbox(self, config):
         sandbox_enabled = (
@@ -610,8 +873,21 @@ class SystemBuilder:
             return None
 
     @staticmethod
-    def _setup_learning_orchestrator(config: JarvisConfig):
-        if not config.learning.training_enabled:
+    def _setup_learning_orchestrator(
+        config: JarvisConfig,
+        *,
+        bus=None,
+        trace_store=None,
+        skill_manage_tool=None,
+        skill_manager=None,
+    ):
+        turn_learning = (
+            config.learning.enabled
+            and config.learning.auto_update
+            and bus is not None
+            and skill_manage_tool is not None
+        )
+        if not (config.learning.training_enabled or turn_learning):
             return None
         try:
             from openjarvis.core.config import DEFAULT_CONFIG_DIR
@@ -619,23 +895,35 @@ class SystemBuilder:
                 LearningOrchestrator,
             )
             from openjarvis.learning.training.lora import LoRATrainingConfig
-            from openjarvis.traces.store import TraceStore
 
-            trace_store = TraceStore(db_path=config.traces.db_path)
+            # Borrow the system's store: a second connection to the same file
+            # would outlive JarvisSystem.close() and split trace ownership.
+            store = trace_store
+            if store is None:
+                from openjarvis.traces.store import TraceStore
+
+                store = TraceStore(db_path=config.traces.db_path)
             config_dir = DEFAULT_CONFIG_DIR / "agent_configs"
 
             sft_cfg = config.learning.intelligence.sft
-            lora_config = LoRATrainingConfig(
-                lora_rank=sft_cfg.lora_rank,
-                lora_alpha=sft_cfg.lora_alpha,
+            lora_config = (
+                LoRATrainingConfig(
+                    lora_rank=sft_cfg.lora_rank,
+                    lora_alpha=sft_cfg.lora_alpha,
+                )
+                if config.learning.training_enabled
+                else None
             )
 
             return LearningOrchestrator(
-                trace_store=trace_store,
+                trace_store=store,
                 config_dir=config_dir,
                 min_improvement=config.learning.min_improvement,
                 min_sft_pairs=sft_cfg.min_pairs,
                 lora_config=lora_config,
+                bus=bus if turn_learning else None,
+                skill_manage_tool=skill_manage_tool if turn_learning else None,
+                skill_manager=skill_manager,
             )
         except Exception as exc:
             logger.warning("Failed to set up learning orchestrator: %s", exc)
@@ -650,31 +938,15 @@ class SystemBuilder:
         """
         import json
 
-        from openjarvis.mcp.client import MCPClient
-        from openjarvis.mcp.transport import StdioTransport, StreamableHTTPTransport
+        from openjarvis.mcp.factory import create_mcp_client
         from openjarvis.tools.mcp_adapter import MCPToolProvider
 
         cfg = json.loads(server_cfg) if isinstance(server_cfg, str) else server_cfg
         name = cfg.get("name", "<unnamed>")
-        url = cfg.get("url")
-        # Bearer token from config — needed by authenticated MCP servers
-        # like Home Assistant. None / empty string skips the header. #461.
-        token = cfg.get("token")
-        command = cfg.get("command", "")
-        args = cfg.get("args", [])
 
-        if url:
-            transport = StreamableHTTPTransport(url=url, token=token)
-        elif command:
-            transport = StdioTransport(command=[command] + args)
-        else:
-            logger.warning(
-                "MCP server '%s' has neither 'url' nor 'command' — skipping",
-                name,
-            )
+        client = create_mcp_client(cfg)
+        if client is None:
             return []
-
-        client = MCPClient(transport)
         client.initialize()
 
         self._mcp_clients.append(client)

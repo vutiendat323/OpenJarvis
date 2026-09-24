@@ -1,0 +1,210 @@
+# ordering-kiosk-mcp.toml -- ordering kiosk with live browser interaction.
+#
+# Playwright remains connected so PresentationSessionManager can own the
+# customer-display tab. A bounded subset is also exposed for cold discovery on
+# an unknown website; once an API recipe is learned, warm turns use
+# http_request and display_* without rediscovering it.
+
+# Ordering Kiosk — Trend Coffee-backed voice ordering, Phase 1.
+#
+# Text and Voice both reach the same orchestrator Agent. The Agent explores
+# validated Trend Coffee snapshots, recommends, confirms with the customer,
+# and uses the same eight ordering tools -- each step a separate tool call, so
+# no single call both changes an order and reports what it became.
+#
+# Order mutation remains locally quarantined until its explicit approval path
+# is enabled. See configs/openjarvis/prompts/ordering-kiosk.md for how the
+# Agent is expected to use these tools.
+#
+# Eight turns cover the measured order flow while bounding a malformed tool-call
+# loop before it burns another six-figure token total.
+#
+# Usage:
+#   OPENJARVIS_CONFIG=configs/openjarvis/examples/ordering-kiosk-mcp.toml jarvis serve
+
+[engine]
+default = "ollama"
+
+[intelligence]
+default_model = "qwen3.5:9b"        # needs reliable function calling
+# The default 1024 is one budget shared by the model's chain-of-thought AND the
+# tool call that follows it. A reasoning model spends most of 1024 thinking, so
+# the tool call is emitted truncated: the JSON stops mid-argument, no parser can
+# read it, and the fragment either leaks into the reply as raw markup or leaves
+# the turn with nothing to say ("No response was generated"). Measured: every
+# failing turn stopped at exactly 1024 output tokens, while an order body is
+# only ~130 tokens. This is per inference call, not per turn.
+max_tokens = 4096
+# Not yet exercised end to end. `scripts/launcher.sh` passes
+# `--engine cloud --model "$MODEL"` on the CLI (default
+# openrouter/openai/gpt-5.6-luna),
+# which overrides both keys above -- that combination is what the manual
+# ordering run has actually verified calls these tools. The local ollama
+# target above is the intended one; it just hasn't been proven yet.
+
+[agent]
+default_agent = "orchestrator"
+system_prompt_path = "configs/openjarvis/prompts/ordering-kiosk.md"
+max_turns = 8
+# Flipped to true deliberately, with the cost understood. Read the whole note
+# before flipping it back or leaving it.
+#
+# What it buys, measured: three catalogue reads in one batch took 0.23 + 0.25 +
+# 0.31s sequentially; run together that is 0.31s. About 0.5s on a turn that
+# takes 15-25s -- roughly 2%. The expensive part of a turn is the model
+# thinking for 4-8s between decisions, and parallel dispatch does not touch it.
+#
+# What it costs: `parallel_tools` is one boolean over every tool call in a
+# batch (orchestrator.py:620 -- there is no read/write filter). The doctrine
+# "one tool call = one mutation or one observation, never both" only holds while
+# calls run one at a time. With this true, a single batch may carry
+# `POST /orders/public` alongside `GET /orders/{slug}`, reading an order before
+# it exists, or alongside `POST /payment/initiate/public`, paying for one that
+# was never created. The evidence-store fingerprint refuses two *identical*
+# mutations, so a duplicated order is still blocked; two *different* mutations
+# in one batch are not.
+#
+# This preset points at a real shop with real money. The owner chose this
+# trade after being shown both numbers.
+parallel_tools = true
+
+[tools]
+# The five display_* tools drive the React `/customer-display` route through
+# the WebSocket bridge and are unrelated to the Data Plane; they stay enabled.
+# Shared browsing uses the existing Playwright MCP adapters on the same page.
+# Omit tab/close and redundant verification tools; snapshot supplies grounding.
+# typesafe_decide is on-demand only; obvious intent and menu routing stay on Luna.
+# `repl` stays absent (ruling R9: in-process object-graph escape).
+enabled = "http_request,skill_manage,typesafe_decide,display_menu,display_cart,display_bill,display_payment_qr,display_clear,browser_snapshot,browser_navigate,browser_navigate_back,browser_click,browser_type,browser_fill_form,browser_select_option,browser_hover,browser_press_key,browser_wait_for,browser_handle_dialog,browser_drag,browser_network_requests,browser_console_messages"
+# Draft editing, clearing, and guarded public HTTP reads remain interactive.
+# Terminal menu/payment display primitives execute inside prepared procedures.
+model_hidden = "display_menu,display_bill,display_payment_qr"
+# Only this origin may supply a payment QR. Empty would mean no QR can ever be
+# displayed; a wide list would mean the guard proves nothing.
+payment_trusted_origins = "https://trendcoffee.net"
+
+[skills]
+# Expose only this merchant's prepared menu and guarded checkout procedures.
+# Learned procedures remain available to skill_manage's internal executor.
+enabled = true
+active = "trendcoffee-menu,trendcoffee-add-to-cart,trendcoffee-checkout"
+
+[learning]
+# A completed, verified transaction becomes a replayable skill in this same
+# process. `training_enabled` stays false: this preset learns procedures, it
+# does not fine-tune a model.
+enabled = true
+auto_update = true
+training_enabled = false
+
+[server]
+host = "127.0.0.1"
+port = 8000
+agent = "orchestrator"
+
+[voice.stt]
+# Gemini Live applies these when the Voice session connects. Keep this local:
+# fetching the menu here would add provider I/O before the WebRTC pipeline can
+# accept speech. Product terms below were refreshed from trendcoffee-menu's
+# read-only endpoint on 2026-09-14; ordinary order language is included too.
+language_codes = ["vi-VN", "en-US"]
+mode = "VERBATIM"
+custom_vocabulary = [
+  "bạc xỉu",
+  "cà phê muối",
+  "đá xay",
+  "takeaway",
+  "mang đi",
+  "tại chỗ",
+  "ít đường",
+  "không đường",
+  "ít đá",
+  "không đá",
+  "thêm đá",
+  "nóng",
+  "lạnh",
+  "size lớn",
+  "size nhỏ",
+  "một phần",
+  "hai phần",
+  "topping",
+  "thêm topping",
+  "gấp đôi",
+  "mỗi món",
+  "Affogato",
+  "Americano",
+  "Choco latte",
+  "Chocolate Coco",
+  "Coffee Trend",
+  "Cold Brew Mộng Mơ",
+  "Cold Brew Original",
+  "Cold Brew Yuzu Xoài",
+  "Cà phê bạc xỉu",
+  "Cà phê hạt dẻ",
+  "Cà phê sữa",
+  "Cà Phê Tiramisu",
+  "Cà phê đen",
+  "Dâu kem đá xay",
+  "Espresso",
+  "Latte",
+  "Matcha Coco",
+  "Matcha latte",
+  "Matcha Trend",
+  "Matcha đá xay",
+  "Strawberry matcha latte",
+  "Tiramisu choco đá xay",
+  "Yaourt dâu đá xay",
+  "Yaourt xoài đá xay",
+  "Đậu đỏ đá xay",
+  "Cam tươi",
+  "Nước dừa",
+  "Nước khoáng",
+  "Nước khoáng có gas",
+  "Nước ép các loại",
+  "Trà Bắc",
+  "Trà Lipton chanh mật ong",
+  "Trà lựu nhãn",
+  "Trà nhiệt đới",
+  "Trà nho xanh kiwi",
+  "Trà nhài hoa cúc",
+  "Trà sữa Bá Tước",
+  "Trà thảo mộc mật ong",
+  "Trà táo lê quế",
+  "Trà vải đào",
+  "Trà ổi hồng",
+  "cà phê",
+  "món trà",
+  "sinh tố",
+  "nước giải khát",
+  "món bánh",
+  "món ăn",
+  "bia",
+  "rượu vang",
+  "tiêu chuẩn",
+  "Croissant",
+  "Bruschetta",
+  "burrito",
+  "nachos",
+  "quesadillas",
+  "carpaccio",
+  "Carbonara",
+  "Pesto",
+  "Burrata",
+  "Parma",
+  "Tiramisu",
+  "Pannacotta",
+  "Pain suisse",
+  "Cinnamon rolls",
+  "Hickory",
+  "USDA",
+  "Aukube",
+  "Hokube",
+  "cá hồi xông khói",
+  "bò xông khói",
+  "phô mai Burrata",
+  "heo muối Parma",
+]
+
+[tools.mcp]
+enabled = true
+servers = '''[{"name": "playwright", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.79", "--browser", "chromium", "--user-data-dir", ".openjarvis/ordering-kiosk/browser-profile", "--sandbox", "--caps=testing", "--snapshot-mode", "none"], "include_tools": ["browser_snapshot", "browser_find", "browser_navigate", "browser_navigate_back", "browser_click", "browser_type", "browser_fill_form", "browser_select_option", "browser_hover", "browser_press_key", "browser_wait_for", "browser_handle_dialog", "browser_drag", "browser_drop", "browser_resize", "browser_network_requests", "browser_console_messages", "browser_verify_element_visible", "browser_verify_text_visible", "browser_verify_value", "browser_verify_list_visible"]}]'''

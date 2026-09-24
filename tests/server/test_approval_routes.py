@@ -7,6 +7,7 @@ import pytest
 from openjarvis.tools.approval_store import (
     STATUS_APPROVED,
     STATUS_DENIED,
+    STATUS_EXECUTED,
     STATUS_PENDING,
     TIER_HIGH,
     TIER_LOW,
@@ -226,6 +227,16 @@ class TestApproveAction:
         body = resp.json()
         assert body["count"] == 1
         assert body["actions"][0]["id"] == id_b
+
+    def test_terminal_action_cannot_be_reapproved(self, client, approval_store):
+        action_id = _queue(approval_store)
+        approval_store.update_status(action_id, STATUS_APPROVED)
+        approval_store.update_status(action_id, STATUS_EXECUTED)
+
+        response = client.post(f"/v1/approvals/{action_id}/approve")
+
+        assert response.status_code == 409
+        assert approval_store.get_action(action_id).status == STATUS_EXECUTED
 
 
 @pytest.mark.skipif(not HAS_FASTAPI, reason="fastapi not installed")

@@ -136,6 +136,9 @@ export interface Conversation {
   updatedAt: number;
   model: string;
   messages: ChatMessage[];
+  // Opaque id issued by the server so later turns rejoin one tool working
+  // set. Absent on histories written before the handshake existed.
+  serverConversationId?: string;
 }
 
 export interface ConversationStore {

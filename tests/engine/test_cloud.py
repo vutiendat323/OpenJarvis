@@ -8,7 +8,7 @@ from unittest import mock
 import pytest
 
 from openjarvis.core.registry import EngineRegistry
-from openjarvis.core.types import Message, Role
+from openjarvis.core.types import Message, Role, ToolCall
 from openjarvis.engine._base import EngineConnectionError
 from openjarvis.engine.cloud import (
     CloudEngine,
@@ -21,6 +21,9 @@ from openjarvis.engine.cloud import (
 
 
 class TestEstimateCost:
+    def test_gpt_6_luna_pricing(self) -> None:
+        assert estimate_cost("gpt-6-luna", 1_000_000, 1_000_000) == pytest.approx(0.60)
+
     def test_known_model(self) -> None:
         cost = estimate_cost("gpt-4o", 1_000_000, 1_000_000)
         assert cost == pytest.approx(12.50)  # 2.50 + 10.00
@@ -88,6 +91,285 @@ class TestCloudEngineGenerate:
         )
         assert result["content"] == "Hello!"
         assert result["usage"]["prompt_tokens"] == 10
+
+    @pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-6-luna"])
+    def test_luna_tool_calls_use_responses_with_high_reasoning(
+        self, monkeypatch: pytest.MonkeyPatch, model: str
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        fake_client = mock.MagicMock()
+        response_items = [
+            SimpleNamespace(
+                type="reasoning",
+                model_dump=lambda **_: {
+                    "id": "rs_1",
+                    "type": "reasoning",
+                    "summary": [],
+                },
+            ),
+            SimpleNamespace(
+                type="function_call",
+                call_id="call_1",
+                name="lookup",
+                arguments='{"query":"menu"}',
+                model_dump=lambda **_: {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "lookup",
+                    "arguments": '{"query":"menu"}',
+                },
+            ),
+        ]
+        fake_client.responses.create.return_value = SimpleNamespace(
+            output_text="",
+            output=response_items,
+            usage=SimpleNamespace(
+                input_tokens=10,
+                output_tokens=5,
+                total_tokens=15,
+            ),
+            model=model,
+            status="completed",
+        )
+        engine = CloudEngine()
+        engine._openai_client = fake_client
+
+        engine.generate(
+            [Message(role=Role.USER, content="Hi")],
+            model=model,
+            tools=[{"type": "function", "function": {"name": "lookup"}}],
+            reasoning_effort="none",
+        )
+
+        fake_client.chat.completions.create.assert_not_called()
+        sent = fake_client.responses.create.call_args.kwargs
+        assert sent["reasoning"] == {"effort": "high"}
+        assert "reasoning_effort" not in sent
+        assert sent["include"] == ["reasoning.encrypted_content"]
+        assert sent["tools"] == [
+            {
+                "type": "function",
+                "name": "lookup",
+                "parameters": None,
+                "strict": False,
+            }
+        ]
+        assert sent["store"] is False
+
+    @pytest.mark.asyncio
+    async def test_gpt_6_tool_stream_uses_high_reasoning_responses(self) -> None:
+        async def events():
+            yield SimpleNamespace(type="response.output_text.delta", delta="Dạ, ")
+            yield SimpleNamespace(
+                type="response.output_text.delta", delta="để tôi xem."
+            )
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    output=[
+                        SimpleNamespace(
+                            type="reasoning",
+                            model_dump=lambda **_: {
+                                "type": "reasoning",
+                                "encrypted_content": "opaque",
+                            },
+                        ),
+                        SimpleNamespace(
+                            type="function_call",
+                            call_id="call_1",
+                            name="lookup",
+                            arguments='{"query":"menu"}',
+                            model_dump=lambda **_: {
+                                "type": "function_call",
+                                "call_id": "call_1",
+                                "name": "lookup",
+                                "arguments": '{"query":"menu"}',
+                            },
+                        ),
+                    ],
+                    usage=SimpleNamespace(
+                        input_tokens=10, output_tokens=5, total_tokens=15
+                    ),
+                    status="completed",
+                ),
+            )
+
+        client = mock.MagicMock()
+        client.responses.create = mock.AsyncMock(return_value=events())
+        engine = CloudEngine()
+        engine._openai_async_client = client
+        assert engine.supports_semantic_reasoning_stream("gpt-6-luna")
+
+        chunks = [
+            chunk
+            async for chunk in engine.stream_full(
+                [Message(role=Role.USER, content="Hi")],
+                model="gpt-6-luna",
+                tools=[{"type": "function", "function": {"name": "lookup"}}],
+            )
+        ]
+
+        client.chat.completions.create.assert_not_called()
+        sent = client.responses.create.call_args.kwargs
+        assert sent["reasoning"] == {"effort": "high"}
+        assert sent["tools"][0]["name"] == "lookup"
+        assert sent["stream"] is True
+        assert sent["store"] is False
+        assert [chunk.content for chunk in chunks if chunk.content] == [
+            "Dạ, ",
+            "để tôi xem.",
+        ]
+        assert chunks[-1].tool_calls == [
+            {
+                "index": 1,
+                "id": "call_1",
+                "function": {"name": "lookup", "arguments": '{"query":"menu"}'},
+            }
+        ]
+        assert chunks[-1].response_items[0]["encrypted_content"] == "opaque"
+        assert chunks[-1].response_items[1]["call_id"] == "call_1"
+        assert chunks[-1].usage == {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+        }
+
+    @pytest.mark.asyncio
+    async def test_gpt_6_stream_without_tools_keeps_high_reasoning(self) -> None:
+        async def events():
+            yield SimpleNamespace(type="response.output_text.delta", delta="Xin chào")
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(output=[], usage=None),
+            )
+
+        client = mock.MagicMock()
+        client.responses.create = mock.AsyncMock(return_value=events())
+        engine = CloudEngine()
+        engine._openai_async_client = client
+
+        chunks = [
+            chunk
+            async for chunk in engine.stream_full(
+                [Message(role=Role.USER, content="Hi")], model="gpt-6-luna"
+            )
+        ]
+
+        assert chunks[0].content == "Xin chào"
+        assert chunks[-1].finish_reason == "stop"
+        sent = client.responses.create.call_args.kwargs
+        assert sent["reasoning"] == {"effort": "high"}
+        assert "tools" not in sent
+
+    @pytest.mark.asyncio
+    async def test_gpt_6_incomplete_stream_fails_closed(self) -> None:
+        async def events():
+            yield SimpleNamespace(type="response.output_text.delta", delta="Dạ")
+
+        client = mock.MagicMock()
+        client.responses.create = mock.AsyncMock(return_value=events())
+        engine = CloudEngine()
+        engine._openai_async_client = client
+
+        with pytest.raises(EngineConnectionError, match="ended early"):
+            _ = [
+                chunk
+                async for chunk in engine.stream_full(
+                    [Message(role=Role.USER, content="Hi")], model="gpt-6-luna"
+                )
+            ]
+
+    @pytest.mark.asyncio
+    async def test_gpt_6_text_stream_uses_supported_chat_mode(self) -> None:
+        client = mock.MagicMock()
+        client.chat.completions.create.return_value = iter(
+            [
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="OK"))]
+                )
+            ]
+        )
+        engine = CloudEngine()
+        engine._openai_client = client
+
+        tokens = [
+            token
+            async for token in engine.stream(
+                [Message(role=Role.USER, content="Hi")], model="gpt-6-luna"
+            )
+        ]
+
+        assert tokens == ["OK"]
+        sent = client.chat.completions.create.call_args.kwargs
+        assert sent["reasoning_effort"] == "none"
+        assert "temperature" not in sent
+
+    def test_gpt_5_6_replays_response_items_and_tool_output(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        fake_client = mock.MagicMock()
+        fake_client.responses.create.return_value = SimpleNamespace(
+            output_text="Done.",
+            output=[],
+            usage=SimpleNamespace(
+                input_tokens=20,
+                output_tokens=4,
+                total_tokens=24,
+            ),
+            model="gpt-5.6-luna",
+            status="completed",
+        )
+        engine = CloudEngine()
+        engine._openai_client = fake_client
+        response_items = [
+            {
+                "id": "rs_1",
+                "type": "reasoning",
+                "summary": [],
+                "encrypted_content": "opaque",
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "lookup",
+                "arguments": '{"query":"menu"}',
+            },
+        ]
+
+        engine.generate(
+            [
+                Message(role=Role.USER, content="Find the menu"),
+                Message(
+                    role=Role.ASSISTANT,
+                    tool_calls=[
+                        ToolCall(
+                            id="call_1",
+                            name="lookup",
+                            arguments='{"query":"menu"}',
+                        )
+                    ],
+                    metadata={"response_items": response_items},
+                ),
+                Message(
+                    role=Role.TOOL,
+                    content='{"ok":true}',
+                    tool_call_id="call_1",
+                ),
+            ],
+            model="gpt-5.6-luna",
+            tools=[{"type": "function", "function": {"name": "lookup"}}],
+        )
+
+        assert fake_client.responses.create.call_args.kwargs["input"] == [
+            {"role": "user", "content": "Find the menu"},
+            *response_items,
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": '{"ok":true}',
+            },
+        ]
 
     def test_generate_anthropic(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -434,13 +716,82 @@ class TestOpenRouterToolForwarding:
 
         # tools / tool_choice are forwarded to the API call
         sent = fake_client.chat.completions.create.call_args.kwargs
+        assert sent["model"] == "openai/gpt-4o"
         assert sent["tools"] == tools
         assert sent["tool_choice"] == "auto"
 
         # tool_calls from the response are parsed back into the result
         assert result["tool_calls"][0]["id"] == "call_1"
-        assert result["tool_calls"][0]["function"]["name"] == "get_weather"
-        assert result["tool_calls"][0]["function"]["arguments"] == '{"city": "NYC"}'
+        assert result["tool_calls"][0]["name"] == "get_weather"
+        assert result["tool_calls"][0]["arguments"] == '{"city": "NYC"}'
+
+    def test_auto_router_keeps_its_openrouter_slug(self) -> None:
+        fake_client = mock.MagicMock()
+        fake_client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="ok", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+            model="openai/gpt-5.6-luna",
+        )
+        engine = CloudEngine()
+        engine._openrouter_client = fake_client
+
+        engine.generate(
+            [Message(role=Role.USER, content="hello")],
+            model="openrouter/auto",
+        )
+
+        sent = fake_client.chat.completions.create.call_args.kwargs
+        assert sent["model"] == "openrouter/auto"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("full", [False, True])
+    @pytest.mark.parametrize(
+        ("selected_model", "provider_model"),
+        [
+            ("openrouter/openai/gpt-5.6-luna", "openai/gpt-5.6-luna"),
+            ("openrouter/auto", "openrouter/auto"),
+        ],
+    )
+    async def test_stream_normalizes_model(
+        self, full: bool, selected_model: str, provider_model: str
+    ) -> None:
+        chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="ok", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ]
+        )
+
+        async def chunks():
+            yield chunk
+
+        engine = CloudEngine()
+        client = mock.MagicMock()
+        if full:
+            client.chat.completions.create = mock.AsyncMock(return_value=chunks())
+            engine._openrouter_async_client = client
+            stream = engine.stream_full
+        else:
+            client.chat.completions.create.return_value = iter([chunk])
+            engine._openrouter_client = client
+            stream = engine.stream
+
+        result = [
+            token
+            async for token in stream(
+                [Message(role=Role.USER, content="hello")], model=selected_model
+            )
+        ]
+        assert [token.content if full else token for token in result] == ["ok"]
+        sent = client.chat.completions.create.call_args.kwargs
+        assert sent["model"] == provider_model
 
 
 class TestCloudEngineCanServe:
@@ -514,6 +865,7 @@ class TestCloudEngineCanServe:
     def test_deepseek_only_serves_deepseek_models(self) -> None:
         """The DeepSeek client serves deepseek-* models (and only those)."""
         eng = self._engine(_deepseek_client=object())
+        assert eng.can_serve("deepseek-chat") is True
         assert eng.can_serve("deepseek-v4-flash") is True
         assert eng.can_serve("deepseek-v4-pro") is True
         assert eng.can_serve("DeepSeek-V4-Pro") is True  # case-insensitive
@@ -575,6 +927,7 @@ class TestCloudEngineDeepSeek:
 
         assert engine.health() is True
         models = engine.list_models()
+        assert "deepseek-chat" in models
         assert "deepseek-v4-flash" in models
         assert "deepseek-v4-pro" in models
         # can_serve must agree with list_models (regression for the missing
@@ -625,3 +978,100 @@ class TestCloudEngineDeepSeek:
             engine.generate(
                 [Message(role=Role.USER, content="Hi")], model="deepseek-v4-pro"
             )
+
+    @pytest.mark.asyncio
+    async def test_stream_uses_async_deepseek_client(self) -> None:
+        async def response():
+            for text in ("Ha Noi ", "dang mua."):
+                yield SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content=text))]
+                )
+
+        completions = mock.MagicMock()
+        completions.create = mock.AsyncMock(return_value=response())
+        client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+        engine = CloudEngine.__new__(CloudEngine)
+        engine._deepseek_client = mock.MagicMock()
+        engine._deepseek_async_client = client
+
+        chunks = [
+            chunk
+            async for chunk in engine._stream_deepseek(
+                [Message(role=Role.USER, content="Thoi tiet?")],
+                model="deepseek-chat",
+                temperature=0.7,
+                max_tokens=100,
+            )
+        ]
+
+        assert chunks == ["Ha Noi ", "dang mua."]
+        completions.create.assert_awaited_once()
+
+
+class TestDeepSeekToolForwarding:
+    """The DeepSeek path must send the tool schema, not just read replies back.
+
+    ``_generate_deepseek`` parses ``choice.message.tool_calls`` off the
+    response, so it looks tool-capable. It is only capable if the request
+    carried ``tools`` in the first place: without them DeepSeek has nothing to
+    call and answers with prose that *describes* a call, which the agent loop
+    cannot dispatch. Observed live as literal
+    ``<tool_calls><tool_call name="branch_list">`` text in an ordering session
+    where no tool ever ran.
+    """
+
+    @staticmethod
+    def _engine_with_recorder() -> tuple[CloudEngine, dict]:
+        recorded: dict = {}
+
+        def create(**kwargs: object) -> SimpleNamespace:
+            recorded.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="ok", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=1, completion_tokens=1, total_tokens=2
+                ),
+                model="deepseek-v4-pro",
+            )
+
+        eng = CloudEngine.__new__(CloudEngine)
+        eng._deepseek_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+        return eng, recorded
+
+    def _generate(self, **extra: object) -> dict:
+        eng, recorded = self._engine_with_recorder()
+        eng._generate_deepseek(
+            [Message(role=Role.USER, content="cho minh 2 ly latte")],
+            model="deepseek-v4-pro",
+            temperature=0.2,
+            max_tokens=256,
+            **extra,
+        )
+        return recorded
+
+    def test_tools_reach_the_provider(self) -> None:
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "branch_list", "parameters": {}},
+            }
+        ]
+        recorded = self._generate(tools=tools)
+        assert recorded.get("tools") == tools
+
+    def test_tool_choice_reaches_the_provider(self) -> None:
+        recorded = self._generate(tools=[], tool_choice="auto")
+        assert recorded.get("tool_choice") == "auto"
+
+    def test_no_tools_sends_no_tools_key(self) -> None:
+        """An ordinary chat turn must not grow an empty tools field."""
+        recorded = self._generate()
+        assert "tools" not in recorded
+        assert "tool_choice" not in recorded

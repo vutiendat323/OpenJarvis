@@ -17,6 +17,7 @@ import {
   Loader2,
   ScrollText,
   Database,
+  AudioLines,
 } from 'lucide-react';
 import { ConversationList } from './ConversationList';
 import { useAppStore } from '../../lib/store';
@@ -34,6 +35,10 @@ export function Sidebar() {
   const setCommandPaletteOpen = useAppStore((s) => s.setCommandPaletteOpen);
   const modelLoading = useAppStore((s) => s.modelLoading);
   const deepResearch = useAppStore((s) => s.deepResearch);
+  const modelId = selectedModel || serverInfo?.model || '';
+  const modelLabel = modelId === 'openrouter/openai/gpt-5.6-luna'
+    ? 'gpt-5.6-luna'
+    : modelId || 'Select model';
 
   const settings = useAppStore((s) => s.settings);
   const updateSettings = useAppStore((s) => s.updateSettings);
@@ -60,6 +65,7 @@ export function Sidebar() {
     { path: '/logs', icon: ScrollText, label: 'Logs' },
     { path: '/settings', icon: Settings, label: 'Settings' },
     { path: '/get-started', icon: Rocket, label: 'Get Started' },
+    { path: '/kiosk', icon: AudioLines, label: 'Voice' },
   ];
 
   return (
@@ -150,7 +156,7 @@ export function Sidebar() {
               >
                 {deepResearch
                   ? 'Deep Research'
-                  : selectedModel || serverInfo?.model || 'Select model'}
+                  : modelLabel}
               </span>
               {modelLoading && (
                 <span className="text-[10px] block text-left" style={{ color: 'var(--color-accent)' }}>

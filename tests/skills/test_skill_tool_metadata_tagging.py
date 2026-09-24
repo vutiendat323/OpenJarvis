@@ -7,6 +7,7 @@ from openjarvis.skills.executor import SkillExecutor
 from openjarvis.skills.tool_adapter import SkillTool
 from openjarvis.skills.types import SkillManifest, SkillStep
 from openjarvis.tools._stubs import BaseTool, ToolExecutor, ToolSpec
+from openjarvis.tools.display import DisplayCartTool
 
 
 class _EchoTool(BaseTool):
@@ -25,6 +26,107 @@ class _EchoTool(BaseTool):
 
 
 class TestSkillToolMetadataTagging:
+    def test_direct_checkout_exposes_replacement_lines_on_an_empty_cart(self):
+        cart = DisplayCartTool()
+        manifest = SkillManifest(
+            name="checkout",
+            checkout=True,
+            accepts_cart_lines=True,
+            steps=[SkillStep(tool_name="echo")],
+        )
+        tool = SkillTool(manifest, SkillExecutor(ToolExecutor([cart, _EchoTool()])))
+
+        assert tool.agent_context() == {"draft_cart": None}
+        assert tool.spec.parameters["properties"]["cart_lines"]["type"] == "array"
+        assert tool.spec.parameters["oneOf"] == [
+            {"required": ["cart_revision"]},
+            {"required": ["cart_lines"]},
+        ]
+
+    def test_final_display_message_and_completion_survive_skill_wrapper(self):
+        class Display(_EchoTool):
+            def execute(self, **params):
+                return ToolResult(
+                    tool_name="display_payment_qr",
+                    content="shown",
+                    success=True,
+                    metadata={
+                        "customer_message": "Scan to pay",
+                        "completed_display": True,
+                        "result_complete": True,
+                        "projected_count": 12,
+                        "published_count": 12,
+                    },
+                )
+
+        manifest = SkillManifest(name="checkout", steps=[SkillStep(tool_name="echo")])
+        tool = SkillTool(manifest, SkillExecutor(ToolExecutor([Display()])))
+        result = tool.execute()
+        assert result.metadata["completed_display"] is True
+        assert result.metadata["customer_message"] == "Scan to pay"
+        assert result.metadata["result_complete"] is True
+        assert result.metadata["projected_count"] == 12
+        assert result.metadata["published_count"] == 12
+        assert result.metadata["skill"] == "checkout"
+
+    def test_completed_menu_does_not_fallback_to_model_supplied_message(self):
+        class Display(_EchoTool):
+            def execute(self, **params):
+                return ToolResult(
+                    tool_name="display_menu",
+                    content="shown",
+                    success=True,
+                    metadata={"completed_display": True},
+                )
+
+        manifest = SkillManifest(
+            name="menu",
+            steps=[
+                SkillStep(
+                    tool_name="echo",
+                    arguments_template='{"customer_message":"{customer_message}"}',
+                )
+            ],
+        )
+        tool = SkillTool(manifest, SkillExecutor(ToolExecutor([Display()])))
+
+        result = tool.execute(customer_message="untrusted narration")
+
+        assert result.metadata["completed_display"] is True
+        assert "customer_message" not in result.metadata
+
+    def test_menu_skill_exposes_verified_categories_to_the_next_agent_turn(self):
+        class Display(_EchoTool):
+            tool_id = "display_menu"
+
+            @property
+            def spec(self):
+                return ToolSpec(name="display_menu", description="display menu")
+
+            def execute(self, **params):
+                return ToolResult(
+                    tool_name="display_menu",
+                    content="shown",
+                    success=True,
+                    metadata={
+                        "completed_display": True,
+                        "menu_categories": ["cà phê", "món trà"],
+                    },
+                )
+
+            def agent_context(self):
+                return {}
+
+        manifest = SkillManifest(
+            name="menu",
+            steps=[SkillStep(tool_name="display_menu", arguments_template="{}")],
+        )
+        tool = SkillTool(manifest, SkillExecutor(ToolExecutor([Display()])))
+
+        assert tool.agent_context() == {}
+        assert tool.execute().success is True
+        assert tool.agent_context() == {"menu_categories": ["cà phê", "món trà"]}
+
     def _make_tool(self, manifest: SkillManifest) -> SkillTool:
         executor = SkillExecutor(ToolExecutor([_EchoTool()]))
         return SkillTool(manifest, executor)

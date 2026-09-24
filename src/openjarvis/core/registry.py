@@ -158,6 +158,10 @@ class ConnectorRegistry(RegistryBase[Any]):
     """Registry for data source connectors (Gmail, Slack, etc.)."""
 
 
+class SourceAdapterRegistry(RegistryBase[Any]):
+    """Provider/format adapters for structured source evidence."""
+
+
 class MinerRegistry(RegistryBase[Any]):
     """Registry for Pearl mining provider implementations.
 
@@ -183,6 +187,7 @@ __all__ = [
     "RegistryBase",
     "RouterPolicyRegistry",
     "SkillRegistry",
+    "SourceAdapterRegistry",
     "SpeechRegistry",
     "TTSRegistry",
     "ToolRegistry",

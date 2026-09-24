@@ -28,6 +28,11 @@ except ImportError:
     pass
 
 try:
+    import openjarvis.tools.typesafe_decide  # noqa: F401
+except ImportError:
+    pass
+
+try:
     import openjarvis.tools.file_read  # noqa: F401
 except ImportError:
     pass
@@ -149,6 +154,11 @@ except ImportError:
 
 try:
     import openjarvis.tools.knowledge_sql  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.display  # noqa: F401
 except ImportError:
     pass
 

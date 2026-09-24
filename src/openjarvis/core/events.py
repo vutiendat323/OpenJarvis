@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional  # noqa: I001
+
+RUN_ID: ContextVar[str | None] = ContextVar("openjarvis_event_run_id", default=None)
 
 # ---------------------------------------------------------------------------
 # Event taxonomy
@@ -72,12 +75,25 @@ class EventType(str, Enum):
     AGENT_LEARNING_COMPLETED = "agent_learning_completed"
     AGENT_MESSAGE_RECEIVED = "agent_message_received"
     AGENT_CHECKPOINT_SAVED = "agent_checkpoint_saved"
+    KIOSK_STATE_CHANGED = "kiosk_state_changed"
+    DISPLAY_UPDATE = "display_update"
     # Phase 25 — Configuration Optimization
     OPTIMIZE_RUN_START = "optimize_run_start"
     OPTIMIZE_TRIAL_START = "optimize_trial_start"
     OPTIMIZE_TRIAL_END = "optimize_trial_end"
     OPTIMIZE_RUN_END = "optimize_run_end"
     FEEDBACK_RECEIVED = "feedback_received"
+    SOURCE_DISCOVERY_STARTED = "source.discovery.started"
+    SOURCE_DISCOVERY_STAGE_COMPLETED = "source.discovery.stage_completed"
+    SOURCE_DISCOVERY_COMPLETED = "source.discovery.completed"
+    SOURCE_CAPABILITY_VALIDATED = "source.capability.validated"
+    SOURCE_CAPABILITY_DEMOTED = "source.capability.demoted"
+    SOURCE_SYNC_STARTED = "source.sync.started"
+    SOURCE_SYNC_COMMITTED = "source.sync.committed"
+    SOURCE_SYNC_FAILED = "source.sync.failed"
+    SOURCE_EXECUTE_STARTED = "source.execute.started"
+    SOURCE_EXECUTE_RECEIPT_CREATED = "source.execute.receipt_created"
+    SOURCE_VERIFY_COMPLETED = "source.verify.completed"
 
 
 @dataclass(slots=True)
@@ -87,6 +103,8 @@ class Event:
     event_type: EventType
     timestamp: float
     data: Dict[str, Any] = field(default_factory=dict)
+    run_id: str | None = None
+    monotonic_timestamp: float = field(default_factory=time.monotonic)
 
 
 # Type alias for subscriber callbacks
@@ -139,7 +157,12 @@ class EventBus:
 
         Returns the published ``Event`` instance.
         """
-        event = Event(event_type=event_type, timestamp=time.time(), data=data or {})
+        event = Event(
+            event_type=event_type,
+            timestamp=time.time(),
+            data=data or {},
+            run_id=RUN_ID.get(),
+        )
 
         with self._lock:
             if self._record_history:

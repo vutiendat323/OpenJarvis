@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import logging
+import json
 import os
 import time
 import urllib.parse
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
 from openjarvis.security.ssrf import check_ssrf
+from openjarvis.tools import evidence
 from openjarvis.tools._stubs import BaseTool, ToolSpec
-
-logger = logging.getLogger(__name__)
 
 # Maximum response body size: 1 MB
 _MAX_RESPONSE_BYTES = 1_048_576
@@ -25,9 +24,33 @@ _ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"})
 # Cap redirect chains so a malicious server cannot loop us indefinitely.
 _MAX_REDIRECTS = 5
 
+# Methods whose failure can leave the server changed.
+_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# A timeout after sending is not a failure -- it is an unknown. Retrying it
+# sends a second email, books a second appointment, charges a second time.
+_AMBIGUOUS_OUTCOME = (
+    " This request may already have been applied and its outcome is unknown."
+    " Observe whether it happened before retrying -- do not repeat it blindly."
+)
+
+
+def _never_reached_server(exc: Exception) -> bool:
+    """True when the request provably never left, so a retry is safe."""
+    return isinstance(
+        exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+    )
+
 
 class _SSRFRedirectError(Exception):
     """Raised when a redirect target fails the SSRF check."""
+
+
+class _RequestProgress:
+    """What reached a server before a redirect-stage failure."""
+
+    def __init__(self) -> None:
+        self.mutation_response_seen = False
 
 
 @ToolRegistry.register("http_request")
@@ -36,6 +59,7 @@ class HttpRequestTool(BaseTool):
 
     tool_id = "http_request"
     is_local = False
+    _checkout_guard: Callable[[], bool] | None = None
 
     @property
     def spec(self) -> ToolSpec:
@@ -90,6 +114,18 @@ class HttpRequestTool(BaseTool):
             )
 
         method = params.get("method", "GET").upper()
+        if (
+            method in _STATE_CHANGING_METHODS
+            and self._checkout_guard is not None
+            and not self._checkout_guard()
+        ):
+            return ToolResult(
+                tool_name=self.spec.name,
+                success=False,
+                content=(
+                    "checkout_confirmation_required: use the guarded checkout skill"
+                ),
+            )
         if method not in _ALLOWED_METHODS:
             return ToolResult(
                 tool_name="http_request",
@@ -114,42 +150,59 @@ class HttpRequestTool(BaseTool):
             for k, v in (params.get("headers") or {}).items()
         }
         body = params.get("body")
+        if isinstance(body, str) and not any(
+            str(name).lower() == "content-type" for name in headers
+        ):
+            try:
+                json.loads(body)
+            except (TypeError, json.JSONDecodeError):
+                pass
+            else:
+                headers["Content-Type"] = "application/json"
         timeout = params.get("timeout", 30)
 
-        _rust = None
-        try:
-            from openjarvis._rust_bridge import get_rust_module
-
-            _rust = get_rust_module()
-        except ImportError:
-            pass
-        if _rust is not None and not headers:
-            try:
-                content = _rust.HttpRequestTool().execute(url, method, body)
+        # One exact mutation, one dispatch. The merchant has no cart endpoint:
+        # its local draft is rebuilt as an order body at checkout, so a model
+        # that re-sends a confirmed order would otherwise buy a second coffee.
+        # Reads are exempt -- they change nothing and the agent legitimately
+        # re-reads.
+        claim = None
+        if method in _STATE_CHANGING_METHODS:
+            claim = evidence.claim_mutation(method, url, body)
+            if not claim.allowed:
                 return ToolResult(
                     tool_name="http_request",
+                    # Never echo the body back: it carries what the customer
+                    # ordered and, on other providers, who they are.
                     content=(
-                        content[:_MAX_RESPONSE_BYTES]
-                        if len(content) > _MAX_RESPONSE_BYTES
-                        else content
+                        f"No network call was made. This conversation already sent"
+                        f" this exact {method} to this URL; its outcome was"
+                        f" {claim.prior_outcome}. Do not resend it. Read the"
+                        " result back instead, or send a genuinely different"
+                        " request."
                     ),
-                    success=True,
-                    metadata={
-                        "status_code": 200,
-                        "truncated": len(content) > _MAX_RESPONSE_BYTES,
-                    },
+                    success=False,
+                    metadata={"duplicate_of_outcome": claim.prior_outcome},
                 )
-            except Exception as exc:
-                logger.debug("Rust HTTP request fallback to httpx: %s", exc)
 
+        progress = _RequestProgress()
+        # Safest default: anything that leaves this block without classifying
+        # itself is treated as possibly-applied, never as safe to retry.
+        outcome = "ambiguous"
         try:
             t0 = time.time()
             # Follow redirects manually so each hop is re-checked for SSRF — an
             # allowed public URL must not be able to 30x-redirect us to an
             # internal/metadata address.
             response = self._request_following_redirects(
-                method, url, headers=headers, content=body, timeout=float(timeout)
+                method,
+                url,
+                headers=headers,
+                content=body,
+                timeout=float(timeout),
+                progress=progress,
             )
+            outcome = "response_seen"
             elapsed_ms = (time.time() - t0) * 1000
 
             content_type = response.headers.get("content-type", "")
@@ -169,39 +222,63 @@ class HttpRequestTool(BaseTool):
             return ToolResult(
                 tool_name="http_request",
                 content=content,
-                success=True,
+                success=200 <= response.status_code < 300,
                 metadata={
                     "status_code": response.status_code,
                     "headers": response_headers,
                     "content_type": content_type,
                     "elapsed_ms": round(elapsed_ms, 2),
                     "truncated": truncated,
+                    "final_url": str(response.url),
                 },
             )
         except httpx.TimeoutException as exc:
+            content = f"Request timed out after {timeout}s: {exc}"
+            unresolved = progress.mutation_response_seen or not _never_reached_server(
+                exc
+            )
+            outcome = "ambiguous" if unresolved else "not_sent"
+            if method in _STATE_CHANGING_METHODS and unresolved:
+                content += _AMBIGUOUS_OUTCOME
             return ToolResult(
                 tool_name="http_request",
-                content=f"Request timed out after {timeout}s: {exc}",
+                content=content,
                 success=False,
             )
         except _SSRFRedirectError as exc:
+            content = f"SSRF protection blocked redirect: {exc}"
+            if method in _STATE_CHANGING_METHODS and progress.mutation_response_seen:
+                content += _AMBIGUOUS_OUTCOME
             return ToolResult(
                 tool_name="http_request",
-                content=f"SSRF protection blocked redirect: {exc}",
+                content=content,
                 success=False,
             )
         except httpx.RequestError as exc:
+            content = f"Request error: {exc}"
+            unresolved = progress.mutation_response_seen or not _never_reached_server(
+                exc
+            )
+            outcome = "ambiguous" if unresolved else "not_sent"
+            if method in _STATE_CHANGING_METHODS and unresolved:
+                content += _AMBIGUOUS_OUTCOME
             return ToolResult(
                 tool_name="http_request",
-                content=f"Request error: {exc}",
+                content=content,
                 success=False,
             )
         except Exception as exc:
+            content = f"Unexpected error: {exc}"
+            if method in _STATE_CHANGING_METHODS and progress.mutation_response_seen:
+                content += _AMBIGUOUS_OUTCOME
             return ToolResult(
                 tool_name="http_request",
-                content=f"Unexpected error: {exc}",
+                content=content,
                 success=False,
             )
+        finally:
+            if claim is not None:
+                evidence.finish_mutation(claim, outcome)
 
     @staticmethod
     def _request_following_redirects(
@@ -211,6 +288,7 @@ class HttpRequestTool(BaseTool):
         headers: dict,
         content: Any,
         timeout: float,
+        progress: _RequestProgress,
     ) -> httpx.Response:
         """Issue the request, re-checking SSRF on every redirect hop.
 
@@ -233,6 +311,8 @@ class HttpRequestTool(BaseTool):
                 timeout=timeout,
                 follow_redirects=False,
             )
+            if current_method in _STATE_CHANGING_METHODS:
+                progress.mutation_response_seen = True
             if response.status_code not in (301, 302, 303, 307, 308):
                 return response
             location = response.headers.get("location", "")

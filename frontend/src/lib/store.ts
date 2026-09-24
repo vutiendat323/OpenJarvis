@@ -14,7 +14,7 @@ import type {
   ToolCallInfo,
   TokenUsage,
 } from '../types';
-import type { ManagedAgent } from './api';
+import { isCloudModel, type ManagedAgent } from './api';
 import { isEmbedOnlyModel } from './model-capabilities';
 import { serializeToolCallArguments } from './tool-call';
 
@@ -35,6 +35,18 @@ export interface AgentEvent {
 
 const CONVERSATIONS_KEY = 'openjarvis-conversations';
 const SETTINGS_KEY = 'openjarvis-settings';
+const SELECTED_MODEL_KEY = 'openjarvis-selected-model';
+
+function loadSelectedModel(): string {
+  const selected = localStorage.getItem(SELECTED_MODEL_KEY) || '';
+  if (selected !== 'gpt-5.6-luna') return selected;
+  try {
+    localStorage.setItem(SELECTED_MODEL_KEY, 'gpt-6-luna');
+  } catch {
+    // Keep the upgraded selection usable even if storage is read-only.
+  }
+  return 'gpt-6-luna';
+}
 const OPTIN_KEY = 'openjarvis-optin';
 const OPTIN_NAME_KEY = 'openjarvis-display-name';
 const OPTIN_EMAIL_KEY = 'openjarvis-email';
@@ -154,6 +166,7 @@ interface AppState {
   models: ModelInfo[];
   modelsLoading: boolean;
   selectedModel: string;
+  voiceSessionActive: boolean;
   serverInfo: ServerInfo | null;
   savings: SavingsData | null;
 
@@ -183,6 +196,7 @@ interface AppState {
   createConversation: (model?: string) => string;
   selectConversation: (id: string) => void;
   deleteConversation: (id: string) => void;
+  setServerConversationId: (id: string, serverConversationId: string) => void;
   loadMessages: (conversationId: string | null) => void;
   addMessage: (conversationId: string, message: ChatMessage) => void;
   updateLastAssistant: (
@@ -206,6 +220,7 @@ interface AppState {
   setModels: (models: ModelInfo[]) => void;
   setModelsLoading: (loading: boolean) => void;
   setSelectedModel: (model: string) => void;
+  setVoiceSessionActive: (active: boolean) => void;
   setServerInfo: (info: ServerInfo | null) => void;
   setSavings: (data: SavingsData | null) => void;
   incrementSavings: (usage: TokenUsage) => void;
@@ -260,6 +275,10 @@ interface AppState {
   setModelLoading: (loading: boolean) => void;
 }
 
+export function canChangeModel(input: { voiceSessionActive: boolean }): boolean {
+  return !input.voiceSessionActive;
+}
+
 export const useAppStore = create<AppState>((set, get) => {
   const initial = loadConversations();
   const convList = Object.values(initial.conversations).sort(
@@ -277,7 +296,8 @@ export const useAppStore = create<AppState>((set, get) => {
 
     models: [],
     modelsLoading: true,
-    selectedModel: '',
+    selectedModel: loadSelectedModel(),
+    voiceSessionActive: false,
     serverInfo: null,
     savings: null,
 
@@ -365,6 +385,19 @@ export const useAppStore = create<AppState>((set, get) => {
       return conv.id;
     },
 
+    setServerConversationId: (id: string, serverConversationId: string) => {
+      const store = loadConversations();
+      const conversation = store.conversations[id];
+      if (!conversation) return;
+      conversation.serverConversationId = serverConversationId;
+      saveConversations(store);
+      set({
+        conversations: Object.values(store.conversations).sort(
+          (a, b) => b.updatedAt - a.updatedAt,
+        ),
+      });
+    },
+
     selectConversation: (id: string) => {
       const store = loadConversations();
       store.activeId = id;
@@ -414,6 +447,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const store = loadConversations();
       const conv = store.conversations[conversationId];
       if (!conv) return;
+      if (conv.messages.some((existing) => existing.id === message.id)) return;
       conv.messages.push(message);
       conv.updatedAt = Date.now();
       if (message.role === 'user' && conv.title === 'New chat') {
@@ -482,6 +516,7 @@ export const useAppStore = create<AppState>((set, get) => {
         // same list as chat models. Auto-picking models[0] selected the
         // embedder and every chat failed with HTTP 400 "does not support
         // chat". Prefer a real chat model for selection / fallback.
+        if (state.voiceSessionActive) return { models };
         const chatModels = models.filter((m) => !isEmbedOnlyModel(m.id));
         const preferred =
           (state.settings.defaultModel &&
@@ -495,6 +530,7 @@ export const useAppStore = create<AppState>((set, get) => {
           !!state.selectedModel && isEmbedOnlyModel(state.selectedModel);
         const currentMissing =
           !!state.selectedModel &&
+          !isCloudModel(state.selectedModel) &&
           !models.some((m) => m.id === state.selectedModel);
 
         if (!state.selectedModel || currentIsBad || currentMissing) {
@@ -508,7 +544,16 @@ export const useAppStore = create<AppState>((set, get) => {
         return { models };
       }),
     setModelsLoading: (loading: boolean) => set({ modelsLoading: loading }),
-    setSelectedModel: (model: string) => set({ selectedModel: model }),
+    setSelectedModel: (model: string) => {
+      if (!canChangeModel({ voiceSessionActive: get().voiceSessionActive })) return;
+      set({ selectedModel: model });
+      try {
+        localStorage.setItem(SELECTED_MODEL_KEY, model);
+      } catch {
+        // The current selection still works when browser storage is unavailable.
+      }
+    },
+    setVoiceSessionActive: (active: boolean) => set({ voiceSessionActive: active }),
     setServerInfo: (info: ServerInfo | null) => set({ serverInfo: info }),
     setSavings: (data: SavingsData | null) => set({ savings: data }),
     incrementSavings: (usage: TokenUsage) => {

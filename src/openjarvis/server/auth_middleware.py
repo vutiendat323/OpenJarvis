@@ -39,7 +39,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self._api_key = api_key or os.environ.get("OPENJARVIS_API_KEY", "")
 
     async def dispatch(self, request: Request, call_next):  # noqa: ANN001
-        if self._api_key and self._requires_auth(request.url.path):
+        client_host = request.client.host if request.client is not None else None
+        loopback_kiosk = request.url.path.startswith(
+            "/api/kiosk/"
+        ) and is_loopback_host(client_host)
+        if (
+            self._api_key
+            and self._requires_auth(request.url.path)
+            and not loopback_kiosk
+        ):
             auth = request.headers.get("Authorization", "")
             if not auth:
                 return JSONResponse(
@@ -76,21 +84,28 @@ def generate_api_key() -> str:
     return f"oj_sk_{secrets.token_urlsafe(32)}"
 
 
+def is_loopback_host(host: str | None) -> bool:
+    """Return whether *host* explicitly identifies a loopback interface."""
+    if not host:
+        return False
+
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
+
+
 def check_bind_safety(host: str, *, api_key: str) -> None:
     """Refuse to bind non-loopback without an API key.
 
     Raises ``SystemExit`` if *host* is not a loopback address and
     *api_key* is empty.
     """
-    import ipaddress
     import sys
 
-    try:
-        is_loop = ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        is_loop = host in ("localhost", "")
-
-    if not is_loop and not api_key:
+    if not is_loopback_host(host) and not api_key:
         logger.error(
             "Binding to %s requires OPENJARVIS_API_KEY to be set. "
             "Run: jarvis auth generate-key",
@@ -164,7 +179,12 @@ def authenticate_websocket(
     return header_valid or protocol_valid, selected_protocol
 
 
-def websocket_authorized(websocket, expected_key: str) -> bool:  # noqa: ANN001
+def websocket_authorized(
+    websocket,
+    expected_key: str,
+    *,
+    allow_loopback: bool = False,
+) -> bool:  # noqa: ANN001
     """Return ``True`` if a WebSocket connection presents the expected key.
 
     ``AuthMiddleware`` is a ``BaseHTTPMiddleware`` and never sees WebSocket
@@ -177,4 +197,7 @@ def websocket_authorized(websocket, expected_key: str) -> bool:  # noqa: ANN001
     credential transports. URL query parameters are deliberately not accepted
     because request targets commonly appear in access logs and browser history.
     """
+    client = getattr(websocket, "client", None)
+    if allow_loopback and is_loopback_host(getattr(client, "host", None)):
+        return True
     return authenticate_websocket(websocket, expected_key)[0]

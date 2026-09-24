@@ -16,12 +16,22 @@ import httpx
 
 from openjarvis.core.paths import get_config_dir
 from openjarvis.core.types import Message
+from openjarvis.engine._openrouter import openrouter_model_id
 
 # ---------------------------------------------------------------------------
 # Key / provider detection
 # ---------------------------------------------------------------------------
 
 _CLOUD_ENV_FILE = get_config_dir() / "cloud-keys.env"
+
+_CLOUD_API_KEY_NAMES = (
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "MINIMAX_API_KEY",
+)
 
 _OPENAI_PREFIXES = ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")
 _ANTHROPIC_PREFIXES = ("claude-",)
@@ -48,18 +58,25 @@ def _load_keys() -> dict[str, str]:
                 k, v = line.split("=", 1)
                 keys[k.strip()] = v.strip()
     # Process env can override (e.g. during testing)
-    for name in (
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "GEMINI_API_KEY",
-        "GOOGLE_API_KEY",
-        "OPENROUTER_API_KEY",
-        "MINIMAX_API_KEY",
-    ):
+    for name in _CLOUD_API_KEY_NAMES:
         val = os.environ.get(name)
         if val:
             keys[name] = val
     return keys
+
+
+def get_cloud_key_status() -> dict[str, bool]:
+    """Return provider key presence without exposing credential values."""
+    keys = _load_keys()
+    return {
+        "OPENAI_API_KEY": bool(keys.get("OPENAI_API_KEY")),
+        "ANTHROPIC_API_KEY": bool(keys.get("ANTHROPIC_API_KEY")),
+        "GEMINI_API_KEY": bool(
+            keys.get("GEMINI_API_KEY") or keys.get("GOOGLE_API_KEY")
+        ),
+        "OPENROUTER_API_KEY": bool(keys.get("OPENROUTER_API_KEY")),
+        "MINIMAX_API_KEY": bool(keys.get("MINIMAX_API_KEY")),
+    }
 
 
 def get_provider(model: str) -> str | None:
@@ -167,6 +184,11 @@ async def _stream_openai(
         "max_tokens": max_tokens,
         "stream": True,
     }
+    if model in ("gpt-6-luna", "openai/gpt-6-luna"):
+        payload.pop("temperature")
+        payload.pop("max_tokens")
+        payload["max_completion_tokens"] = max_tokens
+        payload["reasoning_effort"] = "none"
 
     async with httpx.AsyncClient(timeout=180) as client:
         async with client.stream(
@@ -382,7 +404,7 @@ async def stream_cloud(
                 "OPENROUTER_API_KEY not set — add it in the Cloud Models tab"
             )
         async for token in _stream_openai(
-            _openrouter_model_id(model),
+            openrouter_model_id(model),
             messages,
             temperature,
             max_tokens,

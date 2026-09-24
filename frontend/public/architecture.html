@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenJarvis-v2: Kiến Trúc Chi Tiết (Skills, Memory, Learning, Runtime)</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-heading: #58a6ff;
+      --accent: #238636;
+      --warning-bg: #1f1b16;
+      --warning-border: #d29922;
+      --code-bg: #1f242c;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      display: flex;
+    }
+    #sidebar {
+      width: 300px;
+      height: 100vh;
+      position: sticky;
+      top: 0;
+      background: var(--card-bg);
+      border-right: 1px solid var(--border);
+      padding: 24px 16px;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+    #sidebar h3 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #8b949e;
+      margin-bottom: 16px;
+    }
+    #sidebar ul { list-style: none; }
+    #sidebar li { margin-bottom: 8px; }
+    #sidebar a {
+      color: #8b949e;
+      text-decoration: none;
+      font-size: 0.88rem;
+      display: block;
+      padding: 6px 10px;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+    #sidebar a:hover {
+      background: #21262d;
+      color: var(--text-heading);
+    }
+    #content {
+      flex: 1;
+      padding: 40px 60px;
+      max-width: 1050px;
+    }
+    h1 {
+      font-size: 2.2rem;
+      color: #f0f6fc;
+      margin-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 16px;
+    }
+    h2 {
+      font-size: 1.5rem;
+      color: var(--text-heading);
+      margin-top: 40px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+    }
+    h3 {
+      font-size: 1.2rem;
+      color: #79c0ff;
+      margin-top: 20px;
+      margin-bottom: 12px;
+    }
+    p { margin-bottom: 16px; }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: bold;
+      background: #238636;
+      color: white;
+      margin-bottom: 16px;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    .alert {
+      background: var(--warning-bg);
+      border-left: 4px solid var(--warning-border);
+      padding: 16px;
+      border-radius: 4px;
+      margin: 20px 0;
+    }
+    .alert-title {
+      font-weight: bold;
+      color: #d29922;
+      margin-bottom: 6px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+      background: var(--card-bg);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 12px 16px;
+      text-align: left;
+      border: 1px solid var(--border);
+    }
+    th {
+      background: #21262d;
+      color: #f0f6fc;
+    }
+    code {
+      background: var(--code-bg);
+      color: #ff7b72;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+      font-size: 0.88rem;
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+      overflow-x: auto;
+      margin: 16px 0;
+    }
+    pre code {
+      background: none;
+      color: #e6edf3;
+      padding: 0;
+    }
+    .mermaid-box {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 20px 0;
+      overflow-x: auto;
+      text-align: center;
+    }
+    .screenshot-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin: 24px 0;
+    }
+    .screenshot-item {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      text-align: center;
+    }
+    .screenshot-item img {
+      max-width: 100%;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      margin-bottom: 8px;
+    }
+    .screenshot-item p {
+      font-size: 0.85rem;
+      color: #8b949e;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h3>Mục Lục Hệ Thống</h3>
+    <ul>
+      <li><a href="#overview">1. Tổng Quan Kiến Trúc</a></li>
+      <li><a href="#skills">2. Cơ Chế Tải & Nạp Skills</a></li>
+      <li><a href="#memory">3. Kiến Trúc Bộ Nhớ (Memory)</a></li>
+      <li><a href="#learning">4. Hệ Thống Tự Học (Learning)</a></li>
+      <li><a href="#conversation-scope">5. Conversation Scope & State</a></li>
+      <li><a href="#http-hardening">6. HTTP Hardening & Deduplication</a></li>
+      <li><a href="#result-projection">7. Result Projection (21.3x)</a></li>
+      <li><a href="#kiosk-fsm">8. Kiosk FSM & Computer Vision</a></li>
+      <li><a href="#xin-chao-analysis">9. Phân Tích Lỗi "Xin Chào"</a></li>
+      <li><a href="#core-files">10. Bảng Tóm Tắt Codebase</a></li>
+      <li><a href="#live-views">11. Giao Diện Trực Tiếp</a></li>
+    </ul>
+  </div>
+
+  <div id="content">
+    <div class="badge">OpenJarvis-v2 Full Deep Dive</div>
+    <h1>OpenJarvis-v2: Kiến Trúc Hệ Thống, Skills, Memory & Learning</h1>
+    <p>Tài liệu phân tích chuyên sâu toàn bộ mã nguồn <code>src/openjarvis</code>, luồng dữ liệu end-to-end, cơ chế nạp Skills, hệ thống Memory bất đồng bộ, pipeline Learning tự động và cơ chế bảo vệ HTTP runtime.</p>
+
+    <!-- SECTION 1 -->
+    <h2 id="overview">1. Tổng Quan Kiến Trúc (High-Level Architecture)</h2>
+    <p>Hệ thống vận hành theo mô hình <strong>Direct-First Agentic Runtime</strong> kết hợp đồng thời Text SSE, Voice WebRTC, Computer Vision GPU, và điều khiển màn hình phụ của khách hàng qua Playwright MCP.</p>
+
+    <div class="mermaid-box">
+      <pre class="mermaid">
+flowchart TD
+    subgraph ClientLayer["Client Layer"]
+        UI["React Frontend (Chat & Kiosk UI :5173)"]
+        VoiceClient["Pipecat / SmallWebRTC (Audio Stream)"]
+        DisplayScreen["Customer Display (/customer-display)"]
+    end
+
+    subgraph ServerLayer["Server Layer (:8000)"]
+        ScopeMW["ConversationScopeMiddleware (Pure ASGI - UUID LRU)"]
+        SecMW["SecurityHeadersMiddleware"]
+        FastAPI["FastAPI App & WebRTC Routes"]
+        WSBridge["WebSocket Bridge (/ws/display)"]
+    end
+
+    subgraph AgentCore["Agent Core & Execution"]
+        Orchestrator["OrchestratorAgent (Multi-turn LLM Loop)"]
+        LoopGuard["LoopGuard (Phat hien lap tool)"]
+        InferenceEngine["InferenceEngine (DeepSeek / Cloud)"]
+    end
+
+    subgraph SafetyPlane["Safety & Tool Data Plane"]
+        HttpRequestTool["HttpRequestTool (SSRF Guard & Redirects)"]
+        DisplayTools["Display Tools (menu, bill, payment_qr)"]
+        EvidenceStore["Evidence Store & MutationClaim Ledger"]
+        ResultProjection["Result Projection (Compact JSON/Text)"]
+    end
+
+    UI --> ScopeMW
+    VoiceClient --> FastAPI
+    ScopeMW --> SecMW
+    SecMW --> FastAPI
+    FastAPI --> Orchestrator
+    WSBridge --- DisplayScreen
+
+    Orchestrator --> InferenceEngine
+    Orchestrator --> LoopGuard
+    Orchestrator --> HttpRequestTool
+    Orchestrator --> DisplayTools
+
+    HttpRequestTool --> EvidenceStore
+    HttpRequestTool --> ResultProjection
+    DisplayTools --> EvidenceStore
+    DisplayTools --> WSBridge
+      </pre>
+    </div>
+
+    <!-- SECTION 2: SKILLS -->
+    <h2 id="skills">2. Cơ Chế Tải và Nạp Kỹ Năng (Skills Loading & Discovery)</h2>
+    <p>Hệ thống Skills cho phép đóng gói quy trình phức tạp thành các chuỗi bước gọi tool (<code>SkillStep</code>) hoặc hướng dẫn markdown có chữ ký bảo mật.</p>
+
+    <div class="mermaid-box">
+      <pre class="mermaid">
+flowchart TD
+    Disk["Thu muc Skills (/skills hoac ~/.config/openjarvis/skills)"] --> Loader["Loader: discover_skills()"]
+    Loader --> Parser["SkillParser (Doc YAML Frontmatter & Markdown / TOML)"]
+    Parser --> SecScan["Security Check (Chu ky verify_b64 & SecretScanner)"]
+    SecScan --> Reg["SkillRegistry (Dang ky vao bo nho he thong)"]
+    Reg --> Mgr["SkillManager & tool: skill_manage"]
+    Mgr --> Agent["Orchestrator Agent (Thuc thi chuoi tool tu dong)"]
+      </pre>
+    </div>
+
+    <div class="card">
+      <h3>Chi tiết triển khai Skills:</h3>
+      <ul>
+        <li><strong>Định dạng hỗ trợ (<code>loader.py</code>):</strong>
+          <ul>
+            <li><code>SKILL.md</code>: YAML frontmatter (<code>name</code>, <code>description</code>, <code>required_capabilities</code>) + nội dung markdown.</li>
+            <li><code>skill.toml</code>: Khai báo có cấu trúc danh sách <code>[[skill.steps]]</code> với <code>tool_name</code>, <code>arguments_template</code>, <code>output_key</code>.</li>
+            <li>Sourced layout: Phân cấp theo namespace nguồn <code>&lt;dir&gt;/&lt;source&gt;/&lt;name&gt;/SKILL.md</code>.</li>
+          </ul>
+        </li>
+        <li><strong>Bảo mật:</strong> Tự động quét phát hiện prompt injection qua <code>SecretScanner</code> và kiểm chứng chữ ký mật mã (<code>verify_b64</code>).</li>
+        <li><strong>Thực thi:</strong> Công cụ <code>skill_manage</code> cho phép Agent liệt kê hoặc replay tự động chuỗi gọi tool.</li>
+      </ul>
+    </div>
+
+    <!-- SECTION 3: MEMORY -->
+    <h2 id="memory">3. Kiến Trúc Bộ Nhớ Dài Hạn (Memory Architecture)</h2>
+    <p>Chịu trách nhiệm trích xuất và ghi nhớ các sự kiện lâu dài (sở thích, quy ước) trên luồng nền mà <strong>không làm chậm thời gian phản hồi của Agent</strong>.</p>
+
+    <div class="mermaid-box">
+      <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as Nguoi Dung
+    participant Server as Chat API / CLI
+    participant Queue as Memory Queue (max 256)
+    participant Worker as Background Worker (MemoryService)
+    participant Extractor as FactExtractor (LLM chat loc)
+    participant Store as LocalFactStore (memory_facts.jsonl)
+
+    User->>Server: Gui tin nhan ("Toi thich uong ca phe it da")
+    Server->>Server: Tra loi phan hoi ngay lap tuc cho nguoi dung
+    Server->>Queue: submit(user_text, assistant_text) (Non-blocking)
+    Note over Queue,Worker: Chay nen tren luong Daemon rieng (Out-of-band)
+    Worker->>Queue: Lay cap hoi thoai ra xu ly
+    Worker->>Extractor: Trich xuat su that ben vung (Fact Extraction)
+    Extractor-->>Worker: ["Khach hang thich ca phe it da"]
+    Worker->>Store: Atomic append vao memory_facts.jsonl
+      </pre>
+    </div>
+
+    <div class="card">
+      <h3>Chi tiết kỹ thuật Memory:</h3>
+      <ul>
+        <li><strong>Out-of-band Worker (<code>service.py</code>):</strong> <code>MemoryService</code> chạy luồng Daemon riêng. Hàm <code>submit()</code> đẩy vào hàng đợi non-blocking để API trả lời người dùng tức thì.</li>
+        <li><strong>Trích xuất thông tin (<code>extractor.py</code>):</strong> <code>FactExtractor</code> lọc bỏ câu chào ngắn hạn, chỉ giữ lại các fact bền vững có giá trị lâu dài.</li>
+        <li><strong>Lưu trữ an toàn (<code>store.py</code>):</strong> <code>LocalFactStore</code> lưu append-only JSONL tại <code>~/.config/openjarvis/memory_facts.jsonl</code> với cơ chế ghi atomic (file tạm + rename) và khóa <code>threading.Lock()</code>.</li>
+      </ul>
+    </div>
+
+    <!-- SECTION 4: LEARNING -->
+    <h2 id="learning">4. Hệ Thống Tự Học & Tiến Hóa (Learning Pipeline)</h2>
+    <p>OpenJarvis tự động tiến hóa qua 2 cơ chế: <strong>Turn-Learning tức thì</strong> và <strong>Vòng lặp Huấn luyện Tiến hóa định kỳ</strong>.</p>
+
+    <div class="mermaid-box">
+      <pre class="mermaid">
+flowchart TD
+    subgraph TurnLearning["1. Turn-Learning (Hoc Tuc Thi)"]
+        TraceEvt["Su kien TRACE_COMPLETE"] --> TurnWorker["Worker Background"]
+        TurnWorker --> SkillDisc["SkillDiscovery: Tham so hoa Trace"]
+        SkillDisc --> AutoSkill["Tao Skill Replayable moi (skill_manage)"]
+    end
+
+    subgraph BatchLearning["2. Batch Learning Loop (Tien Hoa Dinh Ky)"]
+        Traces["TraceStore (Lich su hoi thoai)"] --> Miner["TrainingDataMiner (Loc SFT & Routing dat diem cao)"]
+        Miner --> RustICL["Rust ICL Policy (Kham pha chuoi tool lap lai)"]
+        Miner --> Evolver["AgentConfigEvolver (Toi uu Prompt & Config)"]
+        Miner --> LoRA["LoRA Fine-Tuning (Khi co du >= 10 SFT pairs)"]
+        Evolver --> Gatekeeper{"Eval Gatekeeper (eval_fn)"}
+        LoRA --> Gatekeeper
+        Gatekeeper -->|Diem tang >= 2%| Accept["Ap Dung Ban Cap Nhat Moi"]
+        Gatekeeper -->|Diem giam / khong doi| Rollback["Tu Choi / Rollback"]
+    end
+      </pre>
+    </div>
+
+    <div class="card">
+      <h3>Chi tiết các giai đoạn Learning:</h3>
+      <ul>
+        <li><strong>Turn-Learning (<code>learning_orchestrator.py</code>):</strong> Lắng nghe <code>EventType.TRACE_COMPLETE</code>. Ngay khi một phiên giao dịch hoàn thành xuất sắc, <code>SkillDiscovery</code> tự động tham số hóa chuỗi lệnh để tạo thành Skill có thể chạy lại ngay lập tức.</li>
+        <li><strong>Rust ICL Pattern Discovery (<code>icl_updater.rs</code>):</strong> Thuật toán n-gram tối ưu trên Rust phát hiện các chuỗi gọi tool phổ biến.</li>
+        <li><strong>Kiểm soát chất lượng (Gatekeeper):</strong> Đánh giá hiệu năng trước/sau qua <code>eval_fn()</code>; chỉ chấp nhận cập nhật khi điểm số cải thiện tối thiểu <strong>2%</strong> (ngăn chặn suy thoái mô hình).</li>
+      </ul>
+    </div>
+
+    <!-- SECTION 5: CONVERSATION SCOPE -->
+    <h2 id="conversation-scope">5. Quản Lý Phạm Vi Hội Thoại & Cô Lập State</h2>
+    <div class="card">
+      <p><strong>Cơ chế ContextVar:</strong> <code>_CONVERSATION_ID</code> quản lý phạm vi phiên làm việc. Khi Agent thực thi tool song song qua ThreadPool, context được sao chép nguyên vẹn qua <code>contextvars.copy_context().run(...)</code>.</p>
+      <p><strong>Pure ASGI Middleware:</strong> Chạy bao trùm toàn bộ chu trình StreamingResponse, đảm bảo tool execution diễn ra sau khi router return vẫn thuộc đúng conversation scope.</p>
+      <p><strong>Header X-OpenJarvis-Conversation:</strong> Tự động tiêm vào response header tại <code>http.response.start</code>, tự động cấp UUID4 mới nếu client gửi ID lạ nhằm chống đọc trộm evidence.</p>
+    </div>
+
+    <!-- SECTION 6: HTTP HARDENING -->
+    <h2 id="http-hardening">6. HTTP Hardening & Mutation Deduplication</h2>
+    <p>Ngăn chặn việc gửi lặp đơn hàng khi model retry hoặc mạng chập chờn:</p>
+
+    <div class="mermaid-box">
+      <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as Khach Hang / Agent
+    participant HttpTool as HttpRequestTool
+    participant Evidence as Mutation Claim Ledger
+    participant Shop as TrendCoffee API
+
+    User->>HttpTool: POST /orders/public (Don hang)
+    HttpTool->>Evidence: claim_mutation(method, url, body)
+    alt Da ton tai fingerprint trong session
+        Evidence-->>HttpTool: allowed = false (response_seen / ambiguous)
+        HttpTool-->>User: Refusal (Chan goi mang lap lai)
+    else Lan dau goi trong session
+        Evidence-->>HttpTool: allowed = true (in_flight)
+        HttpTool->>Shop: Gui HTTP POST request
+        alt Thanh cong (HTTP 200/201)
+            Shop-->>HttpTool: Order Created Data
+            HttpTool->>Evidence: finish_mutation(response_seen)
+            HttpTool-->>User: Ket qua thanh cong
+        else Timeout / Mat ket noi
+            Shop--xHttpTool: Connection Timeout
+            HttpTool->>Evidence: finish_mutation(ambiguous - Block repeat)
+            HttpTool-->>User: Ambiguous Error (Khong retry)
+        else Loi mang truoc khi toi Server
+            HttpTool->>Evidence: finish_mutation(not_sent - Release)
+            HttpTool-->>User: Error (Cho phep retry)
+        end
+    end
+      </pre>
+    </div>
+
+    <!-- SECTION 7: RESULT PROJECTION -->
+    <h2 id="result-projection">7. Result Projection — Thu Gọn Ngữ Cảnh Tool (21.3x)</h2>
+    <div class="card">
+      <p><strong>Tỉ lệ nén 21.3x:</strong> Danh mục menu 106.903 ký tự (~26.700 tokens) được thu gọn xuống còn 5.027 ký tự (~1.256 tokens) trước khi đưa vào LLM transcript.</p>
+      <p><strong>Toàn vẹn 100% Evidence gốc:</strong> <code>ToolEvidence</code> trong RAM vẫn lưu trữ toàn vẹn JSON gốc để các tool <code>display_payment_qr</code> hoặc <code>last_result()</code> trích xuất chính xác mã QR base64 và Order ID.</p>
+    </div>
+
+    <!-- SECTION 8: KIOSK FSM -->
+    <h2 id="kiosk-fsm">8. Kiosk FSM & Computer Vision (Vòng lặp 5Hz)</h2>
+    <div class="mermaid-box">
+      <pre class="mermaid">
+stateDiagram-v2
+    [*] --> Idle: Khoi dong he thong
+    Idle --> Approaching: Nguoi tiep can (khoang cach duoi 1.5m)
+    Approaching --> Prompting: Dung truoc may (khoang cach duoi 0.8m)
+    Prompting --> Active: Khach phan hoi / Chon mon
+    Prompting --> Idle: Het timeout / Khach bo di
+    Active --> Cleanup: Thanh toan xong / Khach roi di
+    Cleanup --> Idle: Reset man hinh (display_clear)
+      </pre>
+    </div>
+
+    <!-- SECTION 9: XIN CHAO ANALYSIS -->
+    <h2 id="xin-chao-analysis">9. Phân Tích Hiện Tượng "Xin Chào" Bị Treo Hiện Tại</h2>
+    <div class="alert">
+      <div class="alert-title">⚠️ Nguyên Nhân Kỹ Thuật Gây Treo "Generating..."</div>
+      <p>Khi khách hàng nói hoặc gõ "xin chào", Agent được hướng dẫn chuẩn bị thông tin menu bằng cách gọi API:</p>
+      <code>GET https://trendcoffee.net/api/latest/branch</code><br>
+      <code>GET https://trendcoffee.net/api/latest/catalogs</code>
+      <p style="margin-top: 10px;">Tuy nhiên, <strong>máy chủ gốc của trendcoffee.net hiện đang sập (Cloudflare Error 522: Connection Timed Out)</strong>. Mỗi request phải đợi Cloudflare hết thời gian chờ (20–60 giây), khiến giao diện chat bị kẹt ở trạng thái Generating.</p>
+    </div>
+
+    <!-- SECTION 10: CORE FILES -->
+    <h2 id="core-files">10. Bảng Tóm Tắt Codebase Cốt Lõi</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Module / File</th>
+          <th>Chức năng chính</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>src/openjarvis/skills/loader.py</code></td>
+          <td>Nạp và khám phá SkillManifest từ TOML và Markdown</td>
+        </tr>
+        <tr>
+          <td><code>src/openjarvis/memory/service.py</code></td>
+          <td>Worker nền Daemon trích xuất và ghi nhớ thông tin bất đồng bộ</td>
+        </tr>
+        <tr>
+          <td><code>src/openjarvis/learning/learning_orchestrator.py</code></td>
+          <td>Điều phối học tức thì (Turn-learning) và tiến hóa cấu hình định kỳ</td>
+        </tr>
+        <tr>
+          <td><code>src/openjarvis/core/conversation.py</code></td>
+          <td>ContextVar quản lý phạm vi ngữ cảnh phiên <code>_CONVERSATION_ID</code></td>
+        </tr>
+        <tr>
+          <td><code>src/openjarvis/server/middleware.py</code></td>
+          <td>Pure ASGI Conversation Scope & Security Headers Middleware</td>
+        </tr>
+        <tr>
+          <td><code>src/openjarvis/tools/evidence.py</code></td>
+          <td>Sổ cái lưu trữ bằng chứng ToolEvidence & khóa MutationClaim</td>
+        </tr>
+        <tr>
+          <td><code>src/openjarvis/tools/result_projection.py</code></td>
+          <td>Thu gọn dữ liệu JSON/Text lớn trước khi đưa vào LLM transcript</td>
+        </tr>
+        <tr>
+          <td><code>src/openjarvis/tools/http_request.py</code></td>
+          <td>HTTP Client với SSRF guard, redirect validation & deduplication</td>
+        </tr>
+        <tr>
+          <td><code>src/openjarvis/agents/orchestrator.py</code></td>
+          <td>Agent điều phối multi-turn, visible streaming, token telemetry</td>
+        </tr>
+        <tr>
+          <td><code>src/openjarvis/kiosk/runtime.py</code></td>
+          <td>Vòng lặp FSM 5Hz xử lý sự kiện thị giác và chuyển đổi trạng thái</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- SECTION 11: LIVE VIEWS -->
+    <h2 id="live-views">11. Giao Diện Trực Tiếp Đang Chạy (Live UI View)</h2>
+    <div class="screenshot-grid">
+      <div class="screenshot-item">
+        <img src="/kiosk_view.png" alt="Kiosk View">
+        <p>Màn hình Kiosk Khách Hàng (:5173/kiosk)</p>
+      </div>
+      <div class="screenshot-item">
+        <img src="/chat_view.png" alt="Chat View">
+        <p>Màn hình Chat Agent (:5173)</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      themeVariables: {
+        darkMode: true,
+        background: '#161b22',
+        primaryColor: '#1f6feb',
+        primaryTextColor: '#f0f6fc',
+        primaryBorderColor: '#30363d',
+        lineColor: '#58a6ff',
+        secondaryColor: '#238636',
+        tertiaryColor: '#21262d'
+      }
+    });
+  </script>
+</body>
+</html>

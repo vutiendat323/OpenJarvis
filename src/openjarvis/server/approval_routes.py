@@ -60,7 +60,8 @@ async def approve_action(action_id: str) -> Dict[str, Any]:
     action = store.get_action(action_id)
     if action is None:
         raise HTTPException(status_code=404, detail="Action not found")
-    store.update_status(action_id, STATUS_APPROVED)
+    if not store.update_status(action_id, STATUS_APPROVED):
+        raise HTTPException(status_code=409, detail="Action is no longer pending")
     logger.info("Action %s approved via UI", action_id)
     return {"status": "approved", "id": action_id}
 
@@ -71,7 +72,8 @@ async def deny_action(action_id: str) -> Dict[str, Any]:
     action = store.get_action(action_id)
     if action is None:
         raise HTTPException(status_code=404, detail="Action not found")
-    store.update_status(action_id, STATUS_DENIED)
+    if not store.update_status(action_id, STATUS_DENIED):
+        raise HTTPException(status_code=409, detail="Action can no longer be denied")
     logger.info("Action %s denied via UI", action_id)
     return {"status": "denied", "id": action_id}
 

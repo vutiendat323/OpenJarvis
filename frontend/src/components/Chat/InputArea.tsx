@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Send, Square, Paperclip, Search } from 'lucide-react';
+import { AudioLines, Send, Square, Paperclip, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAppStore, generateId } from '../../lib/store';
 import { streamChat, streamResearch } from '../../lib/sse';
@@ -75,7 +75,11 @@ function useResearchCorpusSync(enabled: boolean): {
   return state;
 }
 
-export function InputArea() {
+interface InputAreaProps {
+  onOpenVoice: () => void;
+}
+
+export function InputArea({ onOpenVoice }: InputAreaProps) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -92,6 +96,7 @@ export function InputArea() {
   const addMessage = useAppStore((s) => s.addMessage);
   const updateLastAssistant = useAppStore((s) => s.updateLastAssistant);
   const setStreamState = useAppStore((s) => s.setStreamState);
+  const setServerConversationId = useAppStore((s) => s.setServerConversationId);
   const resetStream = useAppStore((s) => s.resetStream);
   const modelLoading = useAppStore((s) => s.modelLoading);
   const deepResearch = useAppStore((s) => s.deepResearch);
@@ -370,13 +375,28 @@ export function InputArea() {
           }
         }
       } else {
+      // Rejoin the scope the server issued for this chat, so tool evidence
+      // from earlier turns is still the agent's to read.
+      const serverConversationId = useAppStore
+        .getState()
+        .conversations.find((c) => c.id === convId)?.serverConversationId;
+
       for await (const sseEvent of streamChat(
-        { model: selectedModel, messages: apiMessages, stream: true, temperature, max_tokens: maxTokens },
+        {
+          model: selectedModel,
+          messages: apiMessages,
+          stream: true,
+          temperature,
+          max_tokens: maxTokens,
+          conversation_id: serverConversationId,
+        },
         controller.signal,
       )) {
         const eventName = sseEvent.event;
 
-        if (eventName === 'agent_turn_start') {
+        if (eventName === 'conversation_scope') {
+          setServerConversationId(convId, sseEvent.data);
+        } else if (eventName === 'agent_turn_start') {
           setStreamState({ phase: 'Agent thinking...' });
         } else if (eventName === 'inference_start') {
           setStreamState({ phase: 'Generating...' });
@@ -552,6 +572,22 @@ export function InputArea() {
     }
   };
 
+  const voiceButton = (
+    <button
+      type="button"
+      onClick={onOpenVoice}
+      aria-label="Voice"
+      title="Open voice mode (kiosk)"
+      className="voice-entry-button p-2 rounded-xl transition-colors shrink-0 cursor-pointer"
+      style={{
+        background: 'transparent',
+        color: 'var(--color-text-secondary)',
+      }}
+    >
+      <AudioLines size={16} aria-hidden />
+    </button>
+  );
+
   return (
     <div className="px-4 pb-4 pt-2" style={{ maxWidth: 'var(--chat-max-width)', margin: '0 auto', width: '100%' }}>
       <div className="mb-2 flex flex-col gap-1">
@@ -606,14 +642,17 @@ export function InputArea() {
           disabled={streamState.isStreaming || modelLoading}
         />
         {isCurrentChatStreaming ? (
-          <button
-            onClick={stopStreaming}
-            className="p-2 rounded-xl transition-colors shrink-0 cursor-pointer"
-            style={{ background: 'var(--color-error)', color: 'var(--color-on-accent)' }}
-            title="Stop generating"
-          >
-            <Square size={16} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={stopStreaming}
+              className="p-2 rounded-xl transition-colors shrink-0 cursor-pointer"
+              style={{ background: 'var(--color-error)', color: 'var(--color-on-accent)' }}
+              title="Stop generating"
+            >
+              <Square size={16} />
+            </button>
+            {voiceButton}
+          </div>
         ) : (
           <div className="flex items-center gap-1">
             <MicButton
@@ -622,6 +661,7 @@ export function InputArea() {
               disabled={micDisabled}
               reason={micReason}
             />
+            {voiceButton}
             <button
               onClick={sendMessage}
               disabled={streamState.isStreaming || !input.trim() || modelLoading || !selectedModel}

@@ -5,29 +5,9 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import httpx
-import pytest
 import respx
 
 from openjarvis.tools.http_request import HttpRequestTool
-
-
-@pytest.fixture(autouse=True)
-def _force_httpx_fallback():
-    """Patch the Rust HTTP tool so it raises, falling back to httpx.
-
-    The Rust backend makes real HTTP requests that bypass respx mocks.
-    By making the Rust HttpRequestTool().execute() raise, the tool falls
-    through to the httpx code path where respx interception works.
-    """
-    mock_rust = MagicMock()
-    mock_rust.HttpRequestTool.return_value.execute.side_effect = RuntimeError(
-        "mocked out"
-    )
-    with patch(
-        "openjarvis._rust_bridge.get_rust_module",
-        return_value=mock_rust,
-    ):
-        yield
 
 
 class TestHttpRequestTool:
@@ -110,6 +90,51 @@ class TestHttpRequestTool:
         assert "elapsed_ms" in result.metadata
 
     @respx.mock
+    def test_get_uses_httpx_status_even_when_rust_bridge_is_available(self):
+        """Provider HTTP failures must remain failures on the normal GET path."""
+        respx.get("https://api.example.com/missing").mock(
+            return_value=httpx.Response(404, text="not found")
+        )
+        rust_module = MagicMock()
+        tool = HttpRequestTool()
+
+        with (
+            patch("openjarvis.tools.http_request.check_ssrf", return_value=None),
+            patch(
+                "openjarvis._rust_bridge.get_rust_module",
+                return_value=rust_module,
+            ),
+        ):
+            result = tool.execute(url="https://api.example.com/missing")
+
+        assert result.success is False
+        assert result.metadata["status_code"] == 404
+        assert result.content == "not found"
+
+    @respx.mock
+    def test_get_preserves_unicode_response_beyond_ten_kilobytes(self):
+        """A multibyte body must not be cut or lost at the old Rust boundary."""
+        body = "x" * 9_999 + "ê" + "tail" * 1_000
+        respx.get("https://api.example.com/unicode").mock(
+            return_value=httpx.Response(200, text=body)
+        )
+        rust_module = MagicMock()
+        tool = HttpRequestTool()
+
+        with (
+            patch("openjarvis.tools.http_request.check_ssrf", return_value=None),
+            patch(
+                "openjarvis._rust_bridge.get_rust_module",
+                return_value=rust_module,
+            ),
+        ):
+            result = tool.execute(url="https://api.example.com/unicode")
+
+        assert result.success is True
+        assert result.content == body
+        assert result.metadata["truncated"] is False
+
+    @respx.mock
     def test_post_with_body(self):
         """POST request with body sends content correctly."""
         respx.post("https://api.example.com/submit").mock(
@@ -130,6 +155,47 @@ class TestHttpRequestTool:
         assert result.success is True
         assert '"id": 42' in result.content
         assert result.metadata["status_code"] == 201
+
+    @respx.mock
+    def test_http_error_status_is_a_failed_tool_result_with_response_preserved(self):
+        """A provider rejection must not be labelled as a successful request."""
+        respx.post("https://api.example.com/submit").mock(
+            return_value=httpx.Response(
+                422,
+                text='{"statusCode":1010014,"message":"Invalid order slug"}',
+                headers={"content-type": "application/json"},
+            )
+        )
+        tool = HttpRequestTool()
+
+        with patch("openjarvis.tools.http_request.check_ssrf", return_value=None):
+            result = tool.execute(
+                url="https://api.example.com/submit",
+                method="POST",
+                body='{"orderSlug":"bad"}',
+            )
+
+        assert result.success is False
+        assert result.metadata["status_code"] == 422
+        assert "Invalid order slug" in result.content
+
+    @respx.mock
+    def test_json_body_sets_content_type_when_caller_omits_it(self):
+        """A JSON string body must reach APIs as JSON without prompt ceremony."""
+        route = respx.post("https://api.example.com/submit").mock(
+            return_value=httpx.Response(201, text='{"id": 42}')
+        )
+        tool = HttpRequestTool()
+
+        with patch("openjarvis.tools.http_request.check_ssrf", return_value=None):
+            result = tool.execute(
+                url="https://api.example.com/submit",
+                method="POST",
+                body='{"name": "test"}',
+            )
+
+        assert result.success is True
+        assert route.calls[0].request.headers["content-type"] == "application/json"
 
     @respx.mock
     def test_put_method(self):

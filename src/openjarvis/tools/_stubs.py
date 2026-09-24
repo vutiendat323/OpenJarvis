@@ -8,14 +8,18 @@ Each tool is registered via ``@ToolRegistry.register("name")`` and implements
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import json
 import time
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
+from uuid import uuid4
 
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolCall, ToolResult
+from openjarvis.tools import evidence as _evidence
 
 # ---------------------------------------------------------------------------
 # ToolSpec — metadata describing a tool's interface
@@ -118,7 +122,33 @@ class ToolExecutor:
         self._boundary_guard = boundary_guard
 
     def execute(self, tool_call: ToolCall) -> ToolResult:
+        from openjarvis.agents._stubs import (
+            _RUN_WORKER_LEASE,
+            check_agent_cancelled,
+        )
+
+        check_agent_cancelled()
+        lease = _RUN_WORKER_LEASE.get()
+        scope = lease.tool_gate.enter(lease) if lease is not None else nullcontext(True)
+        with scope as acquired:
+            if not acquired:
+                return ToolResult(
+                    tool_name=tool_call.name,
+                    success=False,
+                    content=(
+                        "A previous turn's tool operation is still running. "
+                        "No new tool was dispatched. Its outcome is pending, "
+                        "not failed or cancelled. Explain this to the user; "
+                        "do not retry or claim completion."
+                    ),
+                    metadata={"pending_operation": True, "dispatched": False},
+                )
+            check_agent_cancelled()
+            return self._execute(tool_call)
+
+    def _execute(self, tool_call: ToolCall) -> ToolResult:
         """Parse arguments, dispatch to tool, measure latency, emit events."""
+        invocation_id = uuid4().hex
         tool = self._tools.get(tool_call.name)
         if tool is None:
             return ToolResult(
@@ -247,13 +277,19 @@ class ToolExecutor:
         # AgentExecutor's trace subscriber (which filters by agent_id) can
         # actually match this event — without it, every tool call is silently
         # dropped from traces.
+        observation_params = params
+        observation_filter = getattr(tool, "observation_arguments", None)
+        if callable(observation_filter):
+            observation_params = observation_filter(params)
         if self._bus:
             self._bus.publish(
                 EventType.TOOL_CALL_START,
                 {
                     "tool": tool_call.name,
-                    "arguments": params,
+                    "arguments": observation_params,
                     "agent": self._agent_id,
+                    "invocation_id": invocation_id,
+                    "tool_call_id": tool_call.id,
                 },
             )
 
@@ -262,7 +298,18 @@ class ToolExecutor:
         t0 = time.time()
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(tool.execute, **params)
+                # A raw pool thread starts with an empty context, which would
+                # hide the caller's Agent worker lease from the tool (and with
+                # it, cooperative cancellation of long MCP calls).
+                context = contextvars.copy_context()
+
+                def invoke():
+                    from openjarvis.agents._stubs import check_agent_cancelled
+
+                    check_agent_cancelled()
+                    return tool.execute(**params)
+
+                future = pool.submit(context.run, invoke)
                 result = future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
             if self._bus:
@@ -270,9 +317,22 @@ class ToolExecutor:
                     EventType.TOOL_TIMEOUT,
                     {"tool": tool_call.name, "timeout": timeout},
                 )
+            content = f"Tool '{tool_call.name}' timed out after {timeout:.0f}s."
+            method = ""
+            if isinstance(params, dict):
+                method = str(params.get("method", "")).upper()
+            state_changing = method in {"POST", "PUT", "PATCH", "DELETE"}
+            if tool.spec.metadata.get("mutates") or state_changing:
+                # A mutation that outran its timeout may still have been
+                # dispatched. That is `unknown`, not a retryable failure.
+                content += (
+                    " The mutation may already have been dispatched;"
+                    " its outcome is unknown. Observe whether it happened"
+                    " before retrying -- do not re-execute."
+                )
             result = ToolResult(
                 tool_name=tool_call.name,
-                content=(f"Tool '{tool_call.name}' timed out after {timeout:.0f}s."),
+                content=content,
                 success=False,
             )
         except Exception as exc:
@@ -283,7 +343,19 @@ class ToolExecutor:
             )
         latency = time.time() - t0
         result.latency_seconds = latency
-        result.metadata["arguments"] = params
+        result.metadata["arguments"] = observation_params
+
+        if result.success and isinstance(result.content, str):
+            status = result.metadata.get("status_code")
+            final_url = result.metadata.get("final_url")
+            requested_url = params.get("url") if isinstance(params, dict) else None
+            url = final_url if isinstance(final_url, str) else requested_url
+            _evidence.record(
+                tool_call.name,
+                result.content,
+                status if isinstance(status, int) else None,
+                url if isinstance(url, str) else None,
+            )
 
         # Auto-detect taints in results
         if result.success:
@@ -298,7 +370,7 @@ class ToolExecutor:
 
         # Emit end event
         if self._bus:
-            result_text = str(result.content)[:10240] if result.content else ""
+            result_text = str(result.content) if result.content else ""
             # Pass through ToolResult.metadata so downstream consumers
             # (TraceCollector → TraceStep.metadata → SkillOptimizer) can
             # see skill-tagged invocations.  Filter to JSON-serializable
@@ -311,6 +383,8 @@ class ToolExecutor:
                 {
                     "tool": tool_call.name,
                     "success": result.success,
+                    "invocation_id": invocation_id,
+                    "tool_call_id": tool_call.id,
                     "latency": latency,
                     "result": result_text,
                     "metadata": event_metadata,
@@ -352,6 +426,10 @@ class ToolExecutor:
     def available_tools(self) -> List[ToolSpec]:
         """Return specs for all available tools."""
         return [t.spec for t in self._tools.values()]
+
+    def get_tool(self, name: str) -> Optional[BaseTool]:
+        """Resolve an internal collaborator without exposing another model schema."""
+        return self._tools.get(name)
 
     def get_openai_tools(self) -> List[Dict[str, Any]]:
         """Return tools in OpenAI function-calling format."""

@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
 
-from openjarvis.agents._stubs import AgentContext, AgentResult, BaseAgent
+import pytest
+
+from openjarvis.agents._stubs import (
+    AgentContext,
+    AgentResult,
+    AgentRunCompleted,
+    AgentTextDelta,
+    AgentToolFinished,
+    AgentToolStarted,
+    BaseAgent,
+)
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import StepType
 from openjarvis.traces.collector import TraceCollector
@@ -88,7 +101,262 @@ class _ToolAgent(BaseAgent):
         return AgentResult(content="4", turns=2)
 
 
+class _InterleavedToolAgent(BaseAgent):
+    """Simulate two parallel calls whose start/end events interleave."""
+
+    agent_id = "parallel_tool_agent"
+
+    def __init__(self, bus: EventBus) -> None:
+        self._bus = bus
+
+    def run(
+        self,
+        input: str,
+        context: Optional[AgentContext] = None,
+        **kwargs: Any,
+    ) -> AgentResult:
+        first = {"method": "GET", "url": "https://shop.example/menu/food"}
+        second = {"method": "GET", "url": "https://shop.example/menu/drinks"}
+        self._bus.publish(
+            EventType.TOOL_CALL_START,
+            {"tool": "http_request", "arguments": first},
+        )
+        self._bus.publish(
+            EventType.TOOL_CALL_START,
+            {"tool": "http_request", "arguments": second},
+        )
+        self._bus.publish(
+            EventType.TOOL_CALL_END,
+            {
+                "tool": "http_request",
+                "success": True,
+                "latency": 0.01,
+                "result": '{"items": ["food"]}',
+                "metadata": {"arguments": first},
+            },
+        )
+        self._bus.publish(
+            EventType.TOOL_CALL_END,
+            {
+                "tool": "http_request",
+                "success": True,
+                "latency": 0.01,
+                "result": '{"items": ["drinks"]}',
+                "metadata": {"arguments": second},
+            },
+        )
+        return AgentResult(content="menus displayed", turns=1)
+
+
+class _StreamingAgent(BaseAgent):
+    """Small local stream fixture covering every native stream event."""
+
+    agent_id = "streaming"
+
+    def __init__(self) -> None:
+        pass
+
+    def run(
+        self,
+        input: str,
+        context: Optional[AgentContext] = None,
+        **kwargs: Any,
+    ) -> AgentResult:
+        return AgentResult(content="completed", turns=1)
+
+    async def run_stream(
+        self,
+        input: str,
+        context: Optional[AgentContext] = None,
+        **kwargs: Any,
+    ):
+        yield AgentTextDelta("partial")
+        yield AgentToolStarted("local_tool")
+        yield AgentToolFinished("local_tool", ok=True)
+        yield AgentRunCompleted(AgentResult(content="completed", turns=1))
+
+
+class _BlockingStreamingAgent(_StreamingAgent):
+    """Stream fixture whose completion is never reached after cancellation."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def run_stream(
+        self,
+        input: str,
+        context: Optional[AgentContext] = None,
+        **kwargs: Any,
+    ):
+        yield AgentTextDelta("partial")
+        self.started.set()
+        await self.release.wait()
+        yield AgentRunCompleted(AgentResult(content="completed", turns=1))
+
+
 class TestTraceCollector:
+    @pytest.mark.asyncio
+    async def test_failed_admission_journal_does_not_execute_agent(self, tmp_path):
+        class RejectingStore(TraceStore):
+            def submit_write(self, method, /, *args, **kwargs):
+                raise RuntimeError("trace_writer_capacity_exhausted")
+
+        calls = []
+
+        class Recording(_StreamingAgent):
+            async def run_stream(self, input, context=None, **kwargs):
+                calls.append(input)
+                yield AgentRunCompleted(AgentResult(content="should not execute"))
+
+        store = RejectingStore(tmp_path / "full.db")
+        collector = TraceCollector(Recording(), store=store)
+        try:
+            with pytest.raises(RuntimeError, match="trace_admission_not_durable"):
+                async for _ in collector.run_stream("must be traceable"):
+                    pass
+            assert calls == []
+        finally:
+            store.close()
+
+    @pytest.mark.asyncio
+    async def test_sqlite_writer_contention_does_not_block_voice_event_loop(
+        self, tmp_path
+    ):
+        db = tmp_path / "busy.db"
+        store = TraceStore(db)
+        blocker = sqlite3.connect(db, check_same_thread=False)
+        blocker.execute("BEGIN IMMEDIATE")
+        released = threading.Event()
+
+        def release():
+            blocker.rollback()
+            blocker.close()
+            released.set()
+
+        timer = threading.Timer(0.3, release)
+        timer.start()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        ticks = []
+        loop.call_later(0.02, lambda: ticks.append(loop.time() - started))
+        collector = TraceCollector(_StreamingAgent(), store=store)
+        try:
+            async for _ in collector.run_stream("keep VAD responsive"):
+                pass
+            await asyncio.sleep(0.01)
+            assert ticks and ticks[0] < 0.15
+        finally:
+            assert await asyncio.to_thread(released.wait, 1)
+            store.close()
+
+    @pytest.mark.asyncio
+    async def test_interrupted_inference_keeps_its_unfinished_step(self, tmp_path):
+        bus = EventBus()
+        store = TraceStore(tmp_path / "trace.db")
+
+        class Pending(_StreamingAgent):
+            async def run_stream(self, input, context=None, **kwargs):
+                bus.publish(EventType.INFERENCE_START, {"model": "luna"})
+                yield AgentTextDelta("partial")
+                await asyncio.Event().wait()
+
+        collector = TraceCollector(Pending(), store=store, bus=bus)
+        stream = collector.run_stream("cancel me")
+        await anext(stream)
+        await stream.aclose()
+        trace = store.list_traces()[0]
+        assert len(trace.steps) == 1
+        assert trace.steps[0].step_type == StepType.GENERATE
+        assert trace.steps[0].metadata["status"] == "interrupted"
+        assert trace.steps[0].metadata["ttft"] is None
+        store.close()
+
+    def test_interleaved_tool_events_match_invocation_identity(self, tmp_path):
+        bus = EventBus()
+        store = TraceStore(tmp_path / "trace.db")
+        starts = []
+
+        class Interleaved(_FakeAgent):
+            def run(self, input, context=None, **kwargs):
+                for identity in ("a", "b"):
+                    starts.append(
+                        bus.publish(
+                            EventType.TOOL_CALL_START,
+                            {
+                                "tool": "http_request",
+                                "invocation_id": identity,
+                                "arguments": {"id": identity},
+                            },
+                        )
+                    )
+                for identity in ("a", "b"):
+                    bus.publish(
+                        EventType.TOOL_CALL_END,
+                        {
+                            "tool": "http_request",
+                            "invocation_id": identity,
+                            "success": True,
+                        },
+                    )
+                return AgentResult(content="done")
+
+        TraceCollector(Interleaved(), store=store, bus=bus).run("parallel")
+        steps = store.list_traces()[0].steps[:2]
+        assert [s.input["arguments"] for s in steps] == [{"id": "a"}, {"id": "b"}]
+        assert [s.timestamp for s in steps] == [e.timestamp for e in starts]
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_streams_keep_their_own_inference_steps(self, tmp_path):
+        bus = EventBus()
+        store = TraceStore(tmp_path / "runs.db")
+        both_started = asyncio.Event()
+        started = 0
+
+        class Interleaved(_StreamingAgent):
+            async def run_stream(self, input, context=None, **kwargs):
+                nonlocal started
+                bus.publish(EventType.INFERENCE_START, {"model": input})
+                started += 1
+                if started == 2:
+                    both_started.set()
+                await both_started.wait()
+                bus.publish(EventType.INFERENCE_END, {"content": input})
+                yield AgentRunCompleted(AgentResult(content=input))
+
+        collector = TraceCollector(Interleaved(), store=store, bus=bus)
+
+        async def drain(prompt):
+            return [item async for item in collector.run_stream(prompt)]
+
+        await asyncio.gather(drain("first"), drain("second"))
+        traces = store.list_traces()
+        assert len({trace.trace_id for trace in traces}) == 2
+        for trace in traces:
+            steps = [s for s in trace.steps if s.step_type == StepType.GENERATE]
+            assert [(s.input["model"], s.output["content"]) for s in steps] == [
+                (trace.query, trace.query)
+            ]
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_admission_is_journaled_before_a_stream_finishes(self, tmp_path):
+        store = TraceStore(tmp_path / "runs.db")
+        collector = TraceCollector(_StreamingAgent(), store=store)
+        stream = collector.run_stream("retain me")
+        try:
+            await anext(stream)
+            events = store.run_events()
+            assert events[0]["event_type"] == "run_admitted"
+            assert events[0]["data"]["query"] == "retain me"
+        finally:
+            await stream.aclose()
+        events = store.run_events()
+        assert events[-1]["event_type"] == "run_interrupted"
+        assert {e["run_id"] for e in events} == {store.list_traces()[0].trace_id}
+        store.close()
+
     def test_basic_collection(self, tmp_path: Path) -> None:
         bus = EventBus()
         store = TraceStore(tmp_path / "test.db")
@@ -136,6 +404,25 @@ class TestTraceCollector:
         assert len(tool_steps) == 1
         assert tool_steps[0].input["tool"] == "calculator"
         assert tool_steps[0].output["success"] is True
+        store.close()
+
+    def test_parallel_tool_steps_keep_their_own_arguments(self, tmp_path: Path) -> None:
+        """End metadata identifies each call even when starts overlap."""
+        bus = EventBus()
+        store = TraceStore(tmp_path / "test.db")
+        collector = TraceCollector(_InterleavedToolAgent(bus), store=store, bus=bus)
+
+        collector.run("show food and drinks")
+
+        steps = [
+            step
+            for step in store.list_traces()[0].steps
+            if step.step_type == StepType.TOOL_CALL
+        ]
+        assert [step.input["arguments"]["url"] for step in steps] == [
+            "https://shop.example/menu/food",
+            "https://shop.example/menu/drinks",
+        ]
         store.close()
 
     def test_records_respond_step(self, tmp_path: Path) -> None:
@@ -220,6 +507,24 @@ class TestTraceCollector:
         assert trace.steps[0].step_type == StepType.RESPOND
         store.close()
 
+    def test_a_store_save_failure_does_not_lose_the_completed_answer(self) -> None:
+        """The agent has already produced a result by the time save() runs --
+        a persistence bug (e.g. an unserializable field the json.dumps
+        default= fallback doesn't catch) must not turn that into a 500 for
+        the caller."""
+
+        class _ExplodingStore:
+            def save(self, trace: Any) -> None:
+                raise TypeError("boom")
+
+        bus = EventBus()
+        agent = _FakeAgent(response="ok", bus=bus)
+        collector = TraceCollector(agent, store=_ExplodingStore(), bus=bus)
+
+        result = collector.run("test")  # must not raise
+
+        assert result.content == "ok"
+
     def test_timing(self, tmp_path: Path) -> None:
         bus = EventBus()
         store = TraceStore(tmp_path / "test.db")
@@ -254,6 +559,81 @@ class TestTraceCollector:
         # No step with model="stray"
         for s in trace.steps:
             assert s.input.get("model") != "stray"
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_run_stream_forwards_events_and_records_one_completed_trace(
+        self, tmp_path: Path
+    ) -> None:
+        """Dropping a native event or terminal trace side effect is a bug."""
+        bus = EventBus(record_history=True)
+        store = TraceStore(tmp_path / "test.db")
+        collector = TraceCollector(_StreamingAgent(), store=store, bus=bus)
+
+        events = [event async for event in collector.run_stream("stream this")]
+
+        assert events == [
+            AgentTextDelta("partial"),
+            AgentToolStarted("local_tool"),
+            AgentToolFinished("local_tool", ok=True),
+            AgentRunCompleted(AgentResult(content="completed", turns=1)),
+        ]
+        assert store.count() == 1
+        assert store.list_traces()[0].result == "completed"
+        assert [event.event_type for event in bus.history].count(
+            EventType.TRACE_COMPLETE
+        ) == 1
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_run_stream_records_abandonment_without_publishing_success(
+        self, tmp_path: Path
+    ) -> None:
+        """Diagnostic retention must not teach an unobserved answer."""
+        bus = EventBus(record_history=True)
+        store = TraceStore(tmp_path / "test.db")
+        collector = TraceCollector(_StreamingAgent(), store=store, bus=bus)
+
+        stream = collector.run_stream("stream this")
+        assert await stream.__anext__() == AgentTextDelta("partial")
+        await stream.aclose()
+
+        assert store.count() == 1
+        trace = store.list_traces()[0]
+        assert trace.metadata["status"] == "interrupted"
+        assert trace.result == ""
+        assert not any(
+            event.event_type == EventType.TRACE_COMPLETE for event in bus.history
+        )
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_run_stream_records_cancellation_without_publishing_success(
+        self, tmp_path: Path
+    ) -> None:
+        """Cancellation must remain observable without a completed answer."""
+        bus = EventBus(record_history=True)
+        store = TraceStore(tmp_path / "test.db")
+        agent = _BlockingStreamingAgent()
+        collector = TraceCollector(agent, store=store, bus=bus)
+
+        async def drain() -> None:
+            async for _event in collector.run_stream("stream this"):
+                pass
+
+        task = asyncio.create_task(drain())
+        await agent.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert store.count() == 1
+        trace = store.list_traces()[0]
+        assert trace.metadata["status"] == "interrupted"
+        assert trace.metadata["ttft_seconds"] is None
+        assert not any(
+            event.event_type == EventType.TRACE_COMPLETE for event in bus.history
+        )
         store.close()
 
 

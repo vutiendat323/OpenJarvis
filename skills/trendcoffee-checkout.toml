@@ -1,0 +1,102 @@
+[skill]
+name = "trendcoffee-checkout"
+description = "Checkout a freshly confirmed take-out or at-table order in one call, show the verified bill, and display its payment QR. Pass cart_revision or cart_lines, turn_nonce, and customer_message. For a saved draft, order_note must match; order_type and table must match unless this turn explicitly confirms switching to take-out and paying now: then pass order_type=take-out, table empty, and update_order_type=true to atomically update the current revision and clear its table. For at-table use the table slug already selected from a fresh table read (a reserved table is allowed only after the customer confirms sharing it). Delivery is not supported."
+checkout = true
+accepts_cart_lines = true
+
+# Read-only merchant endpoints the customer display uses around this checkout:
+# the live table list for the touch picker and the order it polls for payment.
+[skill.metadata.openjarvis.kiosk]
+tables_url = "https://trendcoffee.net/api/latest/tables?branch=ba9355f797"
+order_url = "https://trendcoffee.net/api/latest/orders/{order_id}"
+
+[[skill.steps]]
+tool_name = "http_request"
+output_key = "fresh_menu"
+arguments_template = '''{"url":"https://trendcoffee.net/api/latest/menu/specific/public?date={today|urlencode}&branch=ba9355f797&catalog=&minPrice=0&maxPrice=1000000000&size=200&hasPaging=true&page=1","method":"GET","timeout":5}'''
+assertions_json = '''[
+  {"actual":"{fresh_menu.result.hasNext}","equals":false},
+  {
+    "actual":{
+      "$map":"{draft_cart.lines}",
+      "as":"draft_line",
+      "value":{
+        "$expect_one":{
+          "$map":{
+            "$filter":"{fresh_menu.result.items.0.menuItems}",
+            "as":"entry",
+            "where":{
+              "all":[
+                {"equals":["{entry.product.variants.0.slug}","{draft_line.variant_id}"]},
+                {"equals":["{entry.product.isActive}",true]},
+                {"equals":["{entry.product.variants.0.price}","{draft_line.unit_price}"]}
+              ]
+            }
+          },
+          "as":"entry",
+          "value":{
+            "variant":"{entry.product.variants.0.slug}",
+            "unit_price":"{entry.product.variants.0.price}",
+            "available":"{entry.product.isActive}"
+          }
+        }
+      }
+    },
+    "equals":{
+      "$map":"{draft_cart.lines}",
+      "as":"draft_line",
+      "value":{
+        "variant":"{draft_line.variant_id}",
+        "unit_price":"{draft_line.unit_price}",
+        "available":true
+      }
+    }
+  }
+]'''
+
+[[skill.steps]]
+tool_name = "http_request"
+output_key = "fresh_tables"
+arguments_template = '''{"url":"https://trendcoffee.net/api/latest/tables?branch=ba9355f797","method":"GET","timeout":5}'''
+assertions_json = '''[
+  {
+    "actual":{
+      "$map":{
+        "$filter":"{fresh_tables.result}",
+        "as":"fresh_table",
+        "where":{
+          "all":[
+            {"equals":["{fresh_table.slug}","{table}"]}
+          ]
+        }
+      },
+      "as":"fresh_table",
+      "value":"{fresh_table.slug}"
+    },
+    "equals":{
+      "$filter":["{table}"],
+      "as":"selected_table",
+      "where":{"equals":["{order_type}","at-table"]}
+    }
+  }
+]'''
+
+[[skill.steps]]
+tool_name = "http_request"
+output_key = "created"
+arguments_template = '''{"url":"https://trendcoffee.net/api/latest/orders/public","method":"POST","body":{"$json":{"type":"{order_type}","branch":"ba9355f797","timeLeftTakeOut":"{draft_cart.pickup_minutes}","deliveryTo":"","deliveryPhone":"","table":"{table}","owner":"","approvalBy":"","orderItems":{"$map":"{draft_cart.lines}","as":"line","value":{"quantity":"{line.quantity}","variant":"{line.variant_id}","promotion":null,"note":"{line.note}"}},"voucher":null,"description":"{order_note}"}}}'''
+assertions_json = '''[{"actual":"{created.result.subtotal}","equals":"{draft_cart.total}"},{"actual":"{created.result.type}","equals":"{order_type}"},{"actual":"{created.result.description}","equals":"{order_note}"},{"actual":{"$coalesce":["{created.result.table.slug}",""]},"equals":"{table}"},{"actual":{"$map":"{created.result.orderItems}","as":"line","value":{"variant":"{line.variant.slug}","quantity":"{line.quantity}","note":"{line.note}","unit_price":"{line.variant.price}","promotion":"{line.promotion}"}},"equals":{"$map":"{draft_cart.lines}","as":"line","value":{"variant":"{line.variant_id}","quantity":"{line.quantity}","note":"{line.note}","unit_price":"{line.unit_price}","promotion":null}}}]'''
+
+[[skill.steps]]
+tool_name = "display_bill"
+arguments_template = '''{"order_id":"{created.result.slug}","status":"{created.result.status}","order_type":"{created.result.type}","branch":"ba9355f797","lines":{"$map":"{created.result.orderItems}","as":"line","value":{"line_id":"{line.variant.slug}","name":"{line.variant.product.name}","size":"{line.variant.size.name}","note":"{line.note}","quantity":"{line.quantity}","unit_price":"{line.variant.price}","line_total":{"$multiply":["{line.variant.price}","{line.quantity}"]}}},"total":"{created.result.subtotal}"}'''
+
+[[skill.steps]]
+tool_name = "http_request"
+output_key = "payment"
+arguments_template = '''{"url":"https://trendcoffee.net/api/latest/payment/initiate/public","method":"POST","body":{"$json":{"orderSlug":"{created.result.slug}","paymentMethod":"bank-transfer"}}}'''
+assertions_json = '''[{"actual":"{payment.result.amount}","equals":"{created.result.subtotal}"},{"actual":"{payment.result.paymentMethod}","equals":"bank-transfer"},{"actual":"{payment.result.statusCode}","equals":"pending"}]'''
+
+[[skill.steps]]
+tool_name = "display_payment_qr"
+arguments_template = '''{"order_id":"{created.result.slug}","payment_slug":"{payment.result.slug}","status":"{payment.result.statusCode}","order_type":"{created.result.type}","branch":"ba9355f797","table_name":{"$coalesce":["{created.result.table.name}",""]},"lines":{"$map":"{created.result.orderItems}","as":"line","value":{"line_id":"{line.variant.slug}","name":"{line.variant.product.name}","size":"{line.variant.size.name}","note":"{line.note}","quantity":"{line.quantity}","unit_price":"{line.variant.price}","line_total":{"$multiply":["{line.variant.price}","{line.quantity}"]}}},"total":"{payment.result.amount}","created_at":{"$coalesce":["{created.result.createdAt}",""]},"customer_message":"{customer_message}"}'''

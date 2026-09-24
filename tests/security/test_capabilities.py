@@ -15,6 +15,9 @@ class TestCapability:
         assert Capability.NETWORK_FETCH == "network:fetch"
         assert Capability.CODE_EXECUTE == "code:execute"
         assert Capability.SYSTEM_ADMIN == "system:admin"
+        assert Capability.SOURCE_DISCOVER == "source:discover"
+        assert Capability.SOURCE_READ == "source:read"
+        assert Capability.SOURCE_WRITE == "source:write"
 
     def test_all_capabilities_exist(self):
         expected = {
@@ -28,6 +31,9 @@ class TestCapability:
             "tool:invoke",
             "schedule:create",
             "system:admin",
+            "source:discover",
+            "source:read",
+            "source:write",
         }
         actual = {c.value for c in Capability}
         assert expected == actual

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from openjarvis.agents.manager import AgentManager
     from openjarvis.agents.scheduler import AgentScheduler
     from openjarvis.channels._stubs import BaseChannel
+    from openjarvis.kiosk.presentation import PresentationSessionManager
     from openjarvis.learning._stubs import RouterPolicy
     from openjarvis.learning.learning_orchestrator import LearningOrchestrator
     from openjarvis.mcp.client import MCPClient
@@ -89,6 +90,7 @@ class JarvisSystem:
     # Keep newly added fields after every pre-existing positional field so
     # older positional JarvisSystem(...) calls retain their original meaning.
     mcp_tools: List[BaseTool] = field(default_factory=list)
+    presentation_session_manager: Optional[PresentationSessionManager] = None
 
     @property
     def security(self) -> SecurityContext:
@@ -303,6 +305,10 @@ class JarvisSystem:
         """Release resources."""
         if self.scheduler and hasattr(self.scheduler, "stop"):
             self.scheduler.stop()
+        if self._learning_orchestrator is not None:
+            # Drain queued turn learning first: it writes through the trace
+            # store and memory backend the loop below is about to close.
+            self._learning_orchestrator.close()
         for resource in (
             self.scheduler_store,
             self.engine,

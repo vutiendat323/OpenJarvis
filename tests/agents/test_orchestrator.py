@@ -2,13 +2,34 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import threading
+from collections.abc import AsyncIterator, Sequence
+from typing import Any
 from unittest.mock import MagicMock
 
-from openjarvis.agents._stubs import AgentContext
+import pytest
+
+from openjarvis.agents._stubs import (
+    AgentContext,
+    AgentResult,
+    AgentRunCompleted,
+    AgentTextDelta,
+)
 from openjarvis.agents.orchestrator import OrchestratorAgent
+from openjarvis.core.conversation import conversation_scope, current_turn_nonce
 from openjarvis.core.events import EventBus, EventType
-from openjarvis.core.types import Conversation, Message, Role, ToolResult
+from openjarvis.core.types import Conversation, Message, Role, ToolCall, ToolResult
+from openjarvis.engine._stubs import StreamChunk
+from openjarvis.kiosk.presentation import (
+    PresentationSessionManager,
+    presentation_generation,
+)
+from openjarvis.telemetry.instrumented_engine import InstrumentedEngine
+from openjarvis.tools import evidence
 from openjarvis.tools._stubs import BaseTool, ToolSpec
+from openjarvis.tools.display import DisplayCartTool
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -59,6 +80,254 @@ class _ThinkStub(BaseTool):
             content=params.get("thought", ""),
             success=True,
         )
+
+
+class _DisplayStub(BaseTool):
+    tool_id = "display_menu"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="display_menu",
+            description="Show a menu.",
+            parameters={"type": "object", "properties": {}},
+            metadata={"displays": True},
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        return ToolResult(
+            tool_name="display_menu",
+            content="shown",
+            success=not params.get("fail", False),
+        )
+
+
+class _CountingClickStub(BaseTool):
+    tool_id = "browser_click"
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="browser_click",
+            description="Click one browser element.",
+            parameters={"type": "object", "properties": {}},
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        del params
+        with self._lock:
+            self.calls += 1
+        return ToolResult(
+            tool_name="browser_click",
+            content="clicked",
+            success=True,
+        )
+
+
+class _ExternalToolStub(BaseTool):
+    tool_id = "external"
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        read_only: bool,
+        outcomes: list[bool],
+        server: str = "playwright",
+    ) -> None:
+        self._name = name
+        self._read_only = read_only
+        self._outcomes = list(outcomes)
+        self._server = server
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name=self._name,
+            description=self._name,
+            parameters={"type": "object", "properties": {}},
+            metadata={
+                "mcp": {
+                    "server": self._server,
+                    "annotations": {
+                        "readOnlyHint": self._read_only,
+                        "openWorldHint": True,
+                    },
+                }
+            },
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        del params
+        success = self._outcomes.pop(0)
+        return ToolResult(
+            tool_name=self._name,
+            content="ok" if success else "blocked",
+            success=success,
+        )
+
+
+def _stream_tool_round(name: str, index: int) -> list[StreamChunk]:
+    return [
+        StreamChunk(
+            tool_calls=[
+                {
+                    "index": 0,
+                    "id": f"call-{index}",
+                    "function": {"name": name, "arguments": "{}"},
+                }
+            ]
+        ),
+        StreamChunk(finish_reason="tool_calls"),
+    ]
+
+
+def _stream_final_round(content: str) -> list[StreamChunk]:
+    return [
+        StreamChunk(content=content),
+        StreamChunk(finish_reason="stop"),
+    ]
+
+
+class _PendingApprovalStub(_ThinkStub):
+    tool_id = "approval"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="approval",
+            description="Requires an approval.",
+            parameters={"type": "object", "properties": {}},
+        )
+
+    def execute(self, **params) -> ToolResult:
+        del params
+        return ToolResult(
+            tool_name="approval",
+            content="Approval required.",
+            metadata={"pending_approval": 1},
+        )
+
+
+class StreamingEngine:
+    def __init__(
+        self,
+        output: list[str] | list[list[StreamChunk]],
+    ) -> None:
+        if not output or isinstance(output[0], str):
+            self._rounds = [
+                [
+                    *(StreamChunk(content=content) for content in output),
+                    StreamChunk(finish_reason="stop"),
+                ]
+            ]
+        else:
+            self._rounds = list(output)
+        self.calls: list[tuple[Sequence[Message], dict[str, Any]]] = []
+
+    def generate(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("run_stream must consume stream_full")
+
+    def supports_semantic_reasoning_stream(self, model: str) -> bool:
+        del model
+        return True
+
+    async def stream_full(
+        self,
+        messages: Sequence[Message],
+        **kwargs: Any,
+    ) -> AsyncIterator[StreamChunk]:
+        self.calls.append((messages, kwargs))
+        for chunk in self._rounds.pop(0):
+            yield chunk
+
+
+class EventPublishingStreamingEngine(StreamingEngine):
+    _publishes_stream_events = True
+
+    def __init__(self, output: list[str], bus: EventBus) -> None:
+        super().__init__(output)
+        self._bus = bus
+
+    async def stream_full(
+        self,
+        messages: Sequence[Message],
+        **kwargs: Any,
+    ) -> AsyncIterator[StreamChunk]:
+        self._bus.publish(EventType.INFERENCE_START, {"source": "engine"})
+        async for chunk in super().stream_full(messages, **kwargs):
+            yield chunk
+        self._bus.publish(EventType.INFERENCE_END, {"source": "engine"})
+
+
+class PausingSemanticStreamingEngine:
+    def __init__(self, reasoning_chunks: int = 20) -> None:
+        self._reasoning_chunks = reasoning_chunks
+        self.release = asyncio.Event()
+
+    def generate(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("run_stream must consume stream_full")
+
+    def supports_semantic_reasoning_stream(self, model: str) -> bool:
+        del model
+        return True
+
+    async def stream_full(
+        self,
+        messages: Sequence[Message],
+        **kwargs: Any,
+    ) -> AsyncIterator[StreamChunk]:
+        del messages, kwargs
+        for index in range(self._reasoning_chunks):
+            yield StreamChunk(reasoning_content=f"private {index}")
+        yield StreamChunk(content="Visible")
+        await self.release.wait()
+        yield StreamChunk(finish_reason="stop")
+
+
+class RepeatableToolStreamingEngine:
+    """Emit the same tool call once per independent top-level run."""
+
+    def generate(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("run_stream must consume stream_full")
+
+    def supports_semantic_reasoning_stream(self, model: str) -> bool:
+        del model
+        return True
+
+    async def stream_full(
+        self,
+        messages: Sequence[Message],
+        **kwargs: Any,
+    ) -> AsyncIterator[StreamChunk]:
+        del kwargs
+        if any(message.role == Role.TOOL for message in messages):
+            yield StreamChunk(content="Đã xong.")
+            yield StreamChunk(finish_reason="stop")
+            return
+        yield StreamChunk(
+            tool_calls=[
+                {
+                    "index": 0,
+                    "id": "same-call",
+                    "function": {
+                        "name": "browser_click",
+                        "arguments": '{"target":"menu"}',
+                    },
+                }
+            ]
+        )
+        yield StreamChunk(finish_reason="tool_calls")
+
+
+async def _collect_agent_stream(
+    agent: OrchestratorAgent, input: str
+) -> list[AgentTextDelta | AgentRunCompleted]:
+    return [event async for event in agent.run_stream(input)]
 
 
 def _make_engine_no_tools(content: str = "Final answer.") -> MagicMock:
@@ -144,6 +413,1274 @@ def _make_engine_multi_tool() -> MagicMock:
 
 
 class TestOrchestratorAgent:
+    def test_runtime_cart_context_is_refreshed_after_a_cart_edit(self):
+        cart = DisplayCartTool()
+        cart._bus = EventBus()
+        revisions = []
+        item = {
+            "variant_id": "coffee",
+            "name": "Coffee",
+            "unit_price": 100,
+            "quantity": 1,
+        }
+
+        def generate(messages, **kwargs):
+            contexts = [m.text for m in messages if "<runtime_context>" in m.text]
+            assert len(contexts) == 1
+            payload = json.loads(
+                contexts[0].split("<runtime_context>")[1].split("</runtime_context>")[0]
+            )
+            revisions.append(payload["draft_cart"]["revision"])
+            if len(revisions) == 1:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "display_cart",
+                            "arguments": json.dumps({"action": "add", "item": item}),
+                        }
+                    ],
+                }
+            return {"content": "ready"}
+
+        engine = MagicMock()
+        engine.generate.side_effect = generate
+        agent = OrchestratorAgent(engine, "test", tools=[cart])
+        with conversation_scope("cart-edit-context"):
+            cart.execute(action="add", item=item)
+            assert agent.run("Add another and checkout").content == "ready"
+        assert revisions == [1, 2]
+
+    def test_first_inference_receives_current_cart_revision_and_turn_nonce(
+        self,
+    ) -> None:
+        cart = DisplayCartTool()
+        cart._bus = EventBus()
+        captured: dict[str, Any] = {}
+
+        def generate(messages, **_kwargs):
+            captured["messages"] = messages
+            captured["nonce"] = current_turn_nonce()
+            return {"content": "ready", "finish_reason": "stop"}
+
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.side_effect = generate
+        agent = OrchestratorAgent(engine, "test-model", tools=[cart])
+
+        with conversation_scope("checkout-runtime-context"):
+            cart.execute(
+                action="add",
+                item={
+                    "variant_id": "latte-standard",
+                    "name": "Latte",
+                    "unit_price": 51_000,
+                    "quantity": 1,
+                },
+            )
+            result = agent.run("Thanh toán giỏ này")
+
+        context_message = next(
+            message.text
+            for message in captured["messages"]
+            if "<runtime_context>" in message.text
+        )
+        payload = json.loads(
+            context_message.split("<runtime_context>", 1)[1].split(
+                "</runtime_context>", 1
+            )[0]
+        )
+        assert result.content == "ready"
+        assert captured["nonce"]
+        line_id = payload["draft_cart"]["lines"][0]["line_id"]
+        assert payload == {
+            "turn_nonce": captured["nonce"],
+            "draft_cart": {
+                "revision": 1,
+                "lines": [
+                    {
+                        "line_id": line_id,
+                        "variant_id": "latte-standard",
+                        "name": "Latte",
+                        "size": "",
+                        "note": "",
+                        "quantity": 1,
+                        "unit_price": 51_000,
+                        "line_total": 51_000,
+                    }
+                ],
+                "total": 51_000,
+                "order_note": "",
+                "order_type": "",
+                "table": "",
+                "table_name": "",
+                "pickup_minutes": 0,
+            },
+        }
+        assert current_turn_nonce() == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("display_success", [True, False])
+    async def test_streaming_acknowledged_message_requires_success(
+        self,
+        display_success: bool,
+    ) -> None:
+        class DisplayWithMessage(_DisplayStub):
+            def execute(self, **params: Any) -> ToolResult:
+                return ToolResult(
+                    tool_name="display_menu",
+                    content="shown",
+                    success=display_success,
+                    metadata={"customer_message": "Đã hiển thị."},
+                )
+
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "display-1",
+                                "function": {"name": "display_menu", "arguments": "{}"},
+                            }
+                        ]
+                    ),
+                    StreamChunk(finish_reason="tool_calls"),
+                ],
+                [
+                    StreamChunk(content="Màn hình chưa sẵn sàng."),
+                    StreamChunk(finish_reason="stop"),
+                ],
+            ]
+        )
+        agent = OrchestratorAgent(
+            engine,
+            "deepseek-v4-flash",
+            tools=[DisplayWithMessage()],
+        )
+        events = [event async for event in agent.run_stream("show menu")]
+        text = "".join(
+            event.content for event in events if isinstance(event, AgentTextDelta)
+        )
+        expected = "Đã hiển thị." if display_success else "Màn hình chưa sẵn sàng."
+        assert text == expected
+        assert len(engine.calls) == (1 if display_success else 2)
+        assert events[-1].result.content == text
+
+    def test_display_call_with_customer_text_finishes_without_another_inference(
+        self,
+    ) -> None:
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.return_value = {
+            "content": "Dạ menu đang ở trên màn hình. Bạn chọn món nào ạ?",
+            "tool_calls": [
+                {
+                    "id": "display-1",
+                    "name": "display_menu",
+                    "arguments": '{"items": [{"name": "Latte"}]}',
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 8},
+            "finish_reason": "tool_calls",
+        }
+        agent = OrchestratorAgent(engine, "test-model", tools=[_DisplayStub()])
+
+        result = agent.run("show menu")
+
+        assert engine.generate.call_count == 1
+        assert result.turns == 1
+        assert result.content == "Dạ menu đang ở trên màn hình. Bạn chọn món nào ạ?"
+        assert result.tool_results[0].success is True
+
+    def test_cart_view_with_preamble_continues_instead_of_stalling(self) -> None:
+        class CartView(BaseTool):
+            @property
+            def spec(self) -> ToolSpec:
+                return ToolSpec(
+                    name="display_cart",
+                    description="Return the current draft cart.",
+                    metadata={"displays": True},
+                )
+
+            def execute(self, **params: Any) -> ToolResult:
+                return ToolResult(
+                    tool_name="display_cart",
+                    content=(
+                        '{"cart":{"lines":[{"variant_id":"latte",'
+                        '"quantity":2,"unit_price":40000}],"total":80000}}'
+                    ),
+                    metadata={"continue_agent": True},
+                )
+
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.side_effect = [
+            {
+                "content": "Dạ em kiểm tra giỏ hàng rồi thanh toán nhé.",
+                "tool_calls": [
+                    {
+                        "id": "cart-view",
+                        "name": "display_cart",
+                        "arguments": '{"action":"view"}',
+                    }
+                ],
+                "finish_reason": "tool_calls",
+            },
+            {
+                "content": "Đơn đã được tạo và QR đã hiển thị.",
+                "tool_calls": [],
+                "finish_reason": "stop",
+            },
+        ]
+        agent = OrchestratorAgent(engine, "test-model", tools=[CartView()])
+
+        result = agent.run("Thanh toán giỏ hàng giúp tôi")
+
+        assert engine.generate.call_count == 2
+        assert result.turns == 2
+        assert result.content == "Đơn đã được tạo và QR đã hiển thị."
+
+    def test_standalone_cart_edit_finishes_after_verified_update(self) -> None:
+        cart = DisplayCartTool()
+        cart._bus = EventBus()
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.return_value = {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "cart-add",
+                    "name": "display_cart",
+                    "arguments": json.dumps(
+                        {
+                            "action": "add",
+                            "item": {
+                                "variant_id": "latte-standard",
+                                "name": "Latte",
+                                "size": "",
+                                "note": "",
+                                "unit_price": 51000,
+                                "quantity": 2,
+                            },
+                            "open_cart": False,
+                            "finish_turn": True,
+                        }
+                    ),
+                }
+            ],
+            "finish_reason": "tool_calls",
+        }
+        agent = OrchestratorAgent(engine, "test-model", tools=[cart])
+
+        with conversation_scope("standalone-cart-edit"):
+            result = agent.run("Thêm hai Latte vào giỏ")
+
+        assert engine.generate.call_count == 1
+        assert result.turns == 1
+        assert result.content == "Đã cập nhật giỏ hàng. Tổng hiện tại 102.000đ."
+        assert result.tool_results[0].success
+
+    def test_cart_mutation_with_preamble_continues_to_compound_checkout(
+        self,
+    ) -> None:
+        class CheckoutProbe(BaseTool):
+            tool_id = "skill_trendcoffee-checkout"
+
+            @property
+            def spec(self) -> ToolSpec:
+                return ToolSpec(
+                    name=self.tool_id,
+                    description="Complete the guarded checkout.",
+                )
+
+            def execute(self, **params: Any) -> ToolResult:
+                return ToolResult(
+                    tool_name=self.tool_id,
+                    content="presentation_published",
+                    metadata={
+                        "completed_display": True,
+                        "customer_message": "QR thanh toán đã sẵn sàng.",
+                    },
+                )
+
+        cart = DisplayCartTool()
+        cart._bus = EventBus()
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.side_effect = [
+            {
+                "content": "Dạ, tôi cập nhật đơn mang về rồi thanh toán ngay.",
+                "tool_calls": [
+                    {
+                        "id": "set-type",
+                        "name": "display_cart",
+                        "arguments": (
+                            '{"action":"set_order_type","order_type":"take-out"}'
+                        ),
+                    }
+                ],
+                "finish_reason": "tool_calls",
+            },
+            {
+                "content": "Dạ, tôi xử lý thanh toán ngay.",
+                "tool_calls": [
+                    {
+                        "id": "checkout",
+                        "name": "skill_trendcoffee-checkout",
+                        "arguments": "{}",
+                    }
+                ],
+                "finish_reason": "tool_calls",
+            },
+        ]
+        agent = OrchestratorAgent(
+            engine,
+            "test-model",
+            tools=[cart, CheckoutProbe()],
+        )
+
+        with conversation_scope("compound-take-out-checkout"):
+            cart.execute(
+                action="add",
+                item={
+                    "variant_id": "coffee-standard",
+                    "name": "Coffee",
+                    "unit_price": 35_000,
+                    "quantity": 1,
+                },
+            )
+            result = agent.run(
+                "Ok, mình muốn mua mang về, thanh toán hiện hóa đơn giúp mình."
+            )
+            snapshot = cart.current_snapshot()
+
+        assert result.turns == 2
+        assert [item.tool_name for item in result.tool_results] == [
+            "display_cart",
+            "skill_trendcoffee-checkout",
+        ]
+        assert result.content == (
+            "Dạ, tôi xử lý thanh toán ngay.\nQR thanh toán đã sẵn sàng."
+        )
+        assert snapshot is not None
+        assert snapshot["order_type"] == "take-out"
+
+    def test_failed_display_call_still_allows_the_model_to_recover(self) -> None:
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.side_effect = [
+            {
+                "content": "I will show it.",
+                "tool_calls": [
+                    {
+                        "id": "display-1",
+                        "name": "display_menu",
+                        "arguments": '{"fail": true}',
+                    }
+                ],
+                "finish_reason": "tool_calls",
+            },
+            {"content": "The display is unavailable.", "finish_reason": "stop"},
+        ]
+        agent = OrchestratorAgent(engine, "test-model", tools=[_DisplayStub()])
+
+        result = agent.run("show menu")
+
+        assert engine.generate.call_count == 2
+        assert result.content == "The display is unavailable."
+
+    def test_skill_that_completed_display_finishes_without_another_inference(
+        self,
+    ) -> None:
+        class DisplayingSkill(BaseTool):
+            @property
+            def spec(self) -> ToolSpec:
+                return ToolSpec(name="skill_manage", description="Run a skill")
+
+            def execute(self, **params: Any) -> ToolResult:
+                return ToolResult(
+                    tool_name="skill_manage",
+                    content="shown",
+                    metadata={"completed_display": True},
+                )
+
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.return_value = {
+            "content": "Dạ menu mới nhất đang ở trên màn hình.",
+            "tool_calls": [
+                {
+                    "id": "skill-1",
+                    "name": "skill_manage",
+                    "arguments": '{"action":"run","name":"read-menu"}',
+                }
+            ],
+            "finish_reason": "tool_calls",
+        }
+        agent = OrchestratorAgent(engine, "test-model", tools=[DisplayingSkill()])
+
+        result = agent.run("show menu")
+
+        assert engine.generate.call_count == 1
+        assert result.content == "Dạ menu mới nhất đang ở trên màn hình."
+
+    @pytest.mark.parametrize(
+        ("pre_tool_text", "expected"),
+        [
+            (
+                "Dạ, mình xem các món có khoai nhé.",
+                "Dạ, mình xem các món có khoai nhé.\nĐã tìm thấy 1 kết quả.",
+            ),
+            ("Đã tìm thấy 1 kết quả.", "Đã tìm thấy 1 kết quả."),
+        ],
+        ids=["after-acknowledgement", "not-repeated"],
+    )
+    def test_result_derived_display_message_follows_pre_tool_text(
+        self, pre_tool_text: str, expected: str
+    ) -> None:
+        class ResultDisplay(_DisplayStub):
+            def execute(self, **params: Any) -> ToolResult:
+                return ToolResult(
+                    tool_name="display_menu",
+                    content="shown",
+                    metadata={"customer_message": "Đã tìm thấy 1 kết quả."},
+                )
+
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.return_value = {
+            "content": pre_tool_text,
+            "tool_calls": [
+                {"id": "display-1", "name": "display_menu", "arguments": "{}"}
+            ],
+            "finish_reason": "tool_calls",
+        }
+        agent = OrchestratorAgent(engine, "test-model", tools=[ResultDisplay()])
+
+        result = agent.run("món có khoai")
+
+        assert engine.generate.call_count == 1
+        assert result.content == expected
+
+    @pytest.mark.asyncio
+    async def test_streaming_result_message_is_spoken_after_the_tool(self) -> None:
+        class ResultDisplay(_DisplayStub):
+            def execute(self, **params: Any) -> ToolResult:
+                return ToolResult(
+                    tool_name="display_menu",
+                    content="shown",
+                    metadata={"customer_message": "Đã tìm thấy 1 kết quả."},
+                )
+
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(content="Dạ, mình xem nhé."),
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "display-1",
+                                "function": {"name": "display_menu", "arguments": "{}"},
+                            }
+                        ]
+                    ),
+                    StreamChunk(finish_reason="tool_calls"),
+                ],
+            ]
+        )
+        agent = OrchestratorAgent(engine, "test-model", tools=[ResultDisplay()])
+
+        events = [event async for event in agent.run_stream("món có khoai")]
+        finished = next(
+            index
+            for index, event in enumerate(events)
+            if type(event).__name__ == "AgentToolFinished"
+        )
+        text = "".join(
+            event.content for event in events if isinstance(event, AgentTextDelta)
+        )
+
+        assert len(engine.calls) == 1
+        assert isinstance(events[finished + 1], AgentTextDelta)
+        assert events[finished + 1].content == "\nĐã tìm thấy 1 kết quả."
+        assert text == "Dạ, mình xem nhé.\nĐã tìm thấy 1 kết quả."
+        assert events[-1].result.content == text
+
+    @pytest.mark.asyncio
+    async def test_streaming_display_text_finishes_after_the_display_call(self) -> None:
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(content="Dạ menu đang ở trên màn hình."),
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "display-1",
+                                "function": {
+                                    "name": "display_menu",
+                                    "arguments": '{"items": [{"name": "Latte"}]}',
+                                },
+                            }
+                        ]
+                    ),
+                    StreamChunk(finish_reason="tool_calls"),
+                ]
+            ]
+        )
+        agent = OrchestratorAgent(engine, "deepseek-v4-flash", tools=[_DisplayStub()])
+
+        events = [event async for event in agent.run_stream("show menu")]
+
+        assert len(engine.calls) == 1
+        assert events[0] == AgentTextDelta("Dạ menu đang ở trên màn hình.")
+        assert isinstance(events[-1], AgentRunCompleted)
+        assert events[-1].result.content == "Dạ menu đang ở trên màn hình."
+
+    @pytest.mark.asyncio
+    async def test_loop_guard_state_is_fresh_for_each_sequential_run(self) -> None:
+        tool = _CountingClickStub()
+        agent = OrchestratorAgent(
+            RepeatableToolStreamingEngine(),
+            "deepseek-v4-flash",
+            tools=[tool],
+            loop_guard_config={
+                "max_identical_calls": 1,
+                "warn_before_block": False,
+            },
+        )
+
+        results = []
+        for _ in range(2):
+            events = [event async for event in agent.run_stream("bấm menu")]
+            results.append(events[-1].result)
+
+        assert tool.calls == 2
+        assert all(result.tool_results[0].success for result in results)
+
+    @pytest.mark.asyncio
+    async def test_loop_guard_state_is_isolated_between_concurrent_runs(self) -> None:
+        tool = _CountingClickStub()
+        agent = OrchestratorAgent(
+            RepeatableToolStreamingEngine(),
+            "deepseek-v4-flash",
+            tools=[tool],
+            loop_guard_config={
+                "max_identical_calls": 1,
+                "warn_before_block": False,
+            },
+        )
+
+        results = await asyncio.gather(
+            *(_collect_agent_stream(agent, "bấm menu") for _ in range(2))
+        )
+
+        assert tool.calls == 2
+        assert all(events[-1].result.tool_results[0].success for events in results)
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_streams_visible_function_calling_text(self) -> None:
+        agent = OrchestratorAgent(
+            StreamingEngine(["Xin chào, ", "bạn cần gì?"]),
+            "deepseek-v4-flash",
+        )
+
+        events = [event async for event in agent.run_stream("chào")]
+
+        assert events[0] == AgentTextDelta("Xin chào, ")
+        assert events[1] == AgentTextDelta("bạn cần gì?")
+        assert isinstance(events[2], AgentRunCompleted)
+        assert events[2].result.content == "Xin chào, bạn cần gì?"
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_stream_never_emits_think_or_tool_arguments(
+        self,
+    ) -> None:
+        agent = OrchestratorAgent(
+            StreamingEngine(["<thi", "nk>private", "</thi", "nk>", "Câu trả lời."]),
+            "deepseek-v4-flash",
+        )
+
+        texts = [
+            event.content
+            async for event in agent.run_stream("help")
+            if isinstance(event, AgentTextDelta)
+        ]
+
+        assert texts == ["Câu trả lời."]
+
+    @pytest.mark.asyncio
+    async def test_visible_text_streams_before_generation_ends(self) -> None:
+        """Voice cannot start speaking until the agent hands text over.
+
+        The engine pauses after its one visible chunk, so a run that collects
+        deltas and replays them at the end streams nothing here.
+        """
+        engine = PausingSemanticStreamingEngine()
+        agent = OrchestratorAgent(engine, "deepseek-v4-flash")
+        deltas: list[str] = []
+
+        async def collect() -> None:
+            async for event in agent.run_stream("kể chuyện"):
+                if isinstance(event, AgentTextDelta):
+                    deltas.append(event.content)
+
+        task = asyncio.create_task(collect())
+        try:
+            await asyncio.sleep(0.05)
+            streamed_early = list(deltas)
+            engine.release.set()
+            await asyncio.wait_for(task, timeout=2)
+        finally:
+            engine.release.set()
+
+        assert streamed_early, "no visible text left the agent before generation ended"
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_stream_completes_the_round_after_the_delta(
+        self,
+    ) -> None:
+        engine = PausingSemanticStreamingEngine()
+        agent = OrchestratorAgent(engine, "deepseek-v4-flash")
+        stream = agent.run_stream("help")
+
+        first_event = asyncio.create_task(anext(stream))
+        try:
+            first = await asyncio.wait_for(first_event, timeout=0.5)
+            engine.release.set()
+            remaining = [event async for event in stream]
+        finally:
+            engine.release.set()
+
+        assert first == AgentTextDelta("Visible")
+        assert remaining == [
+            AgentRunCompleted(
+                AgentResult(
+                    content="Visible",
+                    turns=1,
+                    metadata={
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                )
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_stream_uses_compatibility_before_bare_closing_think_tag(
+        self,
+    ) -> None:
+        class AmbiguousLegacyEngine:
+            def __init__(self) -> None:
+                self.generate_calls = 0
+                self.stream_calls = 0
+
+            def generate(
+                self,
+                _messages: Sequence[Message],
+                **_kwargs: Any,
+            ) -> dict[str, Any]:
+                self.generate_calls += 1
+                return {
+                    "content": "private reasoning </think>Visible",
+                    "finish_reason": "stop",
+                    "usage": {},
+                }
+
+            async def stream_full(
+                self,
+                _messages: Sequence[Message],
+                **_kwargs: Any,
+            ) -> AsyncIterator[StreamChunk]:
+                self.stream_calls += 1
+                yield StreamChunk(content="private reasoning ")
+                yield StreamChunk(content="</think>Visible")
+                yield StreamChunk(finish_reason="stop")
+
+        engine = AmbiguousLegacyEngine()
+        events = [
+            event
+            async for event in OrchestratorAgent(
+                engine,  # type: ignore[arg-type]
+                "legacy-reasoner",
+            ).run_stream("help")
+        ]
+
+        assert events[0] == AgentTextDelta("Visible")
+        assert isinstance(events[1], AgentRunCompleted)
+        assert events[1].result.content == "Visible"
+        assert engine.generate_calls == 1
+        assert engine.stream_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_stream_continues_after_length_finish(self) -> None:
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(
+                        content="Phần đầu ",
+                        finish_reason="length",
+                        usage={"prompt_tokens": 2, "completion_tokens": 2},
+                    )
+                ],
+                [
+                    StreamChunk(
+                        content="phần cuối.",
+                        finish_reason="stop",
+                        usage={"prompt_tokens": 3, "completion_tokens": 2},
+                    )
+                ],
+            ]
+        )
+
+        events = [
+            event
+            async for event in OrchestratorAgent(
+                engine,
+                "deepseek-v4-flash",
+            ).run_stream("Viết câu đầy đủ")
+        ]
+
+        assert [
+            event.content for event in events if isinstance(event, AgentTextDelta)
+        ] == ["Phần đầu ", "phần cuối."]
+        assert len(engine.calls) == 2
+        second_messages = engine.calls[1][0]
+        assert second_messages[-2:] == [
+            Message(role=Role.ASSISTANT, content="Phần đầu "),
+            Message(role=Role.USER, content="Continue from where you left off."),
+        ]
+        assert events[-1] == AgentRunCompleted(
+            AgentResult(
+                content="Phần đầu phần cuối.",
+                turns=1,
+                metadata={
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9,
+                },
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_stream_continuation_keeps_tool_schemas(self) -> None:
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(content="", finish_reason="length"),
+                ],
+                _stream_tool_round("calculator", 1),
+                _stream_final_round("Đã gọi tool."),
+            ]
+        )
+        agent = OrchestratorAgent(
+            engine,
+            "deepseek-v4-flash",
+            tools=[_CalculatorStub()],
+        )
+
+        events = [event async for event in agent.run_stream("Tính tiếp")]
+
+        assert len(engine.calls) == 3
+        assert engine.calls[1][1]["tools"] == engine.calls[0][1]["tools"]
+        assert events[-1].result.tool_results[0].content == "0"
+        assert events[-1].result.content == "Đã gọi tool."
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_stream_executes_fragmented_tool_call_before_answer(
+        self,
+    ) -> None:
+        class RecordingCalculator(_CalculatorStub):
+            def __init__(self) -> None:
+                self.arguments: list[dict[str, Any]] = []
+
+            def execute(self, **params: Any) -> ToolResult:
+                self.arguments.append(params)
+                return super().execute(**params)
+
+        argument = '{"expression":"2+2"}'
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "calculator",
+                                    "arguments": '{"expression":',
+                                },
+                            }
+                        ]
+                    ),
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "function": {
+                                    "arguments": '"2+2"}',
+                                },
+                            }
+                        ]
+                    ),
+                    StreamChunk(
+                        finish_reason="tool_calls",
+                        usage={"prompt_tokens": 5, "completion_tokens": 3},
+                    ),
+                ],
+                [
+                    StreamChunk(content="Kết quả là 4."),
+                    StreamChunk(
+                        finish_reason="stop",
+                        usage={"prompt_tokens": 15, "completion_tokens": 5},
+                    ),
+                ],
+            ]
+        )
+        tool = RecordingCalculator()
+        agent = OrchestratorAgent(
+            engine,
+            "deepseek-v4-flash",
+            tools=[tool],
+        )
+
+        events = [event async for event in agent.run_stream("Tính 2+2")]
+
+        deltas = [
+            event.content for event in events if isinstance(event, AgentTextDelta)
+        ]
+        assert tool.arguments == [{"expression": "2+2"}]
+        assert len(engine.calls) == 2
+        assert all(call[1]["model"] == "deepseek-v4-flash" for call in engine.calls)
+        assert len(engine.calls[0][1]["tools"]) == 1
+        assert all(argument not in text for text in deltas)
+        assert deltas == ["Kết quả là 4."]
+        assert isinstance(events[-1], AgentRunCompleted)
+        assert sum(isinstance(event, AgentRunCompleted) for event in events) == 1
+        assert events[-1].result.content == "Kết quả là 4."
+        assert events[-1].result.metadata == {
+            "prompt_tokens": 20,
+            "completion_tokens": 8,
+            "total_tokens": 28,
+        }
+
+    @pytest.mark.asyncio
+    async def test_http_result_is_projected_only_in_the_model_transcript(self) -> None:
+        raw_body = (
+            '{"products":['
+            + ",".join(
+                f'{{"id":"item-{index:03d}","description":"{"x" * 600}"}}'
+                for index in range(121)
+            )
+            + "]}"
+        )
+
+        class LargeHttpResult(BaseTool):
+            tool_id = "http_request"
+
+            @property
+            def spec(self) -> ToolSpec:
+                return ToolSpec(
+                    name="http_request",
+                    description="Fake HTTP boundary.",
+                    parameters={"type": "object", "properties": {}},
+                )
+
+            def execute(self, **params: Any) -> ToolResult:
+                del params
+                return ToolResult(
+                    tool_name="http_request",
+                    content=raw_body,
+                    success=True,
+                    metadata={
+                        "status_code": 200,
+                        "final_url": "https://example.test/products",
+                    },
+                )
+
+        engine = StreamingEngine(
+            [
+                _stream_tool_round("http_request", 1),
+                _stream_final_round("Đã đọc dữ liệu."),
+            ]
+        )
+        evidence.reset()
+        with conversation_scope("projection-test"):
+            events = [
+                event
+                async for event in OrchestratorAgent(
+                    engine,
+                    "deepseek-v4-flash",
+                    tools=[LargeHttpResult()],
+                ).run_stream("Read products")
+            ]
+            transcript_result = engine.calls[1][0][-1].text
+
+            assert len(raw_body) > 70_000
+            assert len(transcript_result) < 20_000
+            assert "item-000" in transcript_result
+            assert "item-060" in transcript_result
+            assert "item-120" in transcript_result
+            assert evidence.last_result("http_request") == raw_body
+            assert events[-1].result.tool_results[0].content == raw_body
+        evidence.reset()
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_stream_keeps_event_loop_live_during_tool_execution(
+        self,
+    ) -> None:
+        tool_started = threading.Event()
+        release_tool = threading.Event()
+
+        class BlockingCalculator(_CalculatorStub):
+            def __init__(self) -> None:
+                self.released_by_heartbeat = False
+
+            def execute(self, **params: Any) -> ToolResult:
+                tool_started.set()
+                self.released_by_heartbeat = release_tool.wait(timeout=0.2)
+                return super().execute(**params)
+
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "calculator",
+                                    "arguments": '{"expression":"2+2"}',
+                                },
+                            }
+                        ]
+                    ),
+                    StreamChunk(finish_reason="tool_calls"),
+                ],
+                [
+                    StreamChunk(content="Kết quả là 4."),
+                    StreamChunk(finish_reason="stop"),
+                ],
+            ]
+        )
+        tool = BlockingCalculator()
+        task = asyncio.create_task(
+            _collect_agent_stream(
+                OrchestratorAgent(
+                    engine,
+                    "deepseek-v4-flash",
+                    tools=[tool],
+                ),
+                "Tính 2+2",
+            )
+        )
+
+        while not tool_started.is_set():
+            await asyncio.sleep(0)
+        release_tool.set()
+        events = await asyncio.wait_for(task, timeout=0.5)
+
+        assert tool.released_by_heartbeat is True
+        assert events[-1].result.content == "Kết quả là 4."
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_stream_pending_approval_emits_only_completion(
+        self,
+    ) -> None:
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "approval",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ]
+                    ),
+                    StreamChunk(finish_reason="tool_calls"),
+                ]
+            ]
+        )
+        agent = OrchestratorAgent(
+            engine,
+            "deepseek-v4-flash",
+            tools=[_PendingApprovalStub()],
+        )
+
+        events = [event async for event in agent.run_stream("Transfer money")]
+
+        # Tool lifecycle events are allowed through — they carry no content.
+        # What must never leak before an approval is answer text.
+        assert not any(isinstance(event, AgentTextDelta) for event in events)
+        assert events[-1] == AgentRunCompleted(
+            AgentResult(content="", metadata={"pending_approval": True})
+        )
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_stream_emits_max_turn_text_as_delta(self) -> None:
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "calculator",
+                                    "arguments": '{"expression":"2+2"}',
+                                },
+                            }
+                        ]
+                    ),
+                    StreamChunk(finish_reason="tool_calls"),
+                ]
+            ]
+        )
+        agent = OrchestratorAgent(
+            engine,
+            "deepseek-v4-flash",
+            tools=[_CalculatorStub()],
+            max_turns=1,
+        )
+
+        events = [event async for event in agent.run_stream("Tính 2+2")]
+
+        text = "Maximum turns reached without a final answer."
+        assert events[-2] == AgentTextDelta(text)
+        assert events[-1].result.content == text
+        assert events[-1].result.metadata["max_turns_exceeded"] is True
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_stream_keeps_tool_call_arguments_out_of_the_text(
+        self,
+    ) -> None:
+        """Prose from a tool-call round is streamed, tool arguments are not.
+
+        Withholding that prose used to come free with the end-of-run replay
+        that `fix: verify external actions before completion` introduced so it
+        could swap the whole answer for a refusal. That feature was reverted;
+        the replay it left behind is what kept TTS silent until generation
+        ended, so the deltas stream again and this round's prose is spoken.
+        The answer itself still excludes it — visible_parts resets per turn.
+        """
+
+        class RecordingCalculator(_CalculatorStub):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def execute(self, **params: Any) -> ToolResult:
+                self.calls += 1
+                return super().execute(**params)
+
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(content="Do not mix"),
+                    StreamChunk(content=" this answer."),
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "calculator",
+                                    "arguments": '{"expression":"2+2"}',
+                                },
+                            }
+                        ]
+                    ),
+                    StreamChunk(finish_reason="tool_calls"),
+                ],
+                [
+                    StreamChunk(content="Result is 4."),
+                    StreamChunk(finish_reason="stop"),
+                ],
+            ]
+        )
+        tool = RecordingCalculator()
+        agent = OrchestratorAgent(
+            engine,
+            "deepseek-v4-flash",
+            tools=[tool],
+        )
+
+        events = [event async for event in agent.run_stream("Tính 2+2")]
+
+        deltas = [
+            event.content for event in events if isinstance(event, AgentTextDelta)
+        ]
+        completions = [
+            event for event in events if isinstance(event, AgentRunCompleted)
+        ]
+        assert deltas == ["Do not mix", " this answer.", "Result is 4."]
+        assert len(completions) == 1
+        assert completions[0].result.content == "Result is 4."
+        assert '{"expression":"2+2"}' not in "".join(deltas)
+        assert tool.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_device_request_without_tool_call_is_no_longer_gated(self) -> None:
+        """A claim made without calling any tool is passed through.
+
+        Gating it needed a verifier round trip on every answer, including
+        ordinary conversation, which the verifier misjudged often enough to
+        reject greetings outright. Claims are now checked only once a mutation
+        tool has actually run.
+        """
+        navigate = _ExternalToolStub(
+            "browser_navigate",
+            read_only=False,
+            outcomes=[True],
+        )
+        engine = StreamingEngine([_stream_final_round("Mình đã mở YouTube.")])
+
+        events = [
+            event
+            async for event in OrchestratorAgent(
+                engine,
+                "deepseek-v4-flash",
+                tools=[navigate],
+                max_turns=1,
+            ).run_stream("mở YouTube")
+        ]
+
+        assert [
+            event.content for event in events if isinstance(event, AgentTextDelta)
+        ] == ["Mình đã mở YouTube."]
+        assert "external_action" not in events[-1].result.metadata
+
+    @pytest.mark.asyncio
+    async def test_answer_without_tool_calls_skips_the_outcome_verifier(self) -> None:
+        navigate = _ExternalToolStub(
+            "browser_navigate",
+            read_only=False,
+            outcomes=[True],
+        )
+        # One round only: a verifier call would exhaust the engine and raise.
+        engine = StreamingEngine([_stream_final_round("Chào bạn.")])
+
+        events = [
+            event
+            async for event in OrchestratorAgent(
+                engine,
+                "deepseek-v4-flash",
+                tools=[navigate],
+            ).run_stream("xin chào")
+        ]
+
+        assert [
+            event.content for event in events if isinstance(event, AgentTextDelta)
+        ] == ["Chào bạn."]
+
+    def test_sync_answer_without_tool_calls_skips_the_outcome_verifier(self) -> None:
+        navigate = _ExternalToolStub(
+            "browser_navigate",
+            read_only=False,
+            outcomes=[True],
+        )
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        # One round only: a verifier call would exhaust the engine and raise.
+        engine.generate.side_effect = [{"content": "Chào bạn.", "tool_calls": []}]
+
+        result = OrchestratorAgent(
+            engine,
+            "deepseek-v4-flash",
+            tools=[navigate],
+        ).run("xin chào")
+
+        assert result.content == "Chào bạn."
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_stream_instruments_mixed_text_and_tool_call(
+        self,
+    ) -> None:
+        bus = EventBus(record_history=True)
+        inner = StreamingEngine(
+            [
+                [
+                    StreamChunk(content="Visible"),
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "calculator",
+                                    "arguments": '{"expression":"2+2"}',
+                                },
+                            }
+                        ]
+                    ),
+                    StreamChunk(finish_reason="tool_calls"),
+                ],
+                [
+                    StreamChunk(content="Result is 4."),
+                    StreamChunk(finish_reason="stop"),
+                ],
+            ]
+        )
+        engine = InstrumentedEngine(inner, bus)
+        agent = OrchestratorAgent(
+            engine,
+            "deepseek-v4-flash",
+            tools=[_CalculatorStub()],
+            bus=bus,
+        )
+
+        events = [event async for event in agent.run_stream("Tính 2+2")]
+
+        completions = [
+            event for event in events if isinstance(event, AgentRunCompleted)
+        ]
+        assert len(completions) == 1
+        event_types = [event.event_type for event in bus.history]
+        assert event_types.count(EventType.INFERENCE_START) == 2
+        assert event_types.count(EventType.INFERENCE_END) == 2
+        assert event_types.count(EventType.TELEMETRY_RECORD) == 2
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_stream_restores_events_for_instrumented_engine(
+        self,
+    ) -> None:
+        bus = EventBus(record_history=True)
+        engine = InstrumentedEngine(StreamingEngine(["Visible"]), bus)
+        agent = OrchestratorAgent(engine, "deepseek-v4-flash", bus=bus)
+
+        events = [event async for event in agent.run_stream("help")]
+
+        assert isinstance(events[-1], AgentRunCompleted)
+        event_types = [event.event_type for event in bus.history]
+        assert event_types.count(EventType.INFERENCE_START) == 1
+        assert event_types.count(EventType.INFERENCE_END) == 1
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_stream_does_not_duplicate_native_stream_events(
+        self,
+    ) -> None:
+        bus = EventBus(record_history=True)
+        engine = EventPublishingStreamingEngine(["Visible"], bus)
+        agent = OrchestratorAgent(engine, "deepseek-v4-flash", bus=bus)
+
+        events = [event async for event in agent.run_stream("help")]
+
+        assert isinstance(events[-1], AgentRunCompleted)
+        event_types = [event.event_type for event in bus.history]
+        assert event_types.count(EventType.INFERENCE_START) == 1
+        assert event_types.count(EventType.INFERENCE_END) == 1
+
     def test_agent_id(self):
         engine = _make_engine_no_tools()
         agent = OrchestratorAgent(engine, "test-model")
@@ -330,6 +1867,119 @@ class TestOrchestratorAgent:
         tool_msgs = [m for m in messages if m.role == Role.TOOL]
         assert len(tool_msgs) == 1
         assert tool_msgs[0].tool_call_id == "abc123"
+
+    def test_response_items_are_preserved_for_next_tool_round(self):
+        response_items = [
+            {
+                "id": "rs_1",
+                "type": "reasoning",
+                "summary": [],
+                "encrypted_content": "opaque",
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "calculator",
+                "arguments": '{"expression":"2+2"}',
+            },
+        ]
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.side_effect = [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "name": "calculator",
+                        "arguments": '{"expression":"2+2"}',
+                    }
+                ],
+                "response_items": response_items,
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 3,
+                    "total_tokens": 8,
+                },
+                "model": "test-model",
+                "finish_reason": "tool_calls",
+            },
+            {
+                "content": "The answer is 4.",
+                "usage": {
+                    "prompt_tokens": 15,
+                    "completion_tokens": 5,
+                    "total_tokens": 20,
+                },
+                "model": "test-model",
+                "finish_reason": "stop",
+            },
+        ]
+        agent = OrchestratorAgent(
+            engine,
+            "test-model",
+            tools=[_CalculatorStub()],
+        )
+
+        agent.run("What is 2+2?")
+
+        second_call_messages = engine.generate.call_args_list[1][0][0]
+        assistant = next(
+            message
+            for message in second_call_messages
+            if message.role == Role.ASSISTANT and message.tool_calls
+        )
+        assert assistant.metadata["response_items"] == response_items
+
+    @pytest.mark.asyncio
+    async def test_streamed_response_items_reach_next_tool_round(self):
+        response_items = [
+            {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque"},
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "calculator",
+                "arguments": '{"expression":"2+2"}',
+            },
+        ]
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(content="Dạ để tôi tính. "),
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "calculator",
+                                    "arguments": '{"expression":"2+2"}',
+                                },
+                            }
+                        ],
+                        response_items=response_items,
+                        finish_reason="tool_calls",
+                    ),
+                ],
+                [
+                    StreamChunk(content="Kết quả là 4."),
+                    StreamChunk(finish_reason="stop"),
+                ],
+            ]
+        )
+        agent = OrchestratorAgent(engine, "gpt-6-luna", tools=[_CalculatorStub()])
+
+        events = [event async for event in agent.run_stream("Hai cộng hai?")]
+
+        assert isinstance(events[0], AgentTextDelta)
+        assert events[0].content == "Dạ để tôi tính. "
+        second_messages = engine.calls[1][0]
+        assistant = next(
+            message
+            for message in second_messages
+            if message.role == Role.ASSISTANT and message.tool_calls
+        )
+        assert assistant.metadata["response_items"] == response_items
 
     def test_no_bus_works(self):
         engine = _make_engine_with_tool_call()
@@ -641,6 +2291,67 @@ class TestOrchestratorParallelTools:
         # Should be parallel — 3 tools at 0.1s each should take < 0.25s, not 0.3s+
         assert elapsed < 0.25
 
+    def test_parallel_tools_preserve_presentation_generation(self):
+        """A stale parallel display worker cannot overwrite the next customer."""
+        display_started = threading.Event()
+        new_generation_published = threading.Event()
+        client = MagicMock()
+        client._server_name = "playwright"
+        client.call_tool.return_value = {"content": []}
+        presentation = PresentationSessionManager(EventBus(), client)
+        session = presentation.ensure("http://127.0.0.1:5173")
+        presentation.activate("thread-old")
+
+        class _OldDisplayTool(BaseTool):
+            tool_id = "old_display"
+
+            @property
+            def spec(self) -> ToolSpec:
+                return ToolSpec(name=self.tool_id, description="Old display")
+
+            def execute(self, **params: Any) -> ToolResult:
+                del params
+                display_started.set()
+                assert new_generation_published.wait(timeout=1)
+                return presentation.publish({"view": "menu", "items": [{"id": "old"}]})
+
+        class _NewGenerationTool(BaseTool):
+            tool_id = "new_generation"
+
+            @property
+            def spec(self) -> ToolSpec:
+                return ToolSpec(name=self.tool_id, description="New generation")
+
+            def execute(self, **params: Any) -> ToolResult:
+                del params
+                assert display_started.wait(timeout=1)
+                presentation.activate("thread-new")
+                with presentation_generation("thread-new"):
+                    result = presentation.publish(
+                        {"view": "menu", "items": [{"id": "new"}]}
+                    )
+                new_generation_published.set()
+                return result
+
+        agent = OrchestratorAgent(
+            MagicMock(),
+            "test-model",
+            tools=[_OldDisplayTool(), _NewGenerationTool()],
+            parallel_tools=True,
+        )
+        calls = [
+            ToolCall(id="old", name="old_display", arguments="{}"),
+            ToolCall(id="new", name="new_generation", arguments="{}"),
+        ]
+
+        with presentation_generation("thread-old"):
+            results = agent._collect_function_tool_results(calls, loop_guard=None)
+
+        assert results[0][1].success is False
+        assert results[0][1].content == "presentation_stale_generation"
+        assert results[1][1].success is True
+        assert presentation.replay(session.session_id)["items"] == [{"id": "new"}]
+
     def test_sequential_tool_execution(self):
         """parallel_tools=False runs tools sequentially."""
         engine = _make_engine_multi_tool()
@@ -665,3 +2376,82 @@ class TestOrchestratorParallelTools:
         )
         result = agent.run("What is 2+2?")
         assert result.content == "The answer is 4."
+
+
+class _RecordingFunctionCallingEngine:
+    """Records the messages of every function-calling request."""
+
+    def __init__(self) -> None:
+        self.requests: list[Sequence[Message]] = []
+
+    def generate(self, messages: Sequence[Message], **kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        self.requests.append(list(messages))
+        return {"content": "Đã xác minh trạng thái Saved.", "usage": {}}
+
+    def supports_semantic_reasoning_stream(self, model: str) -> bool:
+        del model
+        return False
+
+
+class TestBrowserSystemPromptPlumbing:
+    """``system_prompt`` must reach the model in both function-calling modes."""
+
+    BROWSER_PROMPT = "Observe with browser_snapshot before acting."
+    VOICE_SYSTEM_PROMPT = "Trả lời ngắn gọn để đọc thành tiếng."
+
+    def _voice_context(self) -> AgentContext:
+        conversation = Conversation()
+        conversation.add(Message(role=Role.SYSTEM, content=self.VOICE_SYSTEM_PROMPT))
+        return AgentContext(conversation=conversation)
+
+    def test_sync_run_prepends_the_agent_system_prompt(self) -> None:
+        engine = _RecordingFunctionCallingEngine()
+        agent = OrchestratorAgent(engine, "model", system_prompt=self.BROWSER_PROMPT)
+        agent.run("mở trang nhân sự", self._voice_context())
+        assert engine.requests[0][0].role == Role.SYSTEM
+        assert engine.requests[0][0].content.startswith(
+            f"{self.BROWSER_PROMPT}\n\nCurrent local date:"
+        )
+        assert engine.requests[0][1] == Message(
+            role=Role.SYSTEM, content=self.VOICE_SYSTEM_PROMPT
+        )
+
+    def test_sync_run_without_voice_context_has_one_system_message(self) -> None:
+        engine = _RecordingFunctionCallingEngine()
+        agent = OrchestratorAgent(engine, "model", system_prompt=self.BROWSER_PROMPT)
+        agent.run("mở trang nhân sự")
+        systems = [m for m in engine.requests[0] if m.role == Role.SYSTEM]
+        assert len(systems) == 1
+        assert systems[0].content.startswith(
+            f"{self.BROWSER_PROMPT}\n\nCurrent local date:"
+        )
+
+    @pytest.mark.asyncio
+    async def test_streaming_run_prepends_the_agent_system_prompt(self) -> None:
+        engine = StreamingEngine(["ok"])
+        agent = OrchestratorAgent(engine, "model", system_prompt=self.BROWSER_PROMPT)
+        async for _ in agent.run_stream("mở trang nhân sự", self._voice_context()):
+            pass
+        messages = engine.calls[0][0]
+        assert messages[0].role == Role.SYSTEM
+        assert messages[0].content.startswith(
+            f"{self.BROWSER_PROMPT}\n\nCurrent local date:"
+        )
+        assert messages[1] == Message(
+            role=Role.SYSTEM, content=self.VOICE_SYSTEM_PROMPT
+        )
+
+    @pytest.mark.asyncio
+    async def test_streaming_run_without_prompt_keeps_voice_context_first(
+        self,
+    ) -> None:
+        engine = StreamingEngine(["ok"])
+        agent = OrchestratorAgent(engine, "model")
+        async for _ in agent.run_stream("mở trang nhân sự", self._voice_context()):
+            pass
+        messages = list(engine.calls[0][0])
+        assert messages[0].role == Role.SYSTEM
+        assert messages[0].content.startswith(
+            f"{self.VOICE_SYSTEM_PROMPT}\n\nCurrent local date:"
+        )

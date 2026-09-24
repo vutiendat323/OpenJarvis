@@ -6,6 +6,10 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from openjarvis.core.types import Message, Role
+from openjarvis.system.agent_construction import (
+    build_morning_digest_kwargs,
+    construct_registered_agent,
+)
 from openjarvis.tools._stubs import BaseTool
 
 if TYPE_CHECKING:
@@ -158,6 +162,7 @@ class QueryOrchestrator:
         if getattr(agent_cls, "accepts_tools", False):
             agent_kwargs["tools"] = agent_tools
             agent_kwargs["max_turns"] = s.config.agent.max_turns
+            agent_kwargs["parallel_tools"] = s.config.agent.parallel_tools
             examples = getattr(s, "_skill_few_shot_examples", None)
             if examples:
                 agent_kwargs["skill_few_shot_examples"] = examples
@@ -170,39 +175,22 @@ class QueryOrchestrator:
             agent_kwargs["session_store"] = s.session_store
             agent_kwargs["memory_backend"] = s.memory_backend
 
-        if agent_name == "morning_digest" and hasattr(s.config, "digest"):
-            dc = s.config.digest
-            section_sources = {}
-            for sec in dc.sections:
-                sc = getattr(dc, sec, None)
-                if sc and hasattr(sc, "sources"):
-                    section_sources[sec] = sc.sources
-            agent_kwargs.update(
-                {
-                    "persona": dc.persona,
-                    "sections": dc.sections,
-                    "section_sources": section_sources,
-                    "timezone": dc.timezone,
-                    "voice_id": dc.voice_id,
-                    "voice_speed": dc.voice_speed,
-                    "tts_backend": dc.tts_backend,
-                    "honorific": dc.honorific,
-                }
-            )
-            from openjarvis.tools.digest_collect import DigestCollectTool
-            from openjarvis.tools.text_to_speech import TextToSpeechTool
+        agent_kwargs.update(
+            build_morning_digest_kwargs(agent_name, s.config, agent_tools)
+        )
 
-            digest_tools = [DigestCollectTool(), TextToSpeechTool()]
-            existing = agent_kwargs.get("tools", [])
-            agent_kwargs["tools"] = digest_tools + list(existing)
-
-        try:
-            ag = agent_cls(s.engine, s.model, **agent_kwargs)
-        except TypeError:
-            try:
-                ag = agent_cls(s.engine, s.model)
-            except TypeError:
-                ag = agent_cls()
+        # Forward only what this agent's __init__ declares. The previous
+        # ``except TypeError: agent_cls(s.engine, s.model)`` fallback rebuilt
+        # the agent with no tools, no bus and no max_turns whenever one keyword
+        # did not fit -- and it fired on any agent lacking capability_policy or
+        # skill_few_shot_examples, i.e. exactly when a policy or a Skill was in
+        # play. AgentExecutor already filters up front; do the same here.
+        ag = construct_registered_agent(
+            agent_name=agent_name,
+            engine=s.engine,
+            model=s.model,
+            extra_kwargs=agent_kwargs,
+        )
 
         telemetry_events: List[Dict[str, Any]] = []
 

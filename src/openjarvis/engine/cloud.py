@@ -5,6 +5,8 @@ OpenAI, Anthropic, Google, MiniMax, and DeepSeek API backends.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
 import os
@@ -22,6 +24,7 @@ from openjarvis.engine._base import (
     InferenceEngine,
     messages_to_dicts,
 )
+from openjarvis.engine._openrouter import openrouter_model_id
 from openjarvis.engine._stubs import StreamChunk
 
 logger = logging.getLogger(__name__)
@@ -33,6 +36,8 @@ PRICING: Dict[str, tuple[float, float]] = {
     "gpt-5": (10.00, 30.00),
     "gpt-5.4": (15.00, 60.00),
     "gpt-5-mini": (0.25, 2.00),
+    "gpt-5.6-luna": (0.20, 1.20),
+    "gpt-6-luna": (0.10, 0.50),
     "o3-mini": (1.10, 4.40),
     "claude-sonnet-4-20250514": (3.00, 15.00),
     "claude-opus-4-20250514": (15.00, 75.00),
@@ -63,6 +68,8 @@ _OPENAI_MODELS = [
     "gpt-5",
     "gpt-5.4",
     "gpt-5-mini",
+    "gpt-5.6-luna",
+    "gpt-6-luna",
     "o3-mini",
 ]
 _ANTHROPIC_MODELS = [
@@ -90,12 +97,14 @@ _MINIMAX_MODELS = [
     "MiniMax-M2.5-highspeed",
 ]
 _DEEPSEEK_MODELS = [
+    "deepseek-chat",
     "deepseek-v4-flash",
     "deepseek-v4-pro",
 ]
 
 # OpenRouter models — prefixed with "openrouter/" so they can be identified
 _OPENROUTER_POPULAR = [
+    "openrouter/openai/gpt-5.6-luna",
     "openrouter/auto",
     "openrouter/openai/gpt-4o",
     "openrouter/anthropic/claude-sonnet-4",
@@ -173,10 +182,15 @@ def _is_openai_model(model: str) -> bool:
 def _is_openai_reasoning_model(model: str) -> bool:
     """Check if model is an OpenAI reasoning model that restricts temperature."""
     m = model.lower()
-    # o1/o3 series and gpt-5-mini (all variants) are reasoning models
+    # o1/o3, gpt-5-mini, and GPT-6 Luna restrict temperature.
     if m.startswith(("o1", "o3")):
         return True
-    return m == "gpt-5-mini" or m.startswith("gpt-5-mini-")
+    return m == "gpt-5-mini" or m.startswith("gpt-5-mini-") or m == "gpt-6-luna"
+
+
+def _uses_openai_responses(model: str) -> bool:
+    """Return whether this OpenAI model requires the Responses API here."""
+    return model.lower().startswith("gpt-5.6-") or model.lower() == "gpt-6-luna"
 
 
 def _is_unsupported_temperature_error(exc: Exception) -> bool:
@@ -317,13 +331,21 @@ class CloudEngine(InferenceEngine):
     engine_id = "cloud"
     is_cloud = True
 
+    def supports_semantic_reasoning_stream(self, model: str) -> bool:
+        return _is_deepseek_model(model) or model.lower() == "gpt-6-luna"
+
     def __init__(self) -> None:
         self._openai_client: Any = None
+        self._openai_async_client: Any = None
         self._anthropic_client: Any = None
+        self._anthropic_async_client: Any = None
         self._google_client: Any = None
         self._openrouter_client: Any = None
+        self._openrouter_async_client: Any = None
         self._minimax_client: Any = None
+        self._minimax_async_client: Any = None
         self._deepseek_client: Any = None
+        self._deepseek_async_client: Any = None
         self._codex_client: Any = None
         # Gemini thought_signatures: tool_call_id -> signature bytes
         self._thought_sigs: Dict[str, bytes] = {}
@@ -335,6 +357,7 @@ class CloudEngine(InferenceEngine):
                 import openai
 
                 self._openai_client = openai.OpenAI()
+                self._openai_async_client = openai.AsyncOpenAI()
             except ImportError:
                 pass
         if os.environ.get("ANTHROPIC_API_KEY"):
@@ -342,6 +365,7 @@ class CloudEngine(InferenceEngine):
                 import anthropic
 
                 self._anthropic_client = anthropic.Anthropic()
+                self._anthropic_async_client = anthropic.AsyncAnthropic()
             except ImportError:
                 pass
         gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get(
@@ -363,6 +387,10 @@ class CloudEngine(InferenceEngine):
                     base_url="https://openrouter.ai/api/v1",
                     api_key=openrouter_key,
                 )
+                self._openrouter_async_client = openai.AsyncOpenAI(
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key=openrouter_key,
+                )
             except ImportError:
                 pass
         minimax_key = os.environ.get("MINIMAX_API_KEY")
@@ -374,6 +402,10 @@ class CloudEngine(InferenceEngine):
                     base_url="https://api.minimax.io/v1",
                     api_key=minimax_key,
                 )
+                self._minimax_async_client = openai.AsyncOpenAI(
+                    base_url="https://api.minimax.io/v1",
+                    api_key=minimax_key,
+                )
             except ImportError:
                 pass
         deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
@@ -382,6 +414,10 @@ class CloudEngine(InferenceEngine):
                 import openai
 
                 self._deepseek_client = openai.OpenAI(
+                    base_url="https://api.deepseek.com/v1",
+                    api_key=deepseek_key,
+                )
+                self._deepseek_async_client = openai.AsyncOpenAI(
                     base_url="https://api.deepseek.com/v1",
                     api_key=deepseek_key,
                 )
@@ -554,6 +590,190 @@ class CloudEngine(InferenceEngine):
             "cost_usd": 0.0,
             "ttft": elapsed,
         }
+
+    @staticmethod
+    def _openai_responses_input(
+        messages: Sequence[Message],
+    ) -> tuple[str, List[Dict[str, Any]]]:
+        """Convert canonical messages into stateless Responses API input."""
+        instructions: list[str] = []
+        input_items: List[Dict[str, Any]] = []
+        for message in messages:
+            if message.role.value == "system":
+                if message.content:
+                    instructions.append(message.content)
+                continue
+
+            response_items = message.metadata.get("response_items")
+            if message.role.value == "assistant" and response_items:
+                input_items.extend(response_items)
+                continue
+
+            if message.role.value == "tool":
+                input_items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": message.tool_call_id or "",
+                        "output": message.content or "",
+                    }
+                )
+                continue
+
+            if message.role.value == "assistant" and message.tool_calls:
+                if message.content:
+                    input_items.append(
+                        {"role": "assistant", "content": message.content}
+                    )
+                input_items.extend(
+                    {
+                        "type": "function_call",
+                        "call_id": tool_call.id,
+                        "name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                    }
+                    for tool_call in message.tool_calls
+                )
+                continue
+
+            input_items.append(
+                {
+                    "role": message.role.value,
+                    "content": message.content or "",
+                }
+            )
+        return "\n\n".join(instructions), input_items
+
+    @staticmethod
+    def _openai_responses_tools(
+        tools: Sequence[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Flatten Chat Completions function tools for the Responses API."""
+        converted: List[Dict[str, Any]] = []
+        for tool in tools:
+            function = tool.get("function", {})
+            item: Dict[str, Any] = {
+                "type": "function",
+                "name": function.get("name", ""),
+                "parameters": function.get("parameters"),
+                "strict": bool(function.get("strict", False)),
+            }
+            if function.get("description"):
+                item["description"] = function["description"]
+            converted.append(item)
+        return converted
+
+    def _generate_openai_responses(
+        self,
+        messages: Sequence[Message],
+        *,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Generate with high reasoning and function tools via Responses."""
+        del temperature
+        if self._openai_client is None:
+            raise EngineConnectionError(
+                "OpenAI client not available — set "
+                "OPENAI_API_KEY and install "
+                "openjarvis[inference-cloud]"
+            )
+
+        instructions, input_items = self._openai_responses_input(messages)
+        raw_tools = kwargs.pop("tools", None)
+        response_format = kwargs.pop("response_format", None)
+        tool_choice = kwargs.pop("tool_choice", None)
+        requested_include = kwargs.pop("include", [])
+        kwargs.pop("reasoning", None)
+        kwargs.pop("reasoning_effort", None)
+        kwargs.pop("store", None)
+        create_kwargs: Dict[str, Any] = {
+            "model": model,
+            "input": input_items,
+            "max_output_tokens": max_tokens,
+            **kwargs,
+            "reasoning": {"effort": "high"},
+            "include": list(
+                dict.fromkeys([*requested_include, "reasoning.encrypted_content"])
+            ),
+            "store": False,
+        }
+        if instructions:
+            create_kwargs["instructions"] = instructions
+        if raw_tools:
+            create_kwargs["tools"] = self._openai_responses_tools(raw_tools)
+        if isinstance(tool_choice, dict) and isinstance(
+            tool_choice.get("function"), dict
+        ):
+            create_kwargs["tool_choice"] = {
+                "type": "function",
+                "name": tool_choice["function"].get("name", ""),
+            }
+        elif tool_choice is not None:
+            create_kwargs["tool_choice"] = tool_choice
+        if response_format is not None:
+            from openjarvis.engine._stubs import ResponseFormat
+
+            if isinstance(response_format, ResponseFormat):
+                format_type = response_format.type
+                schema = response_format.schema
+                format_name = "response"
+                strict = True
+            else:
+                format_type = response_format.get("type", "json_object")
+                json_schema = response_format.get("json_schema", {})
+                schema = json_schema.get("schema")
+                format_name = json_schema.get("name", "response")
+                strict = json_schema.get("strict", True)
+            text_format: Dict[str, Any] = {"type": format_type}
+            if format_type == "json_schema" and schema:
+                text_format.update(
+                    {
+                        "name": format_name,
+                        "schema": schema,
+                        "strict": strict,
+                    }
+                )
+            create_kwargs["text"] = {"format": text_format}
+
+        t0 = time.monotonic()
+        resp = self._openai_client.responses.create(**create_kwargs)
+        elapsed = time.monotonic() - t0
+        usage = getattr(resp, "usage", None)
+        prompt_tokens = getattr(usage, "input_tokens", 0) if usage else 0
+        completion_tokens = getattr(usage, "output_tokens", 0) if usage else 0
+        output_items = [
+            item.model_dump(exclude_none=True)
+            if hasattr(item, "model_dump")
+            else dict(item)
+            for item in resp.output
+        ]
+        result: Dict[str, Any] = {
+            "content": resp.output_text or "",
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": getattr(usage, "total_tokens", 0) if usage else 0,
+            },
+            "model": resp.model,
+            "finish_reason": "stop" if resp.status == "completed" else resp.status,
+            "cost_usd": estimate_cost(model, prompt_tokens, completion_tokens),
+            "ttft": elapsed,
+            "response_items": output_items,
+        }
+        tool_calls = [
+            {
+                "id": item.call_id,
+                "name": item.name,
+                "arguments": item.arguments,
+            }
+            for item in resp.output
+            if getattr(item, "type", None) == "function_call"
+        ]
+        if tool_calls:
+            result["tool_calls"] = tool_calls
+        return result
 
     def _generate_openai(
         self,
@@ -939,8 +1159,7 @@ class CloudEngine(InferenceEngine):
             raise EngineConnectionError(
                 "OpenRouter client not available — set OPENROUTER_API_KEY"
             )
-        # Strip the "openrouter/" prefix to get the actual model ID
-        actual_model = model.removeprefix("openrouter/")
+        actual_model = openrouter_model_id(model)
         kwargs.pop("response_format", None)
         create_kwargs: Dict[str, Any] = {
             "model": actual_model,
@@ -977,11 +1196,8 @@ class CloudEngine(InferenceEngine):
             result["tool_calls"] = [
                 {
                     "id": tc.id,
-                    "type": tc.type,
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
                 }
                 for tc in choice.message.tool_calls
             ]
@@ -1060,6 +1276,19 @@ class CloudEngine(InferenceEngine):
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        # Forward tools / tool_choice (DeepSeek is OpenAI-compatible). Without
+        # this the request carries no schema, so the model cannot emit a
+        # tool_call and instead writes prose describing one -- observed live as
+        # literal `<tool_calls><tool_call name="...">` text that the agent loop
+        # cannot dispatch. The tool_calls parsing below is only reachable
+        # because of these two lines. `stream_full`'s DeepSeek branch already
+        # forwards them via **kwargs; this is the non-streaming twin.
+        tools = kwargs.pop("tools", None)
+        if tools:
+            create_kwargs["tools"] = tools
+        tool_choice = kwargs.pop("tool_choice", None)
+        if tool_choice is not None:
+            create_kwargs["tool_choice"] = tool_choice
         t0 = time.monotonic()
         resp = self._deepseek_client.chat.completions.create(**create_kwargs)
         elapsed = time.monotonic() - t0
@@ -1117,6 +1346,8 @@ class CloudEngine(InferenceEngine):
             return self._generate_anthropic(messages, **kw)
         if _is_google_model(model):
             return self._generate_google(messages, **kw)
+        if _uses_openai_responses(model):
+            return self._generate_openai_responses(messages, **kw)
         return self._generate_openai(messages, **kw)
 
     async def stream(
@@ -1232,6 +1463,8 @@ class CloudEngine(InferenceEngine):
         }
         if not _is_openai_reasoning_model(model):
             create_kwargs["temperature"] = temperature
+        if model.lower() == "gpt-6-luna":
+            create_kwargs["reasoning_effort"] = "none"
         resp = self._openai_client.chat.completions.create(**create_kwargs)
         for chunk in resp:
             delta = chunk.choices[0].delta if chunk.choices else None
@@ -1471,7 +1704,7 @@ class CloudEngine(InferenceEngine):
     ) -> AsyncIterator[str]:
         if self._openrouter_client is None:
             raise EngineConnectionError("OpenRouter client not available")
-        actual_model = model.removeprefix("openrouter/")
+        actual_model = openrouter_model_id(model)
         create_kwargs: Dict[str, Any] = {
             "model": actual_model,
             "messages": messages_to_dicts(messages),
@@ -1527,7 +1760,8 @@ class CloudEngine(InferenceEngine):
         max_tokens: int,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
-        if self._deepseek_client is None:
+        client = getattr(self, "_deepseek_async_client", None)
+        if client is None:
             raise EngineConnectionError("DeepSeek client not available")
         create_kwargs: Dict[str, Any] = {
             "model": model,
@@ -1536,8 +1770,8 @@ class CloudEngine(InferenceEngine):
             "temperature": temperature,
             "stream": True,
         }
-        resp = self._deepseek_client.chat.completions.create(**create_kwargs)
-        for chunk in resp:
+        resp = await client.chat.completions.create(**create_kwargs)
+        async for chunk in resp:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
                 yield delta.content
@@ -1568,11 +1802,17 @@ class CloudEngine(InferenceEngine):
             ):
                 yield chunk
             return
+        if model.lower() == "gpt-6-luna":
+            async for chunk in self._stream_full_openai_responses(
+                messages, model=model, max_tokens=max_tokens, **kwargs
+            ):
+                yield chunk
+            return
         if _is_openrouter_model(model):
-            client = self._openrouter_client
+            client = self._openrouter_async_client
             if client is None:
                 raise EngineConnectionError("OpenRouter client not available")
-            actual_model = model.removeprefix("openrouter/")
+            actual_model = openrouter_model_id(model)
             create_kwargs: Dict[str, Any] = {
                 "model": actual_model,
                 "messages": messages_to_dicts(messages),
@@ -1582,7 +1822,7 @@ class CloudEngine(InferenceEngine):
                 **kwargs,
             }
         elif _is_minimax_model(model):
-            client = self._minimax_client
+            client = self._minimax_async_client
             if client is None:
                 raise EngineConnectionError("MiniMax client not available")
             temperature = max(temperature, 0.01)
@@ -1596,7 +1836,7 @@ class CloudEngine(InferenceEngine):
                 **kwargs,
             }
         elif _is_deepseek_model(model):
-            client = self._deepseek_client
+            client = self._deepseek_async_client
             if client is None:
                 raise EngineConnectionError("DeepSeek client not available")
             create_kwargs = {
@@ -1608,7 +1848,7 @@ class CloudEngine(InferenceEngine):
                 **kwargs,
             }
         else:
-            client = self._openai_client
+            client = self._openai_async_client
             if client is None:
                 raise EngineConnectionError("OpenAI client not available")
             create_kwargs = {
@@ -1620,35 +1860,136 @@ class CloudEngine(InferenceEngine):
             }
             if not _is_openai_reasoning_model(model):
                 create_kwargs["temperature"] = temperature
-        resp = client.chat.completions.create(**create_kwargs)
-        for chunk in resp:
-            choice = chunk.choices[0] if chunk.choices else None
-            if not choice:
-                continue
-            delta = choice.delta
-            content = delta.content if delta else None
-            tool_calls = None
-            if delta and delta.tool_calls:
-                tool_calls = [
-                    {
-                        "index": tc.index,
-                        "id": tc.id or "",
-                        "function": {
-                            "name": (tc.function.name or "") if tc.function else "",
-                            "arguments": (
-                                (tc.function.arguments or "") if tc.function else ""
-                            ),
-                        },
-                    }
-                    for tc in delta.tool_calls
-                ]
-            finish = choice.finish_reason
-            if content or tool_calls or finish:
-                yield StreamChunk(
-                    content=content,
-                    tool_calls=tool_calls,
-                    finish_reason=finish,
+            if model.lower() == "gpt-6-luna":
+                create_kwargs["reasoning_effort"] = "none"
+        resp = await client.chat.completions.create(**create_kwargs)
+        try:
+            async for chunk in resp:
+                choice = chunk.choices[0] if chunk.choices else None
+                if not choice:
+                    continue
+                delta = choice.delta
+                content = delta.content if delta else None
+                reasoning_content = (
+                    getattr(delta, "reasoning_content", None) if delta else None
                 )
+                tool_calls = None
+                if delta and delta.tool_calls:
+                    tool_calls = [
+                        {
+                            "index": tc.index,
+                            "id": tc.id or "",
+                            "function": {
+                                "name": (tc.function.name or "") if tc.function else "",
+                                "arguments": (
+                                    (tc.function.arguments or "") if tc.function else ""
+                                ),
+                            },
+                        }
+                        for tc in delta.tool_calls
+                    ]
+                finish = choice.finish_reason
+                if content or reasoning_content or tool_calls or finish:
+                    yield StreamChunk(
+                        content=content,
+                        reasoning_content=reasoning_content,
+                        tool_calls=tool_calls,
+                        finish_reason=finish,
+                    )
+        finally:
+            close = getattr(resp, "close", None)
+            if callable(close):
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+
+    async def _stream_full_openai_responses(
+        self,
+        messages: Sequence[Message],
+        *,
+        model: str,
+        max_tokens: int,
+        **kwargs: Any,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream GPT-6 text and function calls while retaining reasoning items."""
+        if self._openai_async_client is None:
+            raise EngineConnectionError("OpenAI client not available")
+        instructions, input_items = self._openai_responses_input(messages)
+        tools = kwargs.pop("tools", None)
+        tool_choice = kwargs.pop("tool_choice", None)
+        create_kwargs: Dict[str, Any] = {
+            "model": model,
+            "input": input_items,
+            "max_output_tokens": max_tokens,
+            "reasoning": {"effort": "high"},
+            "include": ["reasoning.encrypted_content"],
+            "store": False,
+            "stream": True,
+        }
+        if instructions:
+            create_kwargs["instructions"] = instructions
+        if tools:
+            create_kwargs["tools"] = self._openai_responses_tools(tools)
+        if tool_choice is not None:
+            if isinstance(tool_choice, dict) and isinstance(
+                tool_choice.get("function"), dict
+            ):
+                create_kwargs["tool_choice"] = {
+                    "type": "function",
+                    "name": tool_choice["function"].get("name", ""),
+                }
+            else:
+                create_kwargs["tool_choice"] = tool_choice
+
+        events = await self._openai_async_client.responses.create(**create_kwargs)
+        completed = False
+        try:
+            async for event in events:
+                if event.type == "response.output_text.delta":
+                    if event.delta:
+                        yield StreamChunk(content=event.delta)
+                elif event.type == "response.completed":
+                    completed = True
+                    response = event.response
+                    response_items = [
+                        item.model_dump(exclude_none=True)
+                        if hasattr(item, "model_dump")
+                        else dict(item)
+                        for item in response.output
+                    ]
+                    tool_calls = [
+                        {
+                            "index": index,
+                            "id": item["call_id"],
+                            "function": {
+                                "name": item["name"],
+                                "arguments": item["arguments"],
+                            },
+                        }
+                        for index, item in enumerate(response_items)
+                        if item.get("type") == "function_call"
+                    ]
+                    usage = getattr(response, "usage", None)
+                    yield StreamChunk(
+                        tool_calls=tool_calls or None,
+                        finish_reason="tool_calls" if tool_calls else "stop",
+                        response_items=response_items,
+                        usage={
+                            "prompt_tokens": getattr(usage, "input_tokens", 0),
+                            "completion_tokens": getattr(usage, "output_tokens", 0),
+                            "total_tokens": getattr(usage, "total_tokens", 0),
+                        },
+                    )
+                elif event.type in {"response.failed", "response.incomplete"}:
+                    raise EngineConnectionError(f"OpenAI Responses stream {event.type}")
+            if not completed:
+                raise EngineConnectionError("OpenAI Responses stream ended early")
+        finally:
+            close = getattr(events, "close", None) or getattr(events, "aclose", None)
+            if callable(close):
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
 
     async def _stream_full_anthropic(
         self,
@@ -1660,7 +2001,7 @@ class CloudEngine(InferenceEngine):
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
         """Yield StreamChunks from an Anthropic streaming response."""
-        if self._anthropic_client is None:
+        if self._anthropic_async_client is None:
             raise EngineConnectionError("Anthropic client not available")
         system_text, chat_msgs = self._prepare_anthropic_messages(messages)
         create_kwargs: Dict[str, Any] = {
@@ -1676,9 +2017,11 @@ class CloudEngine(InferenceEngine):
             create_kwargs["tools"] = _convert_tools_to_anthropic(raw_tools)
         kwargs.pop("tool_choice", None)
 
-        with self._anthropic_client.messages.stream(**create_kwargs) as stream:
+        async with self._anthropic_async_client.messages.stream(
+            **create_kwargs
+        ) as stream:
             tool_index = -1
-            for event in stream:
+            async for event in stream:
                 if event.type == "content_block_start":
                     block = event.content_block
                     if block.type == "tool_use":
@@ -1717,6 +2060,8 @@ class CloudEngine(InferenceEngine):
             # see.
             try:
                 final_msg = stream.get_final_message()
+                if inspect.isawaitable(final_msg):
+                    final_msg = await final_msg
             except Exception as exc:  # noqa: BLE001 — SDK shape varies
                 logger.debug("Anthropic stream.get_final_message() failed: %s", exc)
                 final_msg = None
@@ -1773,7 +2118,10 @@ class CloudEngine(InferenceEngine):
             models.extend(_OPENROUTER_POPULAR)
         if self._minimax_client is not None:
             models.extend(_MINIMAX_MODELS)
-        if self._deepseek_client is not None:
+        if (
+            self._deepseek_client is not None
+            or getattr(self, "_deepseek_async_client", None) is not None
+        ):
             models.extend(_DEEPSEEK_MODELS)
         if self._codex_client is not None:
             models.extend(_CODEX_MODELS)
@@ -1799,7 +2147,9 @@ class CloudEngine(InferenceEngine):
         if _is_minimax_model(model):
             return self._minimax_client
         if _is_deepseek_model(model):
-            return self._deepseek_client
+            return self._deepseek_client or getattr(
+                self, "_deepseek_async_client", None
+            )
         if _is_anthropic_model(model):
             return self._anthropic_client
         if _is_google_model(model):
@@ -1829,6 +2179,7 @@ class CloudEngine(InferenceEngine):
             or self._openrouter_client is not None
             or self._minimax_client is not None
             or self._deepseek_client is not None
+            or getattr(self, "_deepseek_async_client", None) is not None
             or self._codex_client is not None
         )
 
@@ -1851,6 +2202,31 @@ class CloudEngine(InferenceEngine):
             if hasattr(self._minimax_client, "close"):
                 self._minimax_client.close()
             self._minimax_client = None
+        if self._deepseek_client is not None:
+            if hasattr(self._deepseek_client, "close"):
+                self._deepseek_client.close()
+            self._deepseek_client = None
+        for attribute in (
+            "_openai_async_client",
+            "_anthropic_async_client",
+            "_openrouter_async_client",
+            "_minimax_async_client",
+            "_deepseek_async_client",
+        ):
+            client = getattr(self, attribute, None)
+            if client is None:
+                continue
+            close = getattr(client, "close", None) or getattr(client, "aclose", None)
+            if callable(close):
+                result = close()
+                if inspect.isawaitable(result):
+                    try:
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError:
+                        asyncio.run(result)
+                    else:
+                        loop.create_task(result)
+            setattr(self, attribute, None)
         if self._codex_client is not None:
             self._codex_client = None
 
