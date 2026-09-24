@@ -157,16 +157,50 @@ class TestCloudEngineGenerate:
         assert sent["store"] is False
 
     @pytest.mark.asyncio
-    async def test_gpt_6_tool_stream_uses_supported_chat_mode(self) -> None:
-        async def chunks():
-            yield SimpleNamespace(choices=[])
+    async def test_gpt_6_tool_stream_uses_high_reasoning_responses(self) -> None:
+        async def events():
+            yield SimpleNamespace(type="response.output_text.delta", delta="Dạ, ")
+            yield SimpleNamespace(
+                type="response.output_text.delta", delta="để tôi xem."
+            )
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    output=[
+                        SimpleNamespace(
+                            type="reasoning",
+                            model_dump=lambda **_: {
+                                "type": "reasoning",
+                                "encrypted_content": "opaque",
+                            },
+                        ),
+                        SimpleNamespace(
+                            type="function_call",
+                            call_id="call_1",
+                            name="lookup",
+                            arguments='{"query":"menu"}',
+                            model_dump=lambda **_: {
+                                "type": "function_call",
+                                "call_id": "call_1",
+                                "name": "lookup",
+                                "arguments": '{"query":"menu"}',
+                            },
+                        )
+                    ],
+                    usage=SimpleNamespace(
+                        input_tokens=10, output_tokens=5, total_tokens=15
+                    ),
+                    status="completed",
+                ),
+            )
 
         client = mock.MagicMock()
-        client.chat.completions.create = mock.AsyncMock(return_value=chunks())
+        client.responses.create = mock.AsyncMock(return_value=events())
         engine = CloudEngine()
         engine._openai_async_client = client
+        assert engine.supports_semantic_reasoning_stream("gpt-6-luna")
 
-        _ = [
+        chunks = [
             chunk
             async for chunk in engine.stream_full(
                 [Message(role=Role.USER, content="Hi")],
@@ -175,11 +209,74 @@ class TestCloudEngineGenerate:
             )
         ]
 
-        sent = client.chat.completions.create.call_args.kwargs
-        assert sent["reasoning_effort"] == "none"
-        assert "temperature" not in sent
-        assert sent["max_completion_tokens"] == 1024
-        assert sent["tools"][0]["function"]["name"] == "lookup"
+        client.chat.completions.create.assert_not_called()
+        sent = client.responses.create.call_args.kwargs
+        assert sent["reasoning"] == {"effort": "high"}
+        assert sent["tools"][0]["name"] == "lookup"
+        assert sent["stream"] is True
+        assert sent["store"] is False
+        assert [chunk.content for chunk in chunks if chunk.content] == [
+            "Dạ, ", "để tôi xem."
+        ]
+        assert chunks[-1].tool_calls == [
+            {
+                "index": 1,
+                "id": "call_1",
+                "function": {"name": "lookup", "arguments": '{"query":"menu"}'},
+            }
+        ]
+        assert chunks[-1].response_items[0]["encrypted_content"] == "opaque"
+        assert chunks[-1].response_items[1]["call_id"] == "call_1"
+        assert chunks[-1].usage == {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+        }
+
+    @pytest.mark.asyncio
+    async def test_gpt_6_stream_without_tools_keeps_high_reasoning(self) -> None:
+        async def events():
+            yield SimpleNamespace(type="response.output_text.delta", delta="Xin chào")
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(output=[], usage=None),
+            )
+
+        client = mock.MagicMock()
+        client.responses.create = mock.AsyncMock(return_value=events())
+        engine = CloudEngine()
+        engine._openai_async_client = client
+
+        chunks = [
+            chunk
+            async for chunk in engine.stream_full(
+                [Message(role=Role.USER, content="Hi")], model="gpt-6-luna"
+            )
+        ]
+
+        assert chunks[0].content == "Xin chào"
+        assert chunks[-1].finish_reason == "stop"
+        sent = client.responses.create.call_args.kwargs
+        assert sent["reasoning"] == {"effort": "high"}
+        assert "tools" not in sent
+
+    @pytest.mark.asyncio
+    async def test_gpt_6_incomplete_stream_fails_closed(self) -> None:
+        async def events():
+            yield SimpleNamespace(type="response.output_text.delta", delta="Dạ")
+
+        client = mock.MagicMock()
+        client.responses.create = mock.AsyncMock(return_value=events())
+        engine = CloudEngine()
+        engine._openai_async_client = client
+
+        with pytest.raises(EngineConnectionError, match="ended early"):
+            _ = [
+                chunk
+                async for chunk in engine.stream_full(
+                    [Message(role=Role.USER, content="Hi")], model="gpt-6-luna"
+                )
+            ]
 
     @pytest.mark.asyncio
     async def test_gpt_6_text_stream_uses_supported_chat_mode(self) -> None:
@@ -614,13 +711,79 @@ class TestOpenRouterToolForwarding:
 
         # tools / tool_choice are forwarded to the API call
         sent = fake_client.chat.completions.create.call_args.kwargs
+        assert sent["model"] == "openai/gpt-4o"
         assert sent["tools"] == tools
         assert sent["tool_choice"] == "auto"
 
         # tool_calls from the response are parsed back into the result
         assert result["tool_calls"][0]["id"] == "call_1"
-        assert result["tool_calls"][0]["function"]["name"] == "get_weather"
-        assert result["tool_calls"][0]["function"]["arguments"] == '{"city": "NYC"}'
+        assert result["tool_calls"][0]["name"] == "get_weather"
+        assert result["tool_calls"][0]["arguments"] == '{"city": "NYC"}'
+
+    def test_auto_router_keeps_its_openrouter_slug(self) -> None:
+        fake_client = mock.MagicMock()
+        fake_client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="ok", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+            model="openai/gpt-5.6-luna",
+        )
+        engine = CloudEngine()
+        engine._openrouter_client = fake_client
+
+        engine.generate(
+            [Message(role=Role.USER, content="hello")],
+            model="openrouter/auto",
+        )
+
+        sent = fake_client.chat.completions.create.call_args.kwargs
+        assert sent["model"] == "openrouter/auto"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("full", [False, True])
+    @pytest.mark.parametrize(
+        ("selected_model", "provider_model"),
+        [
+            ("openrouter/openai/gpt-5.6-luna", "openai/gpt-5.6-luna"),
+            ("openrouter/auto", "openrouter/auto"),
+        ],
+    )
+    async def test_stream_normalizes_model(
+        self, full: bool, selected_model: str, provider_model: str
+    ) -> None:
+        chunk = SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(content="ok", tool_calls=None),
+                finish_reason="stop",
+            )]
+        )
+
+        async def chunks():
+            yield chunk
+
+        engine = CloudEngine()
+        client = mock.MagicMock()
+        if full:
+            client.chat.completions.create = mock.AsyncMock(return_value=chunks())
+            engine._openrouter_async_client = client
+            stream = engine.stream_full
+        else:
+            client.chat.completions.create.return_value = iter([chunk])
+            engine._openrouter_client = client
+            stream = engine.stream
+
+        result = [
+            token async for token in stream(
+                [Message(role=Role.USER, content="hello")], model=selected_model
+            )
+        ]
+        assert [token.content if full else token for token in result] == ["ok"]
+        sent = client.chat.completions.create.call_args.kwargs
+        assert sent["model"] == provider_model
 
 
 class TestCloudEngineCanServe:

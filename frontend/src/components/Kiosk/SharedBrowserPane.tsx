@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Keyboard, RotateCw } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Keyboard, RotateCw, AppWindow, Columns2, Maximize2, Minimize2, ZoomIn, ZoomOut, GripVertical } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, PointerEvent, TouchEvent, WheelEvent } from 'react';
 
@@ -7,10 +7,27 @@ import type { BrowserCommand, BrowserViewState } from '@/hooks/useSharedBrowser'
 
 type BrowserController = BrowserViewState & { send: (command: BrowserCommand) => void };
 
-export function SharedBrowserPane({ browser }: { browser: BrowserController }) {
+export interface SharedBrowserPaneProps {
+  browser: BrowserController;
+  isFloating?: boolean;
+  isMaximized?: boolean;
+  onToggleFloating?: () => void;
+  onToggleMaximize?: () => void;
+  dragHandleProps?: Record<string, unknown>;
+  onZoom?: (delta: number) => void;
+}
+
+export function SharedBrowserPane({
+  browser,
+  isFloating = false,
+  isMaximized = false,
+  onToggleFloating,
+  onToggleMaximize,
+  dragHandleProps,
+  onZoom,
+}: SharedBrowserPaneProps) {
   const [address, setAddress] = useState(browser.url);
   const viewportRef = useRef<HTMLDivElement>(null);
-  const cursorRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const moveTimeRef = useRef(0);
   const composingRef = useRef(false);
@@ -57,9 +74,6 @@ export function SharedBrowserPane({ browser }: { browser: BrowserController }) {
     const position = point(event.clientX, event.clientY);
     if (!position) return;
     if (action === 'pressed') viewportRef.current?.focus();
-    if (action === 'moved' && cursorRef.current) {
-      cursorRef.current.style.transform = `translate(${event.clientX - event.currentTarget.getBoundingClientRect().left}px, ${event.clientY - event.currentTarget.getBoundingClientRect().top}px)`;
-    }
     if (action === 'moved') {
       const now = performance.now();
       if (now - moveTimeRef.current < 16) return;
@@ -88,17 +102,138 @@ export function SharedBrowserPane({ browser }: { browser: BrowserController }) {
   };
 
   return (
-    <section data-testid="shared-browser-pane" className="flex min-h-0 min-w-0 flex-1 flex-col bg-[#1d1f22] text-white">
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-white/10 px-3">
-        <button type="button" aria-label="Back" onClick={() => browser.send({ type: 'back' })} className="rounded p-2 hover:bg-white/10"><ArrowLeft size={16} /></button>
-        <button type="button" aria-label="Forward" onClick={() => browser.send({ type: 'forward' })} className="rounded p-2 hover:bg-white/10"><ArrowRight size={16} /></button>
-        <button type="button" aria-label="Reload" onClick={() => browser.send({ type: 'reload' })} className="rounded p-2 hover:bg-white/10"><RotateCw size={16} /></button>
-        <form onSubmit={navigate} className="min-w-0 flex-1">
-          <input aria-label="Browser address" value={address} onChange={(event) => setAddress(event.target.value)} spellCheck={false} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm outline-none focus:border-cyan-400" />
+    <section data-testid="shared-browser-pane" className="flex h-full w-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[#1d1f22] text-white">
+      <div
+        {...(isFloating ? dragHandleProps : {})}
+        className={`flex h-12 shrink-0 items-center gap-2 border-b border-white/10 px-3 select-none ${
+          isFloating ? 'cursor-grab active:cursor-grabbing' : ''
+        }`}
+        onDoubleClick={(e) => {
+          if (isFloating && onToggleMaximize) {
+            e.stopPropagation();
+            onToggleMaximize();
+          }
+        }}
+      >
+        {isFloating && (
+          <div
+            aria-label="Drag window"
+            title="Drag to move (Kéo để di chuyển)"
+            className="flex items-center p-1 text-white/40 hover:text-white pointer-events-none"
+          >
+            <GripVertical size={16} />
+          </div>
+        )}
+        <button
+          type="button"
+          aria-label="Back"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => browser.send({ type: 'back' })}
+          className="rounded p-2 hover:bg-white/10"
+        >
+          <ArrowLeft size={16} />
+        </button>
+        <button
+          type="button"
+          aria-label="Forward"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => browser.send({ type: 'forward' })}
+          className="rounded p-2 hover:bg-white/10"
+        >
+          <ArrowRight size={16} />
+        </button>
+        <button
+          type="button"
+          aria-label="Reload"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => browser.send({ type: 'reload' })}
+          className="rounded p-2 hover:bg-white/10"
+        >
+          <RotateCw size={16} />
+        </button>
+        <form
+          onSubmit={navigate}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="min-w-0 flex-1"
+        >
+          <input
+            aria-label="Browser address"
+            value={address}
+            onPointerDown={(e) => e.stopPropagation()}
+            onChange={(event) => setAddress(event.target.value)}
+            spellCheck={false}
+            className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm outline-none focus:border-cyan-400"
+          />
         </form>
-        {editable && <button type="button" aria-label="Type in focused field" onClick={() => inputRef.current?.focus({ preventScroll: true })} className="rounded p-2 hover:bg-white/10"><Keyboard size={16} /></button>}
+        {editable && (
+          <button
+            type="button"
+            aria-label="Type in focused field"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => inputRef.current?.focus({ preventScroll: true })}
+            className="rounded p-2 hover:bg-white/10"
+          >
+            <Keyboard size={16} />
+          </button>
+        )}
         {browser.agentAction && <span role="status" className="shrink-0 text-xs text-cyan-300">AI working…</span>}
-        <span className="hidden shrink-0 text-xs text-white/60 sm:inline">{browser.status === 'disconnected' ? 'Reconnecting…' : browser.status === 'connected' ? (browser.loading ? 'Loading…' : 'Live') : 'Connecting…'}</span>
+        <span className="hidden shrink-0 text-xs text-white/60 sm:inline">
+          {browser.status === 'disconnected' ? 'Reconnecting…' : browser.status === 'connected' ? (browser.loading ? 'Loading…' : 'Live') : 'Connecting…'}
+        </span>
+        {onZoom && (
+          <div className="flex items-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              aria-label="Zoom out"
+              title="Thu nhỏ"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => onZoom(-1)}
+              className="rounded p-1.5 hover:bg-white/10 text-white/70 hover:text-white cursor-pointer"
+            >
+              <ZoomOut size={15} />
+            </button>
+            <button
+              type="button"
+              aria-label="Zoom in"
+              title="Phóng to"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => onZoom(1)}
+              className="rounded p-1.5 hover:bg-white/10 text-white/70 hover:text-white cursor-pointer"
+            >
+              <ZoomIn size={15} />
+            </button>
+          </div>
+        )}
+        {isFloating && onToggleMaximize && (
+          <button
+            type="button"
+            aria-label={isMaximized ? 'Restore size' : 'Maximize'}
+            title={isMaximized ? 'Thu nhỏ lại' : 'Phóng to hết cỡ'}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleMaximize();
+            }}
+            className="rounded p-1.5 hover:bg-white/10 text-white/70 hover:text-white cursor-pointer"
+          >
+            {isMaximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+          </button>
+        )}
+        {onToggleFloating && (
+          <button
+            type="button"
+            aria-label={isFloating ? 'Dock to split' : 'Pop out to floating window'}
+            title={isFloating ? 'Quay lại dạng chia đôi [7:3]' : 'Mở thành cửa sổ nổi di chuyển tự do'}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleFloating();
+            }}
+            className="rounded p-1.5 hover:bg-white/10 text-white/70 hover:text-white cursor-pointer"
+          >
+            {isFloating ? <Columns2 size={15} /> : <AppWindow size={15} />}
+          </button>
+        )}
       </div>
       {browser.error && <div role="alert" className="bg-red-950 px-3 py-1 text-xs text-red-200">{browser.error}</div>}
       <div
@@ -106,7 +241,7 @@ export function SharedBrowserPane({ browser }: { browser: BrowserController }) {
         role="application"
         aria-label="Shared browser viewport"
         tabIndex={0}
-        className="relative min-h-0 flex-1 cursor-crosshair overflow-hidden outline-none"
+        className="relative min-h-0 w-full flex-1 cursor-default overflow-hidden outline-none"
         style={{ touchAction: 'none' }}
         onPointerDown={(event) => pointer(event, 'pressed')}
         onPointerUp={(event) => pointer(event, 'released')}
@@ -152,7 +287,6 @@ export function SharedBrowserPane({ browser }: { browser: BrowserController }) {
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-white/50">Connecting to shared browser…</div>
         )}
-        <div ref={cursorRef} aria-hidden className="pointer-events-none absolute left-0 top-0 h-3 w-3 rounded-full border-2 border-cyan-300 opacity-70" />
       </div>
     </section>
   );

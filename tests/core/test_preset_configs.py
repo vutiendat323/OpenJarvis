@@ -48,8 +48,8 @@ def test_preset_loads(preset_path: Path) -> None:
     assert cfg.agent.default_agent, f"{preset_path.stem}: agent.default_agent is empty"
 
 
-def test_kiosk_mcp_preset_keeps_browser_tools_off_the_default_agent_surface() -> None:
-    """The kiosk fast path stays narrow while Playwright remains connected."""
+def test_kiosk_mcp_preset_tool_surface() -> None:
+    """The kiosk agent drives the shared browser directly; repl stays off."""
     preset_path = PRESETS_DIR / "ordering-kiosk-mcp.toml"
     cfg = load_config(path=preset_path)
     raw_toml = tomllib.loads(preset_path.read_text())
@@ -57,18 +57,32 @@ def test_kiosk_mcp_preset_keeps_browser_tools_off_the_default_agent_surface() ->
     expected_enabled = {
         "http_request",
         "skill_manage",
+        "typesafe_decide",
         "display_menu",
         "display_cart",
         "display_bill",
         "display_payment_qr",
         "display_clear",
+        "browser_snapshot",
+        "browser_navigate",
+        "browser_navigate_back",
+        "browser_click",
+        "browser_type",
+        "browser_fill_form",
+        "browser_select_option",
+        "browser_hover",
+        "browser_press_key",
+        "browser_wait_for",
+        "browser_handle_dialog",
+        "browser_drag",
+        "browser_network_requests",
+        "browser_console_messages",
     }
     expected_playwright_tools = {
         "browser_snapshot",
         "browser_find",
         "browser_navigate",
         "browser_navigate_back",
-        "browser_tabs",
         "browser_click",
         "browser_type",
         "browser_fill_form",
@@ -80,8 +94,8 @@ def test_kiosk_mcp_preset_keeps_browser_tools_off_the_default_agent_surface() ->
         "browser_drag",
         "browser_drop",
         "browser_resize",
-        "browser_close",
         "browser_network_requests",
+        "browser_console_messages",
         "browser_verify_element_visible",
         "browser_verify_text_visible",
         "browser_verify_value",
@@ -93,7 +107,6 @@ def test_kiosk_mcp_preset_keeps_browser_tools_off_the_default_agent_surface() ->
 
     assert enabled == expected_enabled
     assert len(enabled) == len(expected_enabled)
-    assert not any(name.startswith("browser_") for name in enabled)
     assert "repl" not in enabled
     assert cfg.agent.max_turns == 8
     assert cfg.skills.enabled is True

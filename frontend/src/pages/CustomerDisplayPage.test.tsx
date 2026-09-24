@@ -414,6 +414,8 @@ describe('CartView touch controls', () => {
 
     expect(tagFor(noTable, 'cart-checkout')).toContain('disabled=""');
     expect(noTable).toContain('SELECT A TABLE TO CHECK OUT');
+    expect(noTable).toContain('1 · AVAILABLE');
+    expect(noTable).toContain('max-h-60 overflow-y-auto');
     expect(tagFor(noType, 'cart-checkout')).toContain('disabled=""');
     expect(noType).not.toContain('CHOOSE DINE-IN OR TAKE-OUT TO CHECK OUT');
     expect(noType).not.toContain('data-testid="cart-table"');

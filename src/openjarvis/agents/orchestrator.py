@@ -208,6 +208,7 @@ class OrchestratorAgent(ToolUsingAgent):
                 round_content: list[str] = []
                 finish_reason = ""
                 round_usage: dict[str, Any] = {}
+                response_items: list[dict[str, Any]] = []
 
                 self._emit_stream_inference_start(model=model)
                 stream = self._engine.stream_full(
@@ -237,6 +238,8 @@ class OrchestratorAgent(ToolUsingAgent):
                             finish_reason = chunk.finish_reason
                         if chunk.usage:
                             round_usage.update(chunk.usage)
+                        if chunk.response_items:
+                            response_items.extend(chunk.response_items)
 
                 for trailing_visible in visible_text_filter.finish():
                     visible_parts.append(trailing_visible)
@@ -280,6 +283,10 @@ class OrchestratorAgent(ToolUsingAgent):
                         role=Role.ASSISTANT,
                         content="".join(visible_parts),
                         tool_calls=tool_calls,
+                        metadata=(
+                            {"response_items": response_items}
+                            if response_items else {}
+                        ),
                     )
                 )
                 previous_tool_results = len(all_tool_results)

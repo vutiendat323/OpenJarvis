@@ -1,6 +1,6 @@
 [skill]
 name = "trendcoffee-checkout"
-description = "Checkout a freshly confirmed take-out or at-table order in one call, show the verified bill, and display its payment QR. Pass order_type and order_note matching the saved draft, with table empty for take-out or the table slug already selected from a fresh table read for at-table (a reserved table is allowed only after the customer confirms sharing it), plus either cart_revision or cart_lines, turn_nonce, and customer_message. Delivery is not supported."
+description = "Checkout a freshly confirmed take-out or at-table order in one call, show the verified bill, and display its payment QR. Pass cart_revision or cart_lines, turn_nonce, and customer_message. For a saved draft, order_note must match; order_type and table must match unless this turn explicitly confirms switching to take-out and paying now: then pass order_type=take-out, table empty, and update_order_type=true to atomically update the current revision and clear its table. For at-table use the table slug already selected from a fresh table read (a reserved table is allowed only after the customer confirms sharing it). Delivery is not supported."
 checkout = true
 accepts_cart_lines = true
 

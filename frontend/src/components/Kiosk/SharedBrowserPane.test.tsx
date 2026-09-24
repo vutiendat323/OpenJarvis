@@ -30,4 +30,48 @@ describe('SharedBrowserPane', () => {
     expect(markup).toContain('data:image/jpeg;base64,/9j/abc');
     expect(markup).toContain('aria-label="Shared browser viewport"');
   });
+
+  it('renders zoom controls and floating toggle button when props are provided', () => {
+    const markup = renderToStaticMarkup(
+      <SharedBrowserPane
+        browser={{
+          ...initialBrowserState,
+          status: 'connected',
+          url: 'https://example.test/menu',
+          send: vi.fn(),
+        }}
+        isFloating={false}
+        onToggleFloating={vi.fn()}
+        onZoom={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Zoom in"');
+    expect(markup).toContain('aria-label="Zoom out"');
+    expect(markup).toContain('aria-label="Pop out to floating window"');
+  });
+
+  it('renders drag handle, maximize button, and dock button when in floating mode', () => {
+    const markup = renderToStaticMarkup(
+      <SharedBrowserPane
+        browser={{
+          ...initialBrowserState,
+          status: 'connected',
+          url: 'https://example.test/menu',
+          send: vi.fn(),
+        }}
+        isFloating={true}
+        isMaximized={false}
+        onToggleFloating={vi.fn()}
+        onToggleMaximize={vi.fn()}
+        dragHandleProps={{ 'data-testid': 'mock-drag-handle' }}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Drag window"');
+    expect(markup).toContain('data-testid="mock-drag-handle"');
+    expect(markup).toContain('cursor-grab');
+    expect(markup).toContain('aria-label="Maximize"');
+    expect(markup).toContain('aria-label="Dock to split"');
+  });
 });

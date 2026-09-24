@@ -34,6 +34,7 @@ class StreamChunk:
     content_blocks: Optional[List[Dict[str, Any]]] = None
     tool_results: Optional[List[Dict[str, Any]]] = None
     reasoning_content: Optional[str] = None
+    response_items: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass(slots=True)

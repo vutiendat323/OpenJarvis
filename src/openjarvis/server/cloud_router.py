@@ -16,6 +16,7 @@ import httpx
 
 from openjarvis.core.paths import get_config_dir
 from openjarvis.core.types import Message
+from openjarvis.engine._openrouter import openrouter_model_id
 
 # ---------------------------------------------------------------------------
 # Key / provider detection
@@ -392,7 +393,7 @@ async def stream_cloud(
                 "OPENROUTER_API_KEY not set — add it in the Cloud Models tab"
             )
         async for token in _stream_openai(
-            model,
+            openrouter_model_id(model),
             messages,
             temperature,
             max_tokens,

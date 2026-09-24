@@ -626,6 +626,46 @@ class TestOrchestratorAgent:
         assert result.turns == 2
         assert result.content == "Đơn đã được tạo và QR đã hiển thị."
 
+    def test_standalone_cart_edit_finishes_after_verified_update(self) -> None:
+        cart = DisplayCartTool()
+        cart._bus = EventBus()
+        engine = MagicMock()
+        engine.engine_id = "mock"
+        engine.generate.return_value = {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "cart-add",
+                    "name": "display_cart",
+                    "arguments": json.dumps(
+                        {
+                            "action": "add",
+                            "item": {
+                                "variant_id": "latte-standard",
+                                "name": "Latte",
+                                "size": "",
+                                "note": "",
+                                "unit_price": 51000,
+                                "quantity": 2,
+                            },
+                            "open_cart": False,
+                            "finish_turn": True,
+                        }
+                    ),
+                }
+            ],
+            "finish_reason": "tool_calls",
+        }
+        agent = OrchestratorAgent(engine, "test-model", tools=[cart])
+
+        with conversation_scope("standalone-cart-edit"):
+            result = agent.run("Thêm hai Latte vào giỏ")
+
+        assert engine.generate.call_count == 1
+        assert result.turns == 1
+        assert result.content == "Đã cập nhật giỏ hàng. Tổng hiện tại 102.000đ."
+        assert result.tool_results[0].success
+
     def test_cart_mutation_with_preamble_continues_to_compound_checkout(
         self,
     ) -> None:
@@ -1860,6 +1900,55 @@ class TestOrchestratorAgent:
         assistant = next(
             message
             for message in second_call_messages
+            if message.role == Role.ASSISTANT and message.tool_calls
+        )
+        assert assistant.metadata["response_items"] == response_items
+
+    @pytest.mark.asyncio
+    async def test_streamed_response_items_reach_next_tool_round(self):
+        response_items = [
+            {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque"},
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "calculator",
+                "arguments": '{"expression":"2+2"}',
+            },
+        ]
+        engine = StreamingEngine(
+            [
+                [
+                    StreamChunk(content="Dạ để tôi tính. "),
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "calculator",
+                                    "arguments": '{"expression":"2+2"}',
+                                },
+                            }
+                        ],
+                        response_items=response_items,
+                        finish_reason="tool_calls",
+                    ),
+                ],
+                [
+                    StreamChunk(content="Kết quả là 4."),
+                    StreamChunk(finish_reason="stop"),
+                ],
+            ]
+        )
+        agent = OrchestratorAgent(engine, "gpt-6-luna", tools=[_CalculatorStub()])
+
+        events = [event async for event in agent.run_stream("Hai cộng hai?")]
+
+        assert isinstance(events[0], AgentTextDelta)
+        assert events[0].content == "Dạ để tôi tính. "
+        second_messages = engine.calls[1][0]
+        assistant = next(
+            message for message in second_messages
             if message.role == Role.ASSISTANT and message.tool_calls
         )
         assert assistant.metadata["response_items"] == response_items

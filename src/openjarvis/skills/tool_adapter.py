@@ -162,6 +162,14 @@ class SkillTool(BaseTool):
         if self._manifest.checkout:
             properties["turn_nonce"] = {"type": "string"}
             properties["cart_revision"] = {"type": "integer"}
+            properties["update_order_type"] = {
+                "type": "boolean",
+                "description": (
+                    "Only for a saved draft when this turn explicitly confirms "
+                    "switching to take-out and checking out now. Atomically clear "
+                    "its table while claiming the current cart revision."
+                ),
+            }
             if self._manifest.accepts_cart_lines:
                 properties["cart_lines"] = {
                     "type": "array",
@@ -193,7 +201,7 @@ class SkillTool(BaseTool):
             parameters["required"] = [
                 name
                 for name in properties
-                if name not in {"cart_revision", "cart_lines"}
+                if name not in {"cart_revision", "cart_lines", "update_order_type"}
             ]
             if self._manifest.accepts_cart_lines:
                 parameters["oneOf"] = [

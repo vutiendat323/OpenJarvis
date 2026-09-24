@@ -126,6 +126,7 @@ class SkillExecutor:
                 order_type=ctx.get("order_type"),
                 order_note=ctx.get("order_note"),
                 table=ctx.get("table"),
+                update_order_type=ctx.get("update_order_type", False),
             )
         except ValueError as exc:
             return SkillResult(

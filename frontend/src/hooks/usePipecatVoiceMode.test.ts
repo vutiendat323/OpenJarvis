@@ -36,12 +36,15 @@ describe('voiceWebRtcRequestParams', () => {
     } as unknown as Storage;
 
     try {
-      const request = voiceWebRtcRequestParams('thread-1', 'deepseek-v4-flash');
+      const request = voiceWebRtcRequestParams(
+        'thread-1',
+        'openrouter/openai/gpt-5.6-luna',
+      );
       expect(request.endpoint).toBe('/api/voice/webrtc/offer');
       expect(request.headers?.get('Authorization')).toBe('Bearer oj_sk_voice_test');
       expect(request.requestData).toEqual({
         chat_thread_id: 'thread-1',
-        model: 'deepseek-v4-flash',
+        model: 'openrouter/openai/gpt-5.6-luna',
       });
     } finally {
       globalThis.localStorage = previousStorage;

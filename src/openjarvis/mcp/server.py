@@ -27,6 +27,7 @@ _TOOL_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
     "think": {"readOnlyHint": True, "destructiveHint": False},
     "retrieval": {"readOnlyHint": True, "destructiveHint": False},
     "llm": {"readOnlyHint": False, "destructiveHint": False},
+    "typesafe_decide": {"readOnlyHint": False, "destructiveHint": False},
     "file_read": {"readOnlyHint": True, "destructiveHint": False},
     "web_search": {"readOnlyHint": True, "destructiveHint": False},
     "code_interpreter": {"destructiveHint": True, "readOnlyHint": False},
@@ -148,6 +149,12 @@ class MCPServer:
             from openjarvis.tools.llm_tool import LLMTool
 
             _tool_classes.append(LLMTool)
+        except ImportError:
+            pass
+        try:
+            from openjarvis.tools.typesafe_decide import TypeSafeDecideTool
+
+            _tool_classes.append(TypeSafeDecideTool)
         except ImportError:
             pass
 

@@ -36,7 +36,8 @@ default_model = "qwen3.5:9b"        # needs reliable function calling
 # only ~130 tokens. This is per inference call, not per turn.
 max_tokens = 4096
 # Not yet exercised end to end. `scripts/launcher.sh` passes
-# `--engine cloud --model "$MODEL"` on the CLI (default gpt-5.6-luna),
+# `--engine cloud --model "$MODEL"` on the CLI (default
+# openrouter/openai/gpt-5.6-luna),
 # which overrides both keys above -- that combination is what the manual
 # ordering run has actually verified calls these tools. The local ollama
 # target above is the intended one; it just hasn't been proven yet.
@@ -72,8 +73,9 @@ parallel_tools = true
 # the WebSocket bridge and are unrelated to the Data Plane; they stay enabled.
 # Shared browsing uses the existing Playwright MCP adapters on the same page.
 # Omit tab/close and redundant verification tools; snapshot supplies grounding.
+# typesafe_decide is on-demand only; obvious intent and menu routing stay on Luna.
 # `repl` stays absent (ruling R9: in-process object-graph escape).
-enabled = "http_request,skill_manage,display_menu,display_cart,display_bill,display_payment_qr,display_clear,browser_snapshot,browser_navigate,browser_navigate_back,browser_click,browser_type,browser_fill_form,browser_select_option,browser_hover,browser_press_key,browser_wait_for,browser_handle_dialog,browser_drag,browser_network_requests,browser_console_messages"
+enabled = "http_request,skill_manage,typesafe_decide,display_menu,display_cart,display_bill,display_payment_qr,display_clear,browser_snapshot,browser_navigate,browser_navigate_back,browser_click,browser_type,browser_fill_form,browser_select_option,browser_hover,browser_press_key,browser_wait_for,browser_handle_dialog,browser_drag,browser_network_requests,browser_console_messages"
 # Draft editing, clearing, and guarded public HTTP reads remain interactive.
 # Terminal menu/payment display primitives execute inside prepared procedures.
 model_hidden = "display_menu,display_bill,display_payment_qr"

@@ -532,9 +532,20 @@ export function CartView({
   controls?: CartTouchControls;
 }) {
   const isVi = uiLanguage === 'vi';
+  const hasControls = Boolean(controls);
   const [reservedTable, setReservedTable] = useState<TouchTable | null>(null);
-  const [openDropdown, setOpenDropdown] = useState<'order_type' | 'table' | 'pickup' | null>(null);
+  const [openDropdown, setOpenDropdown] = useState<'order_type' | 'table' | 'pickup' | null>(
+    () => hasControls && order_type === 'at-table' && !table ? 'table' : null,
+  );
   const dropdownRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (hasControls && order_type === 'at-table' && !table) {
+      setOpenDropdown('table');
+    } else {
+      setOpenDropdown((current) => current === 'table' ? null : current);
+    }
+  }, [hasControls, order_type, table]);
 
   useEffect(() => {
     if (!openDropdown) return;

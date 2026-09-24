@@ -839,6 +839,32 @@ def test_display_cart_view_requires_the_agent_to_continue_with_fresh_state():
     assert result.metadata["continue_agent"] is True
 
 
+def test_standalone_cart_edit_finishes_with_verified_summary_only_after_success():
+    tool, _recorder = _wired(DisplayCartTool)
+
+    with conversation_scope("cart-standalone-edit"):
+        result = tool.execute(
+            action="add",
+            item={
+                "variant_id": "latte-standard",
+                "name": "Latte",
+                "unit_price": 51000,
+                "quantity": 2,
+            },
+            finish_turn=True,
+            open_cart=False,
+        )
+        failed = tool.execute(
+            action="update", line_id="missing", quantity=3, finish_turn=True
+        )
+
+    assert result.success
+    assert result.metadata["continue_agent"] is False
+    assert "102.000đ" in result.metadata["customer_message"]
+    assert not failed.success
+    assert "customer_message" not in failed.metadata
+
+
 def test_checkout_claim_rejects_stale_revision_replay_and_concurrent_edit():
     import pytest
 
@@ -863,6 +889,43 @@ def test_checkout_claim_rejects_stale_revision_replay_and_concurrent_edit():
         tool.settle_current()
         result = tool.execute(action="add", item=item)
         assert result.metadata["cart_revision"] > 1
+
+
+def test_checkout_claim_can_atomically_switch_confirmed_draft_to_take_out():
+    from openjarvis.core.conversation import agent_turn_scope
+
+    tool, recorder = _wired(DisplayCartTool)
+    with conversation_scope("checkout-switch-to-take-out"):
+        tool.execute(
+            action="add",
+            item={
+                "variant_id": "coffee",
+                "name": "Coffee",
+                "unit_price": 100,
+                "quantity": 1,
+            },
+        )
+        tool.execute(action="set_table", table="table-73", table_name="73")
+        before = tool.current_snapshot()
+        with agent_turn_scope() as nonce:
+            claimed = tool.begin_checkout(
+                nonce,
+                before["revision"],
+                order_type="take-out",
+                table="",
+                update_order_type=True,
+            )
+            assert tool.checkout_write_allowed()
+            assert claimed["order_type"] == "take-out"
+            assert claimed["table"] == ""
+            assert claimed["table_name"] == ""
+            assert claimed["lines"] == before["lines"]
+            assert claimed["revision"] > before["revision"]
+            assert recorder.events[-1].data["order_type"] == "take-out"
+            assert recorder.events[-1].data["table"] == ""
+            assert recorder.events[-1].data["navigate"] is False
+            tool.end_checkout()
+        assert tool.current_snapshot() == claimed
 
 
 def test_checkout_rejects_invalid_replacement_without_changing_the_draft():

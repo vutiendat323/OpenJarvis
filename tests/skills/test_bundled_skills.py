@@ -351,6 +351,8 @@ def _run_checkout(
     provider_name: str | None = "Merchant Coffee",
     provider_promotion: dict | None = None,
     pickup_minutes: int | None = None,
+    saved_draft: bool = False,
+    update_order_type: bool = False,
 ):
     cart_line = {
         "variant_id": "coffee-standard",
@@ -488,15 +490,17 @@ def _run_checkout(
         f"checkout-{requested_type}-{requested_table}-{response_type}-{response_table}"
     ):
         cart_source: dict = {"cart_lines": [cart_line]}
-        if pickup_minutes is not None:
+        if pickup_minutes is not None or saved_draft:
             # The saved-draft path: what a touch checkout or a voice revision uses.
-            for action, params in (
-                ("add", {"item": cart_line}),
-                ("set_pickup_time", {"pickup_minutes": pickup_minutes}),
-                ("set_order_note", {"order_note": requested_order_note}),
-            ):
+            edits = [("add", {"item": cart_line})]
+            if pickup_minutes is not None:
+                edits.append(("set_pickup_time", {"pickup_minutes": pickup_minutes}))
+            edits.append(("set_order_note", {"order_note": requested_order_note}))
+            for action, params in edits:
                 assert cart.edit_without_display(action, params).success
             cart_source = {"cart_revision": cart.current_snapshot()["revision"]}
+        if update_order_type:
+            cart_source["update_order_type"] = True
         with agent_turn_scope() as nonce:
             result = tool.execute(
                 order_type=requested_type,
@@ -522,6 +526,7 @@ def test_workspace_checkout_infers_order_and_guarded_cart_parameters() -> None:
         "turn_nonce",
         "cart_revision",
         "cart_lines",
+        "update_order_type",
     }
     assert set(parameters["required"]) == {
         "order_type",
@@ -534,6 +539,23 @@ def test_workspace_checkout_infers_order_and_guarded_cart_parameters() -> None:
         {"required": ["cart_revision"]},
         {"required": ["cart_lines"]},
     ]
+
+
+def test_workspace_checkout_applies_confirmed_take_out_before_write() -> None:
+    _tool, result, http, bill, display = _run_checkout(
+        response_type="take-out",
+        response_table=None,
+        requested_type="take-out",
+        requested_table="",
+        saved_draft=True,
+        update_order_type=True,
+    )
+
+    assert result.success
+    assert len(http.calls) == 4
+    assert json.loads(http.calls[2]["body"])["type"] == "take-out"
+    assert len(bill.calls) == 1
+    assert len(display.calls) == 1
 
 
 def test_workspace_checkout_sends_selected_at_table_type_and_slug() -> None:

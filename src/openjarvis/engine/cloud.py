@@ -24,6 +24,7 @@ from openjarvis.engine._base import (
     InferenceEngine,
     messages_to_dicts,
 )
+from openjarvis.engine._openrouter import openrouter_model_id
 from openjarvis.engine._stubs import StreamChunk
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ _DEEPSEEK_MODELS = [
 
 # OpenRouter models — prefixed with "openrouter/" so they can be identified
 _OPENROUTER_POPULAR = [
+    "openrouter/openai/gpt-5.6-luna",
     "openrouter/auto",
     "openrouter/openai/gpt-4o",
     "openrouter/anthropic/claude-sonnet-4",
@@ -330,7 +332,7 @@ class CloudEngine(InferenceEngine):
     is_cloud = True
 
     def supports_semantic_reasoning_stream(self, model: str) -> bool:
-        return _is_deepseek_model(model)
+        return _is_deepseek_model(model) or model.lower() == "gpt-6-luna"
 
     def __init__(self) -> None:
         self._openai_client: Any = None
@@ -1159,8 +1161,7 @@ class CloudEngine(InferenceEngine):
             raise EngineConnectionError(
                 "OpenRouter client not available — set OPENROUTER_API_KEY"
             )
-        # Strip the "openrouter/" prefix to get the actual model ID
-        actual_model = model.removeprefix("openrouter/")
+        actual_model = openrouter_model_id(model)
         kwargs.pop("response_format", None)
         create_kwargs: Dict[str, Any] = {
             "model": actual_model,
@@ -1197,11 +1198,8 @@ class CloudEngine(InferenceEngine):
             result["tool_calls"] = [
                 {
                     "id": tc.id,
-                    "type": tc.type,
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
                 }
                 for tc in choice.message.tool_calls
             ]
@@ -1708,7 +1706,7 @@ class CloudEngine(InferenceEngine):
     ) -> AsyncIterator[str]:
         if self._openrouter_client is None:
             raise EngineConnectionError("OpenRouter client not available")
-        actual_model = model.removeprefix("openrouter/")
+        actual_model = openrouter_model_id(model)
         create_kwargs: Dict[str, Any] = {
             "model": actual_model,
             "messages": messages_to_dicts(messages),
@@ -1806,11 +1804,17 @@ class CloudEngine(InferenceEngine):
             ):
                 yield chunk
             return
+        if model.lower() == "gpt-6-luna":
+            async for chunk in self._stream_full_openai_responses(
+                messages, model=model, max_tokens=max_tokens, **kwargs
+            ):
+                yield chunk
+            return
         if _is_openrouter_model(model):
             client = self._openrouter_async_client
             if client is None:
                 raise EngineConnectionError("OpenRouter client not available")
-            actual_model = model.removeprefix("openrouter/")
+            actual_model = openrouter_model_id(model)
             create_kwargs: Dict[str, Any] = {
                 "model": actual_model,
                 "messages": messages_to_dicts(messages),
@@ -1896,6 +1900,94 @@ class CloudEngine(InferenceEngine):
                     )
         finally:
             close = getattr(resp, "close", None)
+            if callable(close):
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+
+    async def _stream_full_openai_responses(
+        self,
+        messages: Sequence[Message],
+        *,
+        model: str,
+        max_tokens: int,
+        **kwargs: Any,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream GPT-6 text and function calls while retaining reasoning items."""
+        if self._openai_async_client is None:
+            raise EngineConnectionError("OpenAI client not available")
+        instructions, input_items = self._openai_responses_input(messages)
+        tools = kwargs.pop("tools", None)
+        tool_choice = kwargs.pop("tool_choice", None)
+        create_kwargs: Dict[str, Any] = {
+            "model": model,
+            "input": input_items,
+            "max_output_tokens": max_tokens,
+            "reasoning": {"effort": "high"},
+            "include": ["reasoning.encrypted_content"],
+            "store": False,
+            "stream": True,
+        }
+        if instructions:
+            create_kwargs["instructions"] = instructions
+        if tools:
+            create_kwargs["tools"] = self._openai_responses_tools(tools)
+        if tool_choice is not None:
+            if isinstance(tool_choice, dict) and isinstance(
+                tool_choice.get("function"), dict
+            ):
+                create_kwargs["tool_choice"] = {
+                    "type": "function",
+                    "name": tool_choice["function"].get("name", ""),
+                }
+            else:
+                create_kwargs["tool_choice"] = tool_choice
+
+        events = await self._openai_async_client.responses.create(**create_kwargs)
+        completed = False
+        try:
+            async for event in events:
+                if event.type == "response.output_text.delta":
+                    if event.delta:
+                        yield StreamChunk(content=event.delta)
+                elif event.type == "response.completed":
+                    completed = True
+                    response = event.response
+                    response_items = [
+                        item.model_dump(exclude_none=True)
+                        if hasattr(item, "model_dump")
+                        else dict(item)
+                        for item in response.output
+                    ]
+                    tool_calls = [
+                        {
+                            "index": index,
+                            "id": item["call_id"],
+                            "function": {
+                                "name": item["name"],
+                                "arguments": item["arguments"],
+                            },
+                        }
+                        for index, item in enumerate(response_items)
+                        if item.get("type") == "function_call"
+                    ]
+                    usage = getattr(response, "usage", None)
+                    yield StreamChunk(
+                        tool_calls=tool_calls or None,
+                        finish_reason="tool_calls" if tool_calls else "stop",
+                        response_items=response_items,
+                        usage={
+                            "prompt_tokens": getattr(usage, "input_tokens", 0),
+                            "completion_tokens": getattr(usage, "output_tokens", 0),
+                            "total_tokens": getattr(usage, "total_tokens", 0),
+                        },
+                    )
+                elif event.type in {"response.failed", "response.incomplete"}:
+                    raise EngineConnectionError(f"OpenAI Responses stream {event.type}")
+            if not completed:
+                raise EngineConnectionError("OpenAI Responses stream ended early")
+        finally:
+            close = getattr(events, "close", None) or getattr(events, "aclose", None)
             if callable(close):
                 result = close()
                 if inspect.isawaitable(result):

@@ -55,10 +55,13 @@ async def test_voice_pipeline_scope_uses_distinct_server_ids_for_raw_client_ids(
     monkeypatch,
 ):
     seen_scopes: list[str] = []
+    bound_models: list[str] = []
     sessions = VoiceSessionService()
     app = FastAPI()
     app.state.voice_session_service = sessions
-    app.state.native_agent_runtime = SimpleNamespace(bind=lambda model: object())
+    app.state.native_agent_runtime = SimpleNamespace(
+        bind=lambda model: bound_models.append(model) or object()
+    )
     app.state.model = "test-model"
     app.state.config = None
     app.state.memory_backend = None
@@ -100,7 +103,12 @@ async def test_voice_pipeline_scope_uses_distinct_server_ids_for_raw_client_ids(
     request = Request({"type": "http", "app": app, "headers": []})
     for raw_chat_id in ("", "attacker\x00scope"):
         body = routes.WebRTCOfferRequest(
-            sdp="offer", type="offer", requestData={"chat_thread_id": raw_chat_id}
+            sdp="offer",
+            type="offer",
+            requestData={
+                "chat_thread_id": raw_chat_id,
+                "model": "openrouter/openai/gpt-5.6-luna",
+            },
         )
         await routes.voice_webrtc_offer(body, request)
 
@@ -110,6 +118,10 @@ async def test_voice_pipeline_scope_uses_distinct_server_ids_for_raw_client_ids(
     assert [session.chat_thread_id for session in sessions._sessions.values()] == [
         "",
         "attacker\x00scope",
+    ]
+    assert bound_models == [
+        "openrouter/openai/gpt-5.6-luna",
+        "openrouter/openai/gpt-5.6-luna",
     ]
 
 

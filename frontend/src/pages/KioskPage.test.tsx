@@ -108,6 +108,7 @@ describe('KioskPage', () => {
       </MemoryRouter>,
     );
 
+    expect(markup).toContain('data-testid="kiosk-prompting-overlay"');
     expect(markup).toContain('Sẵn sàng trò chuyện?');
     expect(markup).toContain('Bắt đầu trò chuyện');
     expect(markup).toContain('Không phải bây giờ');
@@ -124,6 +125,7 @@ describe('KioskPage', () => {
       </MemoryRouter>,
     );
 
+    expect(markup).toContain('data-testid="kiosk-prompting-overlay"');
     expect(markup).toContain('Ready to chat?');
     expect(markup).toContain('Start chatting');
     expect(markup).toContain('Not now');
@@ -142,6 +144,7 @@ describe('KioskPage', () => {
       </MemoryRouter>,
     );
 
+    expect(markup).not.toContain('data-testid="kiosk-prompting-overlay"');
     expect(markup).not.toContain('Sẵn sàng trò chuyện?');
     expect(markup).not.toContain('Bắt đầu trò chuyện');
   });
@@ -214,6 +217,39 @@ describe('KioskPage', () => {
     expect(markup).not.toContain('Share Screen');
     expect(markup).not.toContain('hero-talk-btn');
     expect(markup).not.toContain('dock-mic-btn');
+  });
+
+  it('renders 7:3 split layout with floating rounded customer display on the left and seamless voice assistant on the right', () => {
+    const markup = renderToStaticMarkup(<MemoryRouter><KioskPage /></MemoryRouter>);
+    expect(markup).toContain('data-testid="customer-display-pane-container"');
+    expect(markup).toContain('width:70%');
+    expect(markup).toContain('border-radius:16px');
+    // Divider is removed for a seamless floating feel
+    expect(markup).not.toContain('role="separator"');
+
+    // Confirm left pane (customer display) appears before right pane (voice assistant)
+    const customerDisplayIndex = markup.indexOf('data-testid="customer-display-pane-container"');
+    const voiceAssistantIndex = markup.indexOf('aria-label="Voice assistant"');
+
+    expect(customerDisplayIndex).toBeGreaterThan(-1);
+    expect(voiceAssistantIndex).toBeGreaterThan(customerDisplayIndex);
+  });
+
+  it('renders floating mode with container and all 8 resize handles when browserMode is floating in localStorage', () => {
+    localStorage.setItem('openjarvis_kiosk_browser_mode', 'floating');
+    const markup = renderToStaticMarkup(<MemoryRouter><KioskPage /></MemoryRouter>);
+
+    expect(markup).toContain('data-testid="floating-browser-container"');
+    expect(markup).toContain('title="Resize Top"');
+    expect(markup).toContain('title="Resize Bottom"');
+    expect(markup).toContain('title="Resize Left"');
+    expect(markup).toContain('title="Resize Right"');
+    expect(markup).toContain('title="Resize Top-Left"');
+    expect(markup).toContain('title="Resize Top-Right"');
+    expect(markup).toContain('title="Resize Bottom-Left"');
+    expect(markup).toContain('title="Resize Bottom-Right"');
+    expect(markup).toContain('data-testid="shared-browser-pane"');
+    localStorage.removeItem('openjarvis_kiosk_browser_mode');
   });
 
   describe('computeEdgeGlowShadow', () => {

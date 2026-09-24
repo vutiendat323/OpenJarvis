@@ -482,6 +482,14 @@ class DisplayCartTool(_DisplayTool):
                             "their current screen stays. view always opens it."
                         ),
                     },
+                    "finish_turn": {
+                        "type": "boolean",
+                        "description": (
+                            "Only for a standalone cart action with no further "
+                            "menu, order, or payment work in this utterance. "
+                            "Finish after the verified cart update succeeds."
+                        ),
+                    },
                     "lines": {
                         "type": "array",
                         "description": "Legacy complete cart display payload.",
@@ -560,6 +568,13 @@ class DisplayCartTool(_DisplayTool):
                 success=False,
             )
         open_cart = open_cart or action == "view"
+        finish_turn = params.get("finish_turn", False)
+        if not isinstance(finish_turn, bool):
+            return ToolResult(
+                tool_name=self.spec.name,
+                content="invalid_finish_turn",
+                success=False,
+            )
 
         with self._cart_lock:
             if action != "view" and conversation_id in self._checkout_pending:
@@ -827,7 +842,25 @@ class DisplayCartTool(_DisplayTool):
                 "pickup_minutes": pickup_minutes,
             }
             metadata["cart_revision"] = revision
-            metadata["continue_agent"] = True
+            metadata["continue_agent"] = not (display and finish_turn)
+            if display and finish_turn:
+                if action == "clear" or not lines:
+                    message = "Giỏ hàng đang trống."
+                elif action == "view":
+                    message = "Giỏ hàng đã hiển thị."
+                elif action == "set_order_type":
+                    message = (
+                        "Đã chọn mang về."
+                        if order_type == "take-out"
+                        else "Đã chọn dùng tại bàn."
+                    )
+                elif action == "set_table":
+                    message = f"Đã chọn bàn {table_name}."
+                else:
+                    message = "Đã cập nhật giỏ hàng."
+                if lines:
+                    message += f" Tổng hiện tại {total:,}đ.".replace(",", ".")
+                metadata["customer_message"] = message
             return ToolResult(
                 tool_name=self.spec.name,
                 content=json.dumps(
@@ -866,6 +899,7 @@ class DisplayCartTool(_DisplayTool):
         order_type: Any = None,
         order_note: Any = None,
         table: Any = None,
+        update_order_type: bool = False,
     ) -> dict[str, Any]:
         """Reserve the exact draft once before any merchant write."""
         from openjarvis.core.conversation import claim_turn_nonce
@@ -890,6 +924,12 @@ class DisplayCartTool(_DisplayTool):
                 "take-out",
             }:
                 raise ValueError("checkout order type is invalid")
+            if update_order_type and (
+                type(update_order_type) is not bool
+                or normalized_order_type != "take-out"
+                or replacement_lines is not None
+            ):
+                raise ValueError("checkout order type update is invalid")
             if normalized_table is not None:
                 if not isinstance(normalized_table, str):
                     raise ValueError("checkout table is invalid")
@@ -926,6 +966,7 @@ class DisplayCartTool(_DisplayTool):
                 if (
                     normalized_order_type is not None
                     and snapshot["order_type"] != normalized_order_type
+                    and not update_order_type
                 ):
                     raise ValueError("checkout order type does not match the draft")
                 if (
@@ -936,6 +977,7 @@ class DisplayCartTool(_DisplayTool):
                 if (
                     normalized_table is not None
                     and snapshot["table"] != normalized_table
+                    and not update_order_type
                 ):
                     raise ValueError("checkout table does not match the draft")
             if owner in self._checkout_pending or (
@@ -945,6 +987,37 @@ class DisplayCartTool(_DisplayTool):
                 raise ValueError("cart revision already consumed")
             if not claim_turn_nonce(nonce):
                 raise ValueError("turn nonce is stale or consumed")
+            if update_order_type and snapshot["order_type"] != "take-out":
+                self._revision_sequence += 1
+                revision = self._revision_sequence
+                self._cart_revisions[owner] = revision
+                self._order_types[owner] = "take-out"
+                self._tables[owner] = ""
+                self._table_names[owner] = ""
+                snapshot = {
+                    **snapshot,
+                    "revision": revision,
+                    "order_type": "take-out",
+                    "table": "",
+                    "table_name": "",
+                }
+                if self._bus is not None:
+                    self._publish(
+                        {
+                            "view": "cart",
+                            "lines": [
+                                _picked(line, _LINE_FIELDS)
+                                for line in snapshot["lines"]
+                            ],
+                            "total": snapshot["total"],
+                            "order_note": snapshot["order_note"],
+                            "order_type": "take-out",
+                            "table": "",
+                            "table_name": "",
+                            "pickup_minutes": snapshot["pickup_minutes"],
+                            "navigate": False,
+                        }
+                    )
             if normalized_lines is not None:
                 self._revision_sequence += 1
                 revision = self._revision_sequence

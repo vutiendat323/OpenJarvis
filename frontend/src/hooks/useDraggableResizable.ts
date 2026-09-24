@@ -166,14 +166,97 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
     [minWidth, options.maxWidth, options.minWidth, ratio],
   );
 
+  const [activeHandle, setActiveHandle] = useState<ResizeHandle | null>(null);
+
+  // Window listeners for smooth, uninterrupted drag tracking
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (!dragStateRef.current) return;
+      const dx = e.clientX - dragStateRef.current.startX;
+      const dy = e.clientY - dragStateRef.current.startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        setIsMaximized(false);
+      }
+      const newPos = {
+        x: dragStateRef.current.startPosX + dx,
+        y: dragStateRef.current.startPosY + dy,
+      };
+      const bounds = getViewportBounds();
+      setPosition(clampPosition(newPos, size, bounds));
+    };
+
+    const handlePointerUp = () => {
+      dragStateRef.current = null;
+      setIsDragging(false);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [isDragging, size]);
+
+  // Window listeners for smooth, uninterrupted resize tracking across all 8 handles
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (!resizeStateRef.current) return;
+      const dx = e.clientX - resizeStateRef.current.startX;
+      const dy = e.clientY - resizeStateRef.current.startY;
+      const bounds = getViewportBounds();
+
+      const { position: newPos, size: newSize } = computeHandleResize(
+        {
+          startPos: {
+            x: resizeStateRef.current.startPosX,
+            y: resizeStateRef.current.startPosY,
+          },
+          startSize: {
+            width: resizeStateRef.current.startWidth,
+            height: resizeStateRef.current.startHeight,
+          },
+          handle: resizeStateRef.current.handle,
+        },
+        dx,
+        dy,
+        {
+          minWidth: options.minWidth ?? minWidth,
+          maxWidth: options.maxWidth ?? bounds.width,
+          minHeight: options.minHeight ?? 100,
+          maxHeight: options.maxHeight ?? bounds.height,
+          viewport: bounds,
+        },
+      );
+      setSize(newSize);
+      setPosition(newPos);
+    };
+
+    const handlePointerUp = () => {
+      resizeStateRef.current = null;
+      setActiveHandle(null);
+      setIsResizing(false);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [isResizing, minWidth, options.maxHeight, options.maxWidth, options.minHeight, options.minWidth]);
+
   const onCardPointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0) return; // Only primary button
-      const target = e.currentTarget as HTMLElement;
-      try {
-        target.setPointerCapture?.(e.pointerId);
-      } catch {}
-
       dragStateRef.current = {
         startX: e.clientX,
         startY: e.clientY,
@@ -203,11 +286,7 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
     [size],
   );
 
-  const onCardPointerUp = useCallback((e: React.PointerEvent) => {
-    if (!dragStateRef.current) return;
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-    } catch {}
+  const onCardPointerUp = useCallback(() => {
     dragStateRef.current = null;
     setIsDragging(false);
   }, []);
@@ -226,10 +305,7 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
     (e: React.PointerEvent, handle: ResizeHandle = 'se') => {
       if (e.button !== 0) return;
       e.stopPropagation();
-      const target = e.currentTarget as HTMLElement;
-      try {
-        target.setPointerCapture?.(e.pointerId);
-      } catch {}
+      e.preventDefault();
 
       resizeStateRef.current = {
         startX: e.clientX,
@@ -240,6 +316,7 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
         startPosY: position.y,
         handle,
       };
+      setActiveHandle(handle);
       setIsResizing(true);
       if (isMaximized) {
         setIsMaximized(false);
@@ -285,12 +362,9 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
   );
 
   const onResizePointerUp = useCallback((e: React.PointerEvent) => {
-    if (!resizeStateRef.current) return;
     e.stopPropagation();
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-    } catch {}
     resizeStateRef.current = null;
+    setActiveHandle(null);
     setIsResizing(false);
   }, []);
 
@@ -309,6 +383,7 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
     size,
     isDragging,
     isResizing,
+    activeHandle,
     isMaximized,
     toggleMaximize,
     zoom,
