@@ -292,3 +292,14 @@ class TestSystemdHardening:
         # be re-granted write access or the server cannot persist config/state.
         content = self._service()
         assert "ReadWritePaths=" in content
+
+
+def test_compose_persists_state_and_model_cache():
+    compose = (DOCKER_DIR / "docker-compose.yml").read_text()
+    assert "jarvis-data:/home/openjarvis/.openjarvis" in compose
+    assert "jarvis-models:/home/openjarvis/.cache" in compose
+    # Named volumes copy ownership from the image path; without it they're root-owned.
+    for path in _dockerfiles():
+        content = path.read_text()
+        if "useradd" in content:
+            assert "install -d -o openjarvis -g openjarvis" in content, path.name
