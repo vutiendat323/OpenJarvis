@@ -71,6 +71,7 @@ def test_chrome_exposes_one_page_on_loopback(tmp_path) -> None:
         browser.close()
 
 
+@pytest.mark.live  # launches a real Chrome
 def test_kiosk_serve_composes_one_browser_before_mcp_discovery(
     tmp_path, monkeypatch
 ) -> None:
