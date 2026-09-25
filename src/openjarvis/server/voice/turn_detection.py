@@ -6,6 +6,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 
+from loguru import logger
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
@@ -102,6 +103,10 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
     async def close_turn(self) -> Verdict:
         """Fix the turn's verdict; drop a rejected turn's words."""
         verdict = self._tracker.close_turn()
+        logger.info(
+            f"{self}: speaker turn verdict={verdict.value} "
+            f"frames={self._tracker.frame_counts()}"
+        )
         if verdict is Verdict.REJECT:
             await self.trigger_reset_aggregation()
         return verdict

@@ -6,7 +6,6 @@ verdicts in; the turn strategies and the LLM service read turn verdicts out.
 
 from __future__ import annotations
 
-import logging
 import os
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -16,8 +15,6 @@ from pathlib import Path
 from typing import Any
 
 import tomllib
-
-logger = logging.getLogger(__name__)
 
 
 class Verdict(str, Enum):
@@ -270,12 +267,11 @@ class SpeakerTracker:
 
     def close_turn(self) -> Verdict:
         self._closed = self.span_verdict()
-        logger.info(
-            "speaker turn verdict=%s frames=%s",
-            self._closed.value,
-            {k.value: v for k, v in self._counts.items()},
-        )
         return self._closed
+
+    def frame_counts(self) -> dict[str, int]:
+        """This span's frame verdicts, for logs."""
+        return {verdict.value: n for verdict, n in self._counts.items()}
 
     def take_turn_verdict(self) -> Verdict:
         """The verdict for the turn the LLM is about to answer, consumed once.
