@@ -157,6 +157,21 @@ class ToolExecutor:
                 success=False,
             )
 
+        from openjarvis.core.conversation import (
+            SPEAKER_UNCONFIRMED_MESSAGE,
+            speaker_blocks_tool,
+        )
+
+        # A turn whose speaker the Voice gate could not confirm must not
+        # change cart, order or payment state; the Agent asks instead.
+        if speaker_blocks_tool(tool_call.name):
+            return ToolResult(
+                tool_name=tool_call.name,
+                content=SPEAKER_UNCONFIRMED_MESSAGE,
+                success=False,
+                metadata={"speaker_unconfirmed": True, "dispatched": False},
+            )
+
         # Parse arguments
         try:
             params = json.loads(tool_call.arguments) if tool_call.arguments else {}

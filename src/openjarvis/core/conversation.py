@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from threading import RLock
-from typing import Iterator
+from typing import Iterable, Iterator
 
 _CONVERSATION_ID: ContextVar[str] = ContextVar("openjarvis_conversation_id", default="")
 _TURN_NONCE: ContextVar[str] = ContextVar("openjarvis_turn_nonce", default="")
@@ -35,6 +35,19 @@ _TURN_STATE: ContextVar[_TurnState | None] = ContextVar(
 )
 _TURN_LOCK = RLock()
 _ACTIVE_TURNS: dict[str, _TurnState] = {}
+
+# None = the speaker is confirmed (the default for every caller). A frozenset
+# = the Voice gate could not confirm who spoke this turn; only those tools
+# may run until the customer confirms.
+_UNCERTAIN_SPEAKER_TOOLS: ContextVar[frozenset[str] | None] = ContextVar(
+    "openjarvis_uncertain_speaker_tools", default=None
+)
+
+SPEAKER_UNCONFIRMED_MESSAGE = (
+    "speaker_unconfirmed: this request may not have come from the customer at "
+    "the kiosk. Nothing was changed. Ask the customer to confirm the request "
+    "before changing the cart, order or payment."
+)
 
 
 def turn_nonce_is_active(nonce: str) -> bool:
@@ -67,6 +80,22 @@ def current_conversation_id() -> str:
 def current_turn_nonce() -> str:
     """Return the opaque nonce for the active agent turn, or ""."""
     return _TURN_NONCE.get()
+
+
+@contextmanager
+def uncertain_speaker_scope(allowed_tools: Iterable[str]) -> Iterator[None]:
+    """Mark this turn's speaker as unconfirmed; only ``allowed_tools`` may run."""
+    token = _UNCERTAIN_SPEAKER_TOOLS.set(frozenset(allowed_tools))
+    try:
+        yield
+    finally:
+        _UNCERTAIN_SPEAKER_TOOLS.reset(token)
+
+
+def speaker_blocks_tool(tool_name: str) -> bool:
+    """True when an unconfirmed speaker's turn may not run ``tool_name``."""
+    allowed = _UNCERTAIN_SPEAKER_TOOLS.get()
+    return allowed is not None and tool_name not in allowed
 
 
 @contextmanager
@@ -105,10 +134,13 @@ def conversation_scope(conversation_id: str) -> Iterator[None]:
 
 
 __all__ = [
+    "SPEAKER_UNCONFIRMED_MESSAGE",
     "agent_turn_scope",
     "claim_turn_nonce",
     "conversation_scope",
     "current_conversation_id",
     "current_turn_nonce",
+    "speaker_blocks_tool",
     "turn_nonce_is_active",
+    "uncertain_speaker_scope",
 ]
