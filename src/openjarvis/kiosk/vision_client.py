@@ -22,8 +22,12 @@ class VisionClient:
     Call ``run()`` to start (persistent reconnect). Call ``stop()`` to shut down.
     """
 
-    def __init__(self, url: str = "ws://127.0.0.1:9876"):
+    def __init__(self, url: str = "ws://127.0.0.1:9876", *, faces=None):
         self._url = url
+        # Per-face mouth activity for the Voice speaker gate. It streams at
+        # 10 Hz and must never reach the kiosk queue: the FSM would read it as
+        # a presence event.
+        self._faces = faces
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=64)
         self._running = False
 
@@ -45,10 +49,16 @@ class VisionClient:
                 ) as ws:
                     delay_idx = 0  # reset on successful connect
                     logger.info("VisionClient connected to %s", self._url)
+                    if self._faces is not None:
+                        await ws.send(json.dumps({"cmd": "faces"}))
                     async for raw in ws:
                         if not self._running:
                             break
                         event = json.loads(raw)
+                        if event.get("event") == "faces":
+                            if self._faces is not None:
+                                self._faces.add(event)
+                            continue
                         # Drop oldest if consumer is slow (should never happen)
                         if self._queue.full():
                             try:

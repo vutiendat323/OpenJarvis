@@ -167,7 +167,11 @@ def _setup_kiosk(app: FastAPI, bus, channel_bridge) -> None:
     )
 
     # Launch vision client
-    client = VisionClient(vision_url)
+    from openjarvis.server.voice.speaker import FaceTrackBuffer
+
+    face_tracks = FaceTrackBuffer()
+    client = VisionClient(vision_url, faces=face_tracks)
+    app.state.face_tracks = face_tracks
 
     # Register kiosk routes
     app.include_router(kiosk_router)
