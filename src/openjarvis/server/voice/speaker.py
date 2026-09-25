@@ -34,6 +34,11 @@ class SpeakerSettings:
     bargein_accept_frames: int = 3
     accept_turn_fraction: float = 0.7
     reject_turn_fraction: float = 0.7
+    diarizer: str = "none"
+    diarizer_latency: str = "ultra_low"
+    speaker_active_prob: float = 0.5
+    overlap_on_frames: int = 3
+    overlap_off_frames: int = 4
 
 
 def _fraction(section: Mapping[str, Any], key: str, default: float) -> float:
@@ -43,6 +48,22 @@ def _fraction(section: Mapping[str, Any], key: str, default: float) -> float:
     if not 0 < value <= 1:
         raise ValueError(f"voice_speaker_{key}_must_be_in_(0,1]")
     return float(value)
+
+
+def _positive_int(section: Mapping[str, Any], key: str, default: int) -> int:
+    value = section.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"voice_speaker_{key}_must_be_a_positive_int")
+    return value
+
+
+def _choice(
+    section: Mapping[str, Any], key: str, default: str, choices: tuple[str, ...]
+) -> str:
+    value = section.get(key, default)
+    if value not in choices:
+        raise ValueError(f"voice_speaker_{key}_must_be_one_of_{'|'.join(choices)}")
+    return value
 
 
 def load_speaker_settings() -> SpeakerSettings:
@@ -72,9 +93,9 @@ def load_speaker_settings() -> SpeakerSettings:
     )
     if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
         raise ValueError("voice_speaker_uncertain_allowed_tools_must_be_a_string_list")
-    frames = section.get("bargein_accept_frames", defaults.bargein_accept_frames)
-    if isinstance(frames, bool) or not isinstance(frames, int) or frames < 1:
-        raise ValueError("voice_speaker_bargein_accept_frames_must_be_a_positive_int")
+    frames = _positive_int(
+        section, "bargein_accept_frames", defaults.bargein_accept_frames
+    )
 
     return SpeakerSettings(
         enabled=enabled,
@@ -87,6 +108,21 @@ def load_speaker_settings() -> SpeakerSettings:
         ),
         reject_turn_fraction=_fraction(
             section, "reject_turn_fraction", defaults.reject_turn_fraction
+        ),
+        diarizer=_choice(
+            section, "diarizer", defaults.diarizer, ("none", "sortformer")
+        ),
+        diarizer_latency=_choice(
+            section, "diarizer_latency", defaults.diarizer_latency, ("ultra_low", "low")
+        ),
+        speaker_active_prob=_fraction(
+            section, "speaker_active_prob", defaults.speaker_active_prob
+        ),
+        overlap_on_frames=_positive_int(
+            section, "overlap_on_frames", defaults.overlap_on_frames
+        ),
+        overlap_off_frames=_positive_int(
+            section, "overlap_off_frames", defaults.overlap_off_frames
         ),
     )
 

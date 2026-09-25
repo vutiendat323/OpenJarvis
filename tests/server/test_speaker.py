@@ -141,3 +141,43 @@ def test_a_new_turn_drops_a_closed_verdict_nobody_took():
 
     # This turn is finalized by Pipecat's watchdog, not through close_turn.
     assert tracker.take_turn_verdict() is R
+
+
+def test_diarizer_settings_load_from_the_preset(tmp_path, monkeypatch):
+    preset = tmp_path / "preset.toml"
+    preset.write_text(
+        "[voice.speaker]\n"
+        "enabled = true\n"
+        'diarizer = "sortformer"\n'
+        'diarizer_latency = "low"\n'
+        "speaker_active_prob = 0.6\n"
+        "overlap_on_frames = 2\n"
+        "overlap_off_frames = 5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENJARVIS_CONFIG", str(preset))
+
+    settings = load_speaker_settings()
+
+    assert (settings.diarizer, settings.diarizer_latency) == ("sortformer", "low")
+    assert settings.speaker_active_prob == 0.6
+    assert (settings.overlap_on_frames, settings.overlap_off_frames) == (2, 5)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'diarizer = "pyannote"',
+        'diarizer_latency = "instant"',
+        "speaker_active_prob = 0",
+        "overlap_on_frames = 0",
+        'overlap_off_frames = "4"',
+    ],
+)
+def test_malformed_diarizer_settings_fail_loudly(tmp_path, monkeypatch, body):
+    preset = tmp_path / "preset.toml"
+    preset.write_text(f"[voice.speaker]\n{body}\n", encoding="utf-8")
+    monkeypatch.setenv("OPENJARVIS_CONFIG", str(preset))
+
+    with pytest.raises(ValueError):
+        load_speaker_settings()

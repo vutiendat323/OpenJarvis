@@ -145,6 +145,12 @@ voice = [
     "emoji>=2.12",
     "markdown-it-py>=4.0",
 ]
+# Speaker diarization for the Voice target-speaker gate (NeMo streaming
+# Sortformer on CUDA). Heavy (torch); only needed with
+# [voice.speaker] diarizer = "sortformer".
+voice-speaker = [
+    "nemo_toolkit[asr]>=3.0,<4 ; python_full_version >= '3.11'",
+]
 eval-wandb = ["wandb>=0.17"]
 eval-sheets = ["gspread>=6.0", "google-auth>=2.0"]
 mining-pearl-cpu = [
