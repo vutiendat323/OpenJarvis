@@ -150,6 +150,11 @@ def turn_verdict(
 # while Jarvis was playing: the TTS voice diarizes as a speaker of its own.
 ECHO_MIN_FRAMES = 25
 ECHO_BOT_FRACTION = 0.8
+# Audio alone cannot tell the customer from a bystander, so the target follows
+# whoever holds the floor alone for 0.5 s while Jarvis is silent. Without this,
+# a bystander who spoke first would lock the customer out for the session.
+# ponytail: audio-only heuristic; vision fusion (PR-5) replaces it.
+FLOOR_FRAMES = 6
 
 
 class OverlapDetector:
@@ -188,6 +193,8 @@ class AudioOnlyGate:
         self._active_frames: Counter[int] = Counter()
         self._bot_frames: Counter[int] = Counter()
         self.target: int | None = None
+        self._floor_slot: int | None = None
+        self._floor_run = 0
 
     def is_echo(self, slot: int) -> bool:
         heard = self._active_frames[slot]
@@ -212,8 +219,15 @@ class AudioOnlyGate:
             return None
         if not voices:
             return Verdict.REJECT
-        if self.target is None and not bot_speaking and len(voices) == 1:
-            self.target = voices[0]
+        if not bot_speaking and len(voices) == 1:
+            if voices[0] == self._floor_slot:
+                self._floor_run += 1
+            else:
+                self._floor_slot, self._floor_run = voices[0], 1
+            if self.target is None or self._floor_run >= FLOOR_FRAMES:
+                self.target = voices[0]
+        else:
+            self._floor_slot, self._floor_run = None, 0
         if self.target not in voices:
             return Verdict.UNCERTAIN
         if overlap:

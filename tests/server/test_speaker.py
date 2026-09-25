@@ -262,3 +262,23 @@ def test_a_target_later_proven_to_be_echo_is_released():
     assert gate.target is None
     assert gate.frame(SLOT1, bot_speaking=False) is Verdict.ACCEPT
     assert gate.target == 1
+
+
+def test_audio_only_target_moves_to_a_voice_that_holds_the_floor():
+    gate = _gate()
+    gate.frame(SLOT0, bot_speaking=False)  # a bystander happened to speak first
+    verdicts = [gate.frame(SLOT1, bot_speaking=False) for _ in range(8)]
+
+    assert verdicts[0] is Verdict.UNCERTAIN
+    assert gate.target == 1
+    assert verdicts[-1] is Verdict.ACCEPT
+
+
+def test_speech_during_playback_never_takes_the_floor():
+    gate = _gate()
+    gate.frame(SLOT1, bot_speaking=False)
+
+    verdicts = [gate.frame(SLOT0, bot_speaking=True) for _ in range(8)]
+
+    assert set(verdicts) == {Verdict.UNCERTAIN}
+    assert gate.target == 1
