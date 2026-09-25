@@ -441,6 +441,7 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
                 stt=_transcriber(),
                 recall=recall,
                 diarizer=await _diarizer(),
+                faces=getattr(request.app.state, "face_tracks", None),
             )
             request.app.state.pipecat_voice_context = context
             # Not awaited: the handshake must answer now, and the pipeline

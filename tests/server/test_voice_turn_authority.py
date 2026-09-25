@@ -286,3 +286,39 @@ async def test_diarizer_load_failure_leaves_voice_working(monkeypatch):
 
     assert await routes._diarizer() is None
     assert await routes._diarizer() is None  # failure is remembered, not retried
+
+
+def _built_processors_with(speaker, diarizer, faces):
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    from openjarvis.server.voice.pipeline import build_voice_pipeline
+
+    stt = FrameProcessor()
+    build_voice_pipeline(
+        connection=MagicMock(),
+        binding=MagicMock(),
+        renderer=MagicMock(),
+        stt=stt,
+        speaker=speaker,
+        diarizer=diarizer,
+        faces=faces,
+    )
+    return stt._prev
+
+
+def test_vision_faces_reach_the_gate_only_when_enabled():
+    from openjarvis.server.voice.speaker import FaceTrackBuffer
+
+    faces = FaceTrackBuffer()
+    diarizer = MagicMock(chunk_samples=3840, frame_secs=0.08)
+    on = _built_processors_with(
+        SpeakerSettings(enabled=True, diarizer="sortformer", vision_faces=True),
+        diarizer,
+        faces,
+    )
+    off = _built_processors_with(
+        SpeakerSettings(enabled=True, diarizer="sortformer"), diarizer, faces
+    )
+
+    assert on._gate._faces is faces
+    assert off._gate._faces is None

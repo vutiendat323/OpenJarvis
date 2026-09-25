@@ -48,11 +48,13 @@ def build_voice_pipeline(
     recall: tuple[Any, Any] | None = None,
     speaker: Any | None = None,
     diarizer: Any | None = None,
+    faces: Any | None = None,
 ) -> Any:
     """Wire transport, VAD, STT, Agent, and voice into one runnable worker.
 
     ``speaker`` is the ``[voice.speaker]`` settings; None loads the preset's.
     ``diarizer`` is a loaded speaker diarizer, used only while the gate is on.
+    ``faces`` is Vision's face-track buffer, used when ``vision_faces`` is on.
     Returns the worker and the shared context, which the caller reads on
     teardown to write the conversation to the Chat thread.
     """
@@ -108,7 +110,8 @@ def build_voice_pipeline(
         from openjarvis.server.voice.speaker_audio import SpeakerAudioProcessor
 
         speaker_audio = SpeakerAudioProcessor(
-            diarizer=diarizer, gate=AudioOnlyGate(speaker)
+            diarizer=diarizer,
+            gate=AudioOnlyGate(speaker, faces=faces if speaker.vision_faces else None),
         )
     turn_state = VoiceTurnState()
     llm = OpenJarvisLLMService(

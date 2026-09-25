@@ -169,7 +169,7 @@ class SpeakerAudioProcessor(FrameProcessor):
         self._gate = gate
         self._executor = executor or DIARIZER_EXECUTOR
         self._pending = bytearray()
-        self._queue: asyncio.Queue[tuple[bytes, bool]] = asyncio.Queue(
+        self._queue: asyncio.Queue[tuple[bytes, bool, float]] = asyncio.Queue(
             maxsize=_MAX_QUEUED_CHUNKS
         )
         self._worker: asyncio.Task | None = None
@@ -211,17 +211,22 @@ class SpeakerAudioProcessor(FrameProcessor):
             if self._queue.full():
                 self._queue.get_nowait()
                 logger.warning(f"{self}: diarizer behind realtime; dropped a chunk")
-            self._queue.put_nowait((chunk, time.monotonic() < self._bot_audible_until))
+            self._queue.put_nowait(
+                (chunk, time.monotonic() < self._bot_audible_until, time.time())
+            )
 
     async def _diarize(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
-            chunk, bot_speaking = await self._queue.get()
+            chunk, bot_speaking, ended = await self._queue.get()
             pcm = np.frombuffer(chunk, dtype=np.int16)
             probs = await loop.run_in_executor(self._executor, self._diarizer.push, pcm)
-            for row in probs:
+            step = self._diarizer.frame_secs
+            for i, row in enumerate(probs):
                 target = self._gate.target
-                verdict = self._gate.frame(row, bot_speaking=bot_speaking)
+                # Wall-clock time of this frame, to line it up with Vision.
+                t = ended - (len(probs) - 1 - i) * step
+                verdict = self._gate.frame(row, bot_speaking=bot_speaking, t=t)
                 if self._gate.target != target:
                     logger.info(
                         f"{self}: speaker target slot {target} -> {self._gate.target}"

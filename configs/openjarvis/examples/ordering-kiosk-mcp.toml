@@ -208,6 +208,9 @@ uncertain_allowed_tools = ["display_menu"]
 # "sortformer" needs the voice-speaker extra and a CUDA GPU (~1 GB VRAM).
 diarizer = "none"
 diarizer_latency = "ultra_low"
+# Accept speech only while the nearest face within 1.5 m moves its mouth
+# (Vision `faces` stream); speech with that mouth still is rejected.
+vision_faces = false
 
 [tools.mcp]
 enabled = true

@@ -158,3 +158,26 @@ async def test_unsupported_audio_is_skipped_not_fed_to_the_model():
     assert collector.audio == 2
     assert diarizer.pushed == 0
     assert collector.verdicts == []
+
+
+@pytest.mark.anyio
+async def test_frames_carry_wall_clock_times_for_vision_fusion():
+    import time
+
+    seen = []
+
+    class _RecordingGate(AudioOnlyGate):
+        def frame(self, probs, *, bot_speaking, t=None):
+            seen.append(t)
+            return super().frame(probs, bot_speaking=bot_speaking, t=t)
+
+    diarizer = _FakeDiarizer([(0.9, 0.0, 0.0, 0.0)])
+    processor = SpeakerAudioProcessor(
+        diarizer=diarizer,
+        gate=_RecordingGate(SpeakerSettings(enabled=True)),
+        executor=ThreadPoolExecutor(max_workers=1),
+    )
+    before = time.time()
+    await _run(processor, [_audio()], until=lambda: diarizer.pushed == 1)
+
+    assert seen and before - 1 <= seen[0] <= time.time()
