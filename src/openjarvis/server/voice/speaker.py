@@ -7,7 +7,8 @@ verdicts in; the turn strategies and the LLM service read turn verdicts out.
 from __future__ import annotations
 
 import os
-from collections import Counter
+import threading
+from collections import Counter, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -235,6 +236,51 @@ class AudioOnlyGate:
         return Verdict.ACCEPT
 
 
+class FaceTrackBuffer:
+    """The last few seconds of Vision's ``faces`` events (spec §5.2)."""
+
+    def __init__(self, history_s: float = 3.0) -> None:
+        self._history = history_s
+        self._events: deque[dict] = deque()
+        self._lock = threading.Lock()
+
+    def add(self, event: dict) -> None:
+        with self._lock:
+            self._events.append(event)
+            newest = event.get("ts", 0.0)
+            while (
+                self._events and self._events[0].get("ts", 0.0) < newest - self._history
+            ):
+                self._events.popleft()
+
+    def fresh(self, now: float, max_age: float = 1.0) -> bool:
+        with self._lock:
+            return bool(self._events) and now - self._events[-1]["ts"] <= max_age
+
+    def anchor(self, t: float, max_m: float) -> int | None:
+        with self._lock:
+            if not self._events:
+                return None
+            event = min(self._events, key=lambda e: abs(e["ts"] - t))
+        near = [
+            (f["distance_m"], f["track_id"])
+            for f in event.get("tracks", ())
+            if f.get("distance_m") is not None and f["distance_m"] <= max_m
+        ]
+        return min(near)[1] if near else None
+
+    def mouth(self, track_id: int, t0: float, t1: float) -> float | None:
+        with self._lock:
+            values = [
+                f["mouth_activity"]
+                for e in self._events
+                if t0 <= e["ts"] <= t1
+                for f in e.get("tracks", ())
+                if f["track_id"] == track_id and f.get("mouth_activity") is not None
+            ]
+        return max(values) if values else None
+
+
 class SpeakerTracker:
     """One Voice session's speaker evidence, shared by the turn strategies
     and the LLM service. Everything runs on the pipeline's event loop."""
@@ -286,6 +332,7 @@ class SpeakerTracker:
 
 __all__ = [
     "AudioOnlyGate",
+    "FaceTrackBuffer",
     "OverlapDetector",
     "SpeakerSettings",
     "SpeakerTracker",

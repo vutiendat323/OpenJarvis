@@ -6,6 +6,7 @@ import pytest
 
 from openjarvis.server.voice.speaker import (
     AudioOnlyGate,
+    FaceTrackBuffer,
     OverlapDetector,
     SpeakerSettings,
     SpeakerTracker,
@@ -282,3 +283,48 @@ def test_speech_during_playback_never_takes_the_floor():
 
     assert set(verdicts) == {Verdict.UNCERTAIN}
     assert gate.target == 1
+
+
+def _faces(ts, *tracks):
+    return {
+        "event": "faces",
+        "ts": ts,
+        "tracks": [
+            {
+                "track_id": tid,
+                "distance_m": d,
+                "facing": d is not None,
+                "cx_norm": 0.5,
+                "mouth_activity": m,
+                "active_speaker_probability": None,
+            }
+            for tid, d, m in tracks
+        ],
+    }
+
+
+def test_face_buffer_picks_the_nearest_engaged_face():
+    buffer = FaceTrackBuffer()
+    buffer.add(_faces(10.0, (1, 2.4, 0.9), (2, 0.8, 0.1), (3, None, 1.0)))
+
+    assert buffer.anchor(10.0, max_m=1.5) == 2
+    assert buffer.anchor(10.0, max_m=0.5) is None
+
+
+def test_face_buffer_reports_the_loudest_mouth_in_a_window():
+    buffer = FaceTrackBuffer()
+    for i, m in enumerate((0.1, 0.9, 0.2)):
+        buffer.add(_faces(10.0 + i * 0.1, (2, 0.8, m)))
+
+    assert buffer.mouth(2, 9.95, 10.25) == 0.9
+    assert buffer.mouth(2, 10.15, 10.25) == 0.2
+    assert buffer.mouth(9, 9.0, 11.0) is None
+
+
+def test_face_buffer_freshness_and_history_limit():
+    buffer = FaceTrackBuffer(history_s=3.0)
+    buffer.add(_faces(10.0, (2, 0.8, 0.9)))
+    buffer.add(_faces(14.0, (2, 0.8, 0.1)))
+
+    assert buffer.fresh(14.5) and not buffer.fresh(15.5)
+    assert buffer.mouth(2, 9.0, 11.0) is None  # older than 3 s, dropped
