@@ -25,8 +25,14 @@ from openjarvis.server.voice.pipeline import (
     build_voice_pipeline,
     claim_voice_lease,
 )
+from openjarvis.server.voice.speaker import load_speaker_settings
 
 logger = logging.getLogger(__name__)
+
+try:
+    from openjarvis.server.voice.speaker_audio import SortformerDiarizer
+except ImportError:  # pipecat missing: the voice router is not mounted anyway
+    SortformerDiarizer = None  # type: ignore[assignment,misc]
 
 router = APIRouter(tags=["pipecat-voice"])
 
@@ -218,6 +224,39 @@ _RENDERER: Any = None
 GEMINI_STT_TTFS_P99_SECS = 1.6
 
 
+_DIARIZER: Any | None = None
+_DIARIZER_FAILED = False
+_DIARIZER_LOCK = asyncio.Lock()
+
+
+async def _diarizer() -> Any | None:
+    """The process's speaker diarizer, or None to run without one.
+
+    Loaded once, off the event loop (~15 s cold on the dev laptop). A failure
+    (no CUDA, no NeMo, no memory) is logged once and remembered: Voice then
+    runs with the gate's no-evidence behaviour instead of breaking.
+    """
+    global _DIARIZER, _DIARIZER_FAILED
+    settings = load_speaker_settings()
+    if not settings.enabled or settings.diarizer != "sortformer":
+        return None
+    async with _DIARIZER_LOCK:
+        if _DIARIZER is None and not _DIARIZER_FAILED:
+            try:
+                _DIARIZER = await asyncio.to_thread(
+                    SortformerDiarizer, settings.diarizer_latency
+                )
+            except Exception:  # noqa: BLE001 - optional capability
+                _DIARIZER_FAILED = True
+                logger.exception("speaker diarizer unavailable; gate runs without it")
+    return _DIARIZER
+
+
+async def warm_speaker_models() -> None:
+    """Load the diarizer at startup so the first customer does not wait."""
+    await _diarizer()
+
+
 async def _renderer() -> Any:
     """The one local VieNeu renderer every session speaks through.
 
@@ -401,6 +440,7 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
                 renderer=await _renderer(),
                 stt=_transcriber(),
                 recall=recall,
+                diarizer=await _diarizer(),
             )
             request.app.state.pipecat_voice_context = context
             # Not awaited: the handshake must answer now, and the pipeline

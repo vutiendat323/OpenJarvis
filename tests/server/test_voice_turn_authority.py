@@ -224,3 +224,65 @@ async def test_opening_a_turn_clears_an_untaken_verdict():
     await strategy.process_frame(VADUserStartedSpeakingFrame())
 
     assert tracker.take_turn_verdict() is Verdict.ACCEPT
+
+
+def _built_processors(speaker, diarizer):
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    from openjarvis.server.voice.pipeline import build_voice_pipeline
+
+    stt = FrameProcessor()
+    build_voice_pipeline(
+        connection=MagicMock(),
+        binding=MagicMock(),
+        renderer=MagicMock(),
+        stt=stt,
+        speaker=speaker,
+        diarizer=diarizer,
+    )
+    return stt._prev
+
+
+def test_enabled_gate_with_a_diarizer_feeds_it_before_stt():
+    from openjarvis.server.voice.speaker_audio import SpeakerAudioProcessor
+
+    diarizer = MagicMock(chunk_samples=3840, frame_secs=0.08)
+    before_stt = _built_processors(
+        SpeakerSettings(enabled=True, diarizer="sortformer"), diarizer
+    )
+
+    assert isinstance(before_stt, SpeakerAudioProcessor)
+    assert before_stt._diarizer is diarizer
+
+
+def test_no_diarizer_keeps_milestone_one_wiring():
+    from openjarvis.server.voice.speaker_audio import SpeakerAudioProcessor
+
+    for speaker, diarizer in (
+        (SpeakerSettings(enabled=True, diarizer="sortformer"), None),
+        (SpeakerSettings(enabled=False, diarizer="sortformer"), MagicMock()),
+    ):
+        assert not isinstance(
+            _built_processors(speaker, diarizer), SpeakerAudioProcessor
+        )
+
+
+@pytest.mark.anyio
+async def test_diarizer_load_failure_leaves_voice_working(monkeypatch):
+    from openjarvis.server.voice import routes
+
+    monkeypatch.setattr(routes, "_DIARIZER", None)
+    monkeypatch.setattr(routes, "_DIARIZER_FAILED", False)
+    monkeypatch.setattr(
+        routes,
+        "load_speaker_settings",
+        lambda: SpeakerSettings(enabled=True, diarizer="sortformer"),
+    )
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("no CUDA")
+
+    monkeypatch.setattr(routes, "SortformerDiarizer", boom)
+
+    assert await routes._diarizer() is None
+    assert await routes._diarizer() is None  # failure is remembered, not retried

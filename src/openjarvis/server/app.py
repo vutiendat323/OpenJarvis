@@ -556,6 +556,15 @@ def create_app(
     if app.state.gemini_live_poc_enabled:
         app.include_router(voice_router)
 
+        @app.on_event("startup")
+        async def _warm_speaker_models() -> None:
+            import asyncio
+
+            from openjarvis.server.voice.routes import warm_speaker_models
+
+            # Background: a cold model load must not hold up server start.
+            app.state.speaker_warmup = asyncio.create_task(warm_speaker_models())
+
     # --- Kiosk subsystem (proximity-aware voice kiosk) ---
     if os.environ.get("KIOSK_ENABLED", "").strip() in ("1", "true", "yes"):
         _setup_kiosk(app, bus, channel_bridge)

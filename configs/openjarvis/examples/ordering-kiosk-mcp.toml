@@ -205,6 +205,9 @@ custom_vocabulary = [
 # the customer to confirm first.
 enabled = false
 uncertain_allowed_tools = ["display_menu"]
+# "sortformer" needs the voice-speaker extra and a CUDA GPU (~1 GB VRAM).
+diarizer = "none"
+diarizer_latency = "ultra_low"
 
 [tools.mcp]
 enabled = true
