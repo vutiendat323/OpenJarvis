@@ -328,3 +328,83 @@ def test_face_buffer_freshness_and_history_limit():
 
     assert buffer.fresh(14.5) and not buffer.fresh(15.5)
     assert buffer.mouth(2, 9.0, 11.0) is None  # older than 3 s, dropped
+
+
+def _vision_gate(**overrides):
+    faces = FaceTrackBuffer()
+    settings = SpeakerSettings(enabled=True, vision_faces=True, **overrides)
+    return AudioOnlyGate(settings, faces=faces), faces
+
+
+def test_voice_with_the_customers_mouth_moving_is_accepted():
+    gate, faces = _vision_gate()
+    faces.add(_faces(100.0, (2, 0.7, 0.9)))
+
+    assert gate.frame(SLOT1, bot_speaking=True, t=100.1) is Verdict.ACCEPT
+
+
+def test_voice_while_the_customers_mouth_is_still_is_rejected():
+    gate, faces = _vision_gate()
+    faces.add(_faces(100.0, (2, 0.7, 0.05)))
+
+    # The 2026-09-26 live failure: a phone video talking over Jarvis.
+    assert gate.frame(SLOT1, bot_speaking=True, t=100.1) is Verdict.REJECT
+
+
+def test_a_farther_talker_is_not_the_customer():
+    gate, faces = _vision_gate()
+    faces.add(_faces(100.0, (2, 0.7, 0.05), (5, 1.2, 1.0)))
+
+    assert gate.frame(SLOT1, bot_speaking=False, t=100.1) is Verdict.REJECT
+
+
+def test_nobody_engaged_is_uncertain_not_accepted():
+    gate, faces = _vision_gate()
+    faces.add(_faces(100.0, (5, 2.5, 1.0)))
+
+    assert gate.frame(SLOT1, bot_speaking=False, t=100.1) is Verdict.UNCERTAIN
+
+
+def test_mouth_evidence_counts_within_three_tenths_of_a_second():
+    gate, faces = _vision_gate()
+    faces.add(_faces(100.0, (2, 0.7, 0.9)))
+    faces.add(_faces(100.5, (2, 0.7, 0.05)))
+
+    assert gate.frame(SLOT1, bot_speaking=False, t=100.25) is Verdict.ACCEPT
+    assert gate.frame(SLOT1, bot_speaking=False, t=100.4) is Verdict.REJECT
+
+
+def test_stale_vision_falls_back_to_audio_only():
+    gate, faces = _vision_gate()
+    faces.add(_faces(100.0, (2, 0.7, 0.05)))
+
+    # 2 s later with no new faces event: audio-only binds the first voice.
+    assert gate.frame(SLOT1, bot_speaking=False, t=102.0) is Verdict.ACCEPT
+
+
+def test_echo_is_still_rejected_with_vision():
+    gate, faces = _vision_gate()
+    for i in range(30):
+        faces.add(_faces(100.0 + i * 0.08, (2, 0.7, 0.9)))
+        gate.frame(SLOT0, bot_speaking=True, t=100.0 + i * 0.08)
+
+    assert gate.frame(SLOT0, bot_speaking=True, t=102.4) is Verdict.REJECT
+
+
+def test_vision_settings_load(tmp_path, monkeypatch):
+    preset = tmp_path / "preset.toml"
+    preset.write_text(
+        "[voice.speaker]\n"
+        "vision_faces = true\n"
+        "mouth_active = 0.4\n"
+        "anchor_max_m = 1.2\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENJARVIS_CONFIG", str(preset))
+    settings = load_speaker_settings()
+
+    assert (settings.vision_faces, settings.mouth_active, settings.anchor_max_m) == (
+        True,
+        0.4,
+        1.2,
+    )

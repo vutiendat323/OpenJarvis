@@ -40,6 +40,9 @@ class SpeakerSettings:
     speaker_active_prob: float = 0.5
     overlap_on_frames: int = 3
     overlap_off_frames: int = 4
+    vision_faces: bool = False
+    mouth_active: float = 0.5
+    anchor_max_m: float = 1.5
 
 
 def _fraction(section: Mapping[str, Any], key: str, default: float) -> float:
@@ -55,6 +58,20 @@ def _positive_int(section: Mapping[str, Any], key: str, default: int) -> int:
     value = section.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"voice_speaker_{key}_must_be_a_positive_int")
+    return value
+
+
+def _positive_float(section: Mapping[str, Any], key: str, default: float) -> float:
+    value = section.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ValueError(f"voice_speaker_{key}_must_be_a_positive_number")
+    return float(value)
+
+
+def _boolean(section: Mapping[str, Any], key: str, default: bool) -> bool:
+    value = section.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"voice_speaker_{key}_must_be_a_boolean")
     return value
 
 
@@ -125,6 +142,9 @@ def load_speaker_settings() -> SpeakerSettings:
         overlap_off_frames=_positive_int(
             section, "overlap_off_frames", defaults.overlap_off_frames
         ),
+        vision_faces=_boolean(section, "vision_faces", defaults.vision_faces),
+        mouth_active=_fraction(section, "mouth_active", defaults.mouth_active),
+        anchor_max_m=_positive_float(section, "anchor_max_m", defaults.anchor_max_m),
     )
 
 
@@ -156,6 +176,9 @@ ECHO_BOT_FRACTION = 0.8
 # a bystander who spoke first would lock the customer out for the session.
 # ponytail: audio-only heuristic; vision fusion (PR-5) replaces it.
 FLOOR_FRAMES = 6
+# Vision samples mouths at 10 Hz and scores the last 0.5 s, so an audio frame
+# is judged by the customer's mouth within 0.3 s either side of it.
+VISION_WINDOW_SECS = 0.3
 
 
 class OverlapDetector:
@@ -179,13 +202,19 @@ class OverlapDetector:
 
 
 class AudioOnlyGate:
-    """Frame verdicts from diarizer probabilities alone (spec §5.4 rules 1, 2, 6).
+    """Frame verdicts from diarizer probabilities (spec §5.4).
 
-    Vision fusion (PR-5) replaces the bystander rule; until then audio can
-    only say "not the target", which is UNCERTAIN, never REJECT.
+    With fresh Vision face tracks, speech counts only while the engaged
+    customer's mouth moves; anything else heard is REJECTed. Without them,
+    audio alone can only say "not the target", which is UNCERTAIN.
     """
 
-    def __init__(self, settings: SpeakerSettings) -> None:
+    def __init__(
+        self, settings: SpeakerSettings, faces: FaceTrackBuffer | None = None
+    ) -> None:
+        self._faces = faces
+        self._mouth_active = settings.mouth_active
+        self._anchor_max_m = settings.anchor_max_m
         self._threshold = settings.speaker_active_prob
         self._overlap = OverlapDetector(
             on_frames=settings.overlap_on_frames,
@@ -204,7 +233,9 @@ class AudioOnlyGate:
             and self._bot_frames[slot] / heard >= ECHO_BOT_FRACTION
         )
 
-    def frame(self, probs: Sequence[float], *, bot_speaking: bool) -> Verdict | None:
+    def frame(
+        self, probs: Sequence[float], *, bot_speaking: bool, t: float | None = None
+    ) -> Verdict | None:
         active = [slot for slot, p in enumerate(probs) if p >= self._threshold]
         for slot in active:
             self._active_frames[slot] += 1
@@ -229,6 +260,18 @@ class AudioOnlyGate:
                 self.target = voices[0]
         else:
             self._floor_slot, self._floor_run = None, 0
+        if self._faces is not None and t is not None and self._faces.fresh(t):
+            if overlap:
+                return Verdict.UNCERTAIN
+            anchor = self._faces.anchor(t, self._anchor_max_m)
+            if anchor is None:
+                return Verdict.UNCERTAIN
+            mouth = self._faces.mouth(
+                anchor, t - VISION_WINDOW_SECS, t + VISION_WINDOW_SECS
+            )
+            if mouth is not None and mouth >= self._mouth_active:
+                return Verdict.ACCEPT
+            return Verdict.REJECT
         if self.target not in voices:
             return Verdict.UNCERTAIN
         if overlap:
