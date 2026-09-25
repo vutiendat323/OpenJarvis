@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -146,6 +146,77 @@ def turn_verdict(
     return Verdict.UNCERTAIN
 
 
+# A slot is judged as echo only after 2 s of its speech, most of it heard
+# while Jarvis was playing: the TTS voice diarizes as a speaker of its own.
+ECHO_MIN_FRAMES = 25
+ECHO_BOT_FRACTION = 0.8
+
+
+class OverlapDetector:
+    """Two or more voices at once, with hysteresis so 80 ms spikes don't count."""
+
+    def __init__(self, *, on_frames: int, off_frames: int) -> None:
+        self._on_frames = on_frames
+        self._off_frames = off_frames
+        self._run = 0
+        self.active = False
+
+    def update(self, n_voices: int) -> bool:
+        if (n_voices >= 2) != self.active:
+            self._run += 1
+        else:
+            self._run = 0
+        if self._run >= (self._off_frames if self.active else self._on_frames):
+            self.active = not self.active
+            self._run = 0
+        return self.active
+
+
+class AudioOnlyGate:
+    """Frame verdicts from diarizer probabilities alone (spec §5.4 rules 1, 2, 6).
+
+    Vision fusion (PR-5) replaces the bystander rule; until then audio can
+    only say "not the target", which is UNCERTAIN, never REJECT.
+    """
+
+    def __init__(self, settings: SpeakerSettings) -> None:
+        self._threshold = settings.speaker_active_prob
+        self._overlap = OverlapDetector(
+            on_frames=settings.overlap_on_frames,
+            off_frames=settings.overlap_off_frames,
+        )
+        self._active_frames: Counter[int] = Counter()
+        self._bot_frames: Counter[int] = Counter()
+        self.target: int | None = None
+
+    def is_echo(self, slot: int) -> bool:
+        heard = self._active_frames[slot]
+        return (
+            heard >= ECHO_MIN_FRAMES
+            and self._bot_frames[slot] / heard >= ECHO_BOT_FRACTION
+        )
+
+    def frame(self, probs: Sequence[float], *, bot_speaking: bool) -> Verdict | None:
+        active = [slot for slot, p in enumerate(probs) if p >= self._threshold]
+        for slot in active:
+            self._active_frames[slot] += 1
+            if bot_speaking:
+                self._bot_frames[slot] += 1
+        voices = [slot for slot in active if not self.is_echo(slot)]
+        overlap = self._overlap.update(len(voices))
+        if not active:
+            return None
+        if not voices:
+            return Verdict.REJECT
+        if self.target is None and not bot_speaking and len(voices) == 1:
+            self.target = voices[0]
+        if self.target not in voices:
+            return Verdict.UNCERTAIN
+        if overlap:
+            return Verdict.UNCERTAIN
+        return Verdict.ACCEPT
+
+
 class SpeakerTracker:
     """One Voice session's speaker evidence, shared by the turn strategies
     and the LLM service. Everything runs on the pipeline's event loop."""
@@ -192,6 +263,8 @@ class SpeakerTracker:
 
 
 __all__ = [
+    "AudioOnlyGate",
+    "OverlapDetector",
     "SpeakerSettings",
     "SpeakerTracker",
     "Verdict",

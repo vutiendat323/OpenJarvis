@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from openjarvis.server.voice.speaker import (
+    AudioOnlyGate,
+    OverlapDetector,
     SpeakerSettings,
     SpeakerTracker,
     Verdict,
@@ -181,3 +183,69 @@ def test_malformed_diarizer_settings_fail_loudly(tmp_path, monkeypatch, body):
 
     with pytest.raises(ValueError):
         load_speaker_settings()
+
+
+def test_overlap_needs_sustained_dual_activity():
+    detector = OverlapDetector(on_frames=3, off_frames=4)
+
+    assert [detector.update(n) for n in (2, 2, 1)] == [False, False, False]
+    assert [detector.update(n) for n in (2, 2, 2)] == [False, False, True]
+    assert [detector.update(n) for n in (1, 1, 1)] == [True, True, True]
+    assert detector.update(0) is False
+
+
+def _gate(**overrides):
+    return AudioOnlyGate(SpeakerSettings(enabled=True, **overrides))
+
+
+SILENT = (0.0, 0.0, 0.0, 0.0)
+SLOT0 = (0.9, 0.0, 0.0, 0.0)
+SLOT1 = (0.0, 0.9, 0.0, 0.0)
+BOTH = (0.9, 0.9, 0.0, 0.0)
+
+
+def test_silence_has_no_verdict():
+    assert _gate().frame(SILENT, bot_speaking=False) is None
+
+
+def test_first_voice_while_bot_silent_is_the_target():
+    gate = _gate()
+
+    assert gate.frame(SLOT1, bot_speaking=False) is Verdict.ACCEPT
+    assert gate.target == 1
+    assert gate.frame(SLOT0, bot_speaking=False) is Verdict.UNCERTAIN
+
+
+def test_a_voice_heard_only_during_playback_never_becomes_the_target():
+    gate = _gate()
+
+    assert gate.frame(SLOT0, bot_speaking=True) is Verdict.UNCERTAIN
+    assert gate.target is None
+
+
+def test_a_slot_living_inside_bot_playback_is_echo_and_rejected():
+    gate = _gate()
+    gate.frame(SLOT1, bot_speaking=False)  # customer bound first
+    verdicts = [gate.frame(SLOT0, bot_speaking=True) for _ in range(30)]
+
+    assert gate.is_echo(0) is True
+    assert Verdict.ACCEPT not in verdicts
+    assert verdicts[-1] is Verdict.REJECT
+
+
+def test_customer_over_echo_is_still_accepted():
+    gate = _gate()
+    gate.frame(SLOT1, bot_speaking=False)
+    for _ in range(30):
+        gate.frame(SLOT0, bot_speaking=True)
+
+    # Echo slot 0 plus customer slot 1: echo is not a voice, no overlap.
+    assert gate.frame(BOTH, bot_speaking=True) is Verdict.ACCEPT
+
+
+def test_sustained_overlap_with_the_target_is_uncertain():
+    gate = _gate(overlap_on_frames=2)
+    gate.frame(SLOT1, bot_speaking=False)
+
+    assert gate.frame(BOTH, bot_speaking=False) is Verdict.ACCEPT
+    assert gate.frame(BOTH, bot_speaking=False) is Verdict.UNCERTAIN
