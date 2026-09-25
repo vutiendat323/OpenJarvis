@@ -151,7 +151,13 @@ def test_kiosk_mcp_prompt_uses_prepared_reads_and_verified_cart() -> None:
     assert "display_menu(item_indices=[...])" in folded
     assert "do not call a menu skill or any http tool for this refinement" in folded
     assert "even without the words “trong danh sách này”" in folded
-    assert "for a new topic or category" in folded
+    assert "for a new topic, ingredient or category" in folded
+    assert "more than one item" in folded
+    assert "single isolated item" in folded
+    assert "treat its `visible_items` as the active screen" in folded
+    assert "shortest ingredient or product noun" in folded
+    assert "minprice=maxprice" in folded
+    assert "never put prices or currency words in `itemterms`" in folded
     assert "leave `categoryterms` empty unless the customer explicitly asks" in folded
     assert "runtime_context.customer_screen_search.visible_items" in folded
     assert "one atomic cart publication" in folded

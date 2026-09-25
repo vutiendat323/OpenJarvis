@@ -413,9 +413,12 @@ class DisplayMenuMemoryTool(BaseTool):
         return ToolSpec(
             name="display_menu",
             description=(
-                "Refine the current displayed_menu without HTTP. Pass 1-based "
-                "positions from that list in the order to show them; item IDs, "
-                "names and prices come from RAM. An empty list shows zero matches."
+                "Refine the current visible menu in RAM only when it contains "
+                "more than one item. Use customer_screen_search.visible_items "
+                "when present; otherwise use displayed_menu. With zero or one "
+                "item, use the menu skill for a fresh search or filter. Pass "
+                "1-based positions in display order; item facts come from "
+                "verified rows. An empty selection shows zero matches."
             ),
             parameters={
                 "type": "object",
@@ -438,11 +441,16 @@ class DisplayMenuMemoryTool(BaseTool):
 
     def execute(self, **params: Any) -> ToolResult:
         indices = params.get("item_indices")
-        rows = self._display.agent_context().get("displayed_menu", [])
+        context = self._display.agent_context()
+        from_screen_search = "customer_screen_search" in context
+        rows = (
+            context["customer_screen_search"].get("visible_items", [])
+            if from_screen_search
+            else context.get("displayed_menu", [])
+        )
         if (
             set(params) != {"item_indices"}
             or not isinstance(indices, list)
-            or not rows
             or any(
                 type(index) is not int or index < 1 or index > len(rows)
                 for index in indices
@@ -453,6 +461,17 @@ class DisplayMenuMemoryTool(BaseTool):
                 tool_name="display_menu",
                 content="menu_refinement_invalid",
                 success=False,
+            )
+        if len(rows) < 2:
+            return ToolResult(
+                tool_name="display_menu",
+                content="menu_refinement_requires_multiple_items",
+                success=False,
+            )
+        if from_screen_search:
+            return self._display.execute(
+                items=[rows[index - 1] for index in indices],
+                result_complete=True,
             )
         ids = [rows[index - 1].get("id") for index in indices]
         return self._display.execute(

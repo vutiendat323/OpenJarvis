@@ -64,7 +64,7 @@ class TestCloudEngineListModels:
 
 
 class TestCloudEngineGenerate:
-    def test_gpt_6_responses_accepts_low_reasoning_for_verified_followup(
+    def test_gpt_6_responses_keeps_high_reasoning_for_verified_followup(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
@@ -86,11 +86,11 @@ class TestCloudEngineGenerate:
         )
 
         assert client.responses.create.call_args.kwargs["reasoning"] == {
-            "effort": "low"
+            "effort": "high"
         }
 
     @pytest.mark.asyncio
-    async def test_gpt_6_stream_accepts_low_reasoning_for_verified_followup(
+    async def test_gpt_6_stream_keeps_high_reasoning_for_verified_followup(
         self,
     ) -> None:
         async def events():
@@ -114,7 +114,7 @@ class TestCloudEngineGenerate:
         ]
 
         assert client.responses.create.call_args.kwargs["reasoning"] == {
-            "effort": "low"
+            "effort": "high"
         }
 
     def test_generate_openai(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -145,9 +145,16 @@ class TestCloudEngineGenerate:
         assert result["content"] == "Hello!"
         assert result["usage"]["prompt_tokens"] == 10
 
-    @pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-6-luna"])
+    @pytest.mark.parametrize(
+        ("model", "provider_model"),
+        [
+            ("gpt-5.6-luna", "gpt-5.6-luna"),
+            ("gpt-6-luna", "gpt-6-luna"),
+            ("openrouter/openai/gpt-6-luna", "openai/gpt-6-luna"),
+        ],
+    )
     def test_luna_tool_calls_use_responses_with_high_reasoning(
-        self, monkeypatch: pytest.MonkeyPatch, model: str
+        self, monkeypatch: pytest.MonkeyPatch, model: str, provider_model: str
     ) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         fake_client = mock.MagicMock()
@@ -181,11 +188,14 @@ class TestCloudEngineGenerate:
                 output_tokens=5,
                 total_tokens=15,
             ),
-            model=model,
+            model=provider_model,
             status="completed",
         )
         engine = CloudEngine()
-        engine._openai_client = fake_client
+        if model.startswith("openrouter/"):
+            engine._openrouter_client = fake_client
+        else:
+            engine._openai_client = fake_client
 
         engine.generate(
             [Message(role=Role.USER, content="Hi")],
@@ -196,6 +206,7 @@ class TestCloudEngineGenerate:
 
         fake_client.chat.completions.create.assert_not_called()
         sent = fake_client.responses.create.call_args.kwargs
+        assert sent["model"] == provider_model
         assert sent["reasoning"] == {"effort": "high"}
         assert "reasoning_effort" not in sent
         assert sent["include"] == ["reasoning.encrypted_content"]
@@ -210,7 +221,16 @@ class TestCloudEngineGenerate:
         assert sent["store"] is False
 
     @pytest.mark.asyncio
-    async def test_gpt_6_tool_stream_uses_high_reasoning_responses(self) -> None:
+    @pytest.mark.parametrize(
+        ("model", "provider_model"),
+        [
+            ("gpt-6-luna", "gpt-6-luna"),
+            ("openrouter/openai/gpt-6-luna", "openai/gpt-6-luna"),
+        ],
+    )
+    async def test_gpt_6_tool_stream_uses_high_reasoning_responses(
+        self, model: str, provider_model: str
+    ) -> None:
         async def events():
             yield SimpleNamespace(type="response.output_text.delta", delta="Dạ, ")
             yield SimpleNamespace(
@@ -250,20 +270,24 @@ class TestCloudEngineGenerate:
         client = mock.MagicMock()
         client.responses.create = mock.AsyncMock(return_value=events())
         engine = CloudEngine()
-        engine._openai_async_client = client
-        assert engine.supports_semantic_reasoning_stream("gpt-6-luna")
+        if model.startswith("openrouter/"):
+            engine._openrouter_async_client = client
+        else:
+            engine._openai_async_client = client
+        assert engine.supports_semantic_reasoning_stream(model)
 
         chunks = [
             chunk
             async for chunk in engine.stream_full(
                 [Message(role=Role.USER, content="Hi")],
-                model="gpt-6-luna",
+                model=model,
                 tools=[{"type": "function", "function": {"name": "lookup"}}],
             )
         ]
 
         client.chat.completions.create.assert_not_called()
         sent = client.responses.create.call_args.kwargs
+        assert sent["model"] == provider_model
         assert sent["reasoning"] == {"effort": "high"}
         assert sent["tools"][0]["name"] == "lookup"
         assert sent["stream"] is True
@@ -333,29 +357,43 @@ class TestCloudEngineGenerate:
             ]
 
     @pytest.mark.asyncio
-    async def test_gpt_6_text_stream_uses_supported_chat_mode(self) -> None:
+    @pytest.mark.parametrize(
+        ("model", "provider_model"),
+        [
+            ("gpt-6-luna", "gpt-6-luna"),
+            ("openrouter/openai/gpt-6-luna", "openai/gpt-6-luna"),
+        ],
+    )
+    async def test_gpt_6_text_stream_uses_high_reasoning_responses(
+        self, model: str, provider_model: str
+    ) -> None:
+        async def events():
+            yield SimpleNamespace(type="response.output_text.delta", delta="OK")
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(output=[], usage=None),
+            )
+
         client = mock.MagicMock()
-        client.chat.completions.create.return_value = iter(
-            [
-                SimpleNamespace(
-                    choices=[SimpleNamespace(delta=SimpleNamespace(content="OK"))]
-                )
-            ]
-        )
+        client.responses.create = mock.AsyncMock(return_value=events())
         engine = CloudEngine()
-        engine._openai_client = client
+        if model.startswith("openrouter/"):
+            engine._openrouter_async_client = client
+        else:
+            engine._openai_async_client = client
 
         tokens = [
             token
             async for token in engine.stream(
-                [Message(role=Role.USER, content="Hi")], model="gpt-6-luna"
+                [Message(role=Role.USER, content="Hi")], model=model
             )
         ]
 
         assert tokens == ["OK"]
-        sent = client.chat.completions.create.call_args.kwargs
-        assert sent["reasoning_effort"] == "none"
-        assert "temperature" not in sent
+        client.chat.completions.create.assert_not_called()
+        sent = client.responses.create.call_args.kwargs
+        assert sent["model"] == provider_model
+        assert sent["reasoning"] == {"effort": "high"}
 
     def test_gpt_5_6_replays_response_items_and_tool_output(
         self, monkeypatch: pytest.MonkeyPatch

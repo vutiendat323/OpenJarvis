@@ -5,6 +5,24 @@ import { initialBrowserState } from '@/hooks/useSharedBrowser';
 import { SharedBrowserPane } from './SharedBrowserPane';
 
 describe('SharedBrowserPane', () => {
+  it('keeps browser controls hidden until the reveal handle is used', () => {
+    const markup = renderToStaticMarkup(
+      <SharedBrowserPane
+        browser={{
+          ...initialBrowserState,
+          url: 'https://example.test/menu',
+          send: vi.fn(),
+        }}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Show browser controls"');
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain('data-testid="browser-controls" aria-hidden="true"');
+    expect(markup).toContain('data-testid="browser-controls-handle"');
+    expect(markup).toContain('mx-auto flex h-3 w-14');
+  });
+
   it('renders one interactive viewport with navigation and the current frame', () => {
     const markup = renderToStaticMarkup(
       <SharedBrowserPane
@@ -48,6 +66,7 @@ describe('SharedBrowserPane', () => {
 
     expect(markup).toContain('aria-label="Zoom in"');
     expect(markup).toContain('aria-label="Zoom out"');
+    expect(markup).toContain('data-testid="browser-zoom-controls" class="absolute bottom-2 right-2');
     expect(markup).toContain('aria-label="Pop out to floating window"');
   });
 

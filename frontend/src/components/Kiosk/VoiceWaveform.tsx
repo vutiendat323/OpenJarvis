@@ -114,7 +114,7 @@ export function VoiceWaveform({
       data-testid="voice-dock-pill"
       role="status"
       aria-label={isActive ? 'Microphone active and listening' : 'Microphone ready'}
-      className={`inline-flex items-center justify-between w-[86px] h-[44px] rounded-[15px] bg-[#26282e]/95 p-[2px] pl-[16px] pr-[2px] shadow-lg shadow-black/40 backdrop-blur-md select-none transition-all duration-200 ${className}`}
+      className={`inline-flex items-center justify-between w-[112px] h-[54px] rounded-[15px] bg-[#17252a]/90 p-[3px] pl-[22px] pr-[3px] shadow-[0_8px_28px_rgba(0,0,0,0.38)] backdrop-blur-md select-none transition-all duration-200 ${className}`}
       style={{ borderRadius: '15px' }}
     >
       {/* Nửa bên trái - Sóng âm (Audio Waveform): 3 cột sóng âm thanh màu xanh dương nhạt/cyan dựng đứng */}
@@ -147,7 +147,7 @@ export function VoiceWaveform({
         onClick={onMicClick}
         disabled={!onMicClick}
         aria-label="Active microphone"
-        className={`flex h-[40px] w-[40px] items-center justify-center rounded-[13px] bg-[#343a47] text-white shadow-sm transition-transform ${
+        className={`flex h-[48px] w-[48px] items-center justify-center rounded-[13px] bg-[#263c43] text-white shadow-sm transition-transform ${
           onMicClick ? 'cursor-pointer hover:scale-105 active:scale-95' : 'cursor-default'
         }`}
         style={{ borderRadius: '13px' }}

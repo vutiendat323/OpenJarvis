@@ -51,7 +51,7 @@ async def test_direct_gpt_6_stream_omits_temperature(
 
     assert tokens == ["OK"]
     assert sent["model"] == "gpt-6-luna"
-    assert sent["reasoning_effort"] == "none"
+    assert sent["reasoning_effort"] == "high"
     assert sent["max_completion_tokens"] == 1024
     assert "temperature" not in sent
     assert "max_tokens" not in sent

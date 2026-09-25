@@ -1284,13 +1284,31 @@ def test_menu_recipe_empty_filtered_terms_do_not_publish_the_complete_menu() -> 
             "itemTerms": [],
             "categoryTerms": [],
             "minPrice": 0,
-            "maxPrice": 300000,
+            "maxPrice": 1_000_000_000,
             "displayMode": "filtered",
         }
     )
 
     assert result.success is True
     assert display.calls[0]["items"] == []
+
+
+def test_menu_recipe_price_only_filter_matches_exact_verified_price() -> None:
+    _, result, http, display, _ = _run_menu(
+        {
+            "itemTerms": [],
+            "categoryTerms": [],
+            "minPrice": 50_000,
+            "maxPrice": 50_000,
+            "displayMode": "filtered",
+        },
+        entries=_SEARCH_MENU_ENTRIES,
+    )
+
+    assert result.success is True
+    assert len(http.calls) == 1
+    assert display.calls[0]["display_mode"] == "filtered"
+    assert [item["id"] for item in display.calls[0]["items"]] == ["v-tea"]
 
 
 def test_menu_recipe_rejects_string_item_terms_before_io() -> None:

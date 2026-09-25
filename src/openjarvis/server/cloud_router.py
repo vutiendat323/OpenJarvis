@@ -188,7 +188,7 @@ async def _stream_openai(
         payload.pop("temperature")
         payload.pop("max_tokens")
         payload["max_completion_tokens"] = max_tokens
-        payload["reasoning_effort"] = "none"
+        payload["reasoning_effort"] = "high"
 
     async with httpx.AsyncClient(timeout=180) as client:
         async with client.stream(

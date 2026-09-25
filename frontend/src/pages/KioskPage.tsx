@@ -299,25 +299,42 @@ export function KioskPage() {
 
   const rows = currentVoiceTurnRows({ ...voice, assistantText: voice.assistantCaptionText });
   const voiceStatusShimmers = shouldShimmerVoiceStatus(voice.status);
+  const voicePetPosition = useMemo(() => {
+    if (typeof window === 'undefined') return undefined;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const horizontalSplit = browserMode === 'split' && viewportWidth >= 768;
+    const verticalSplit = browserMode === 'split' && viewportWidth < 768;
+    const petSize = Math.round(110 * (settings.petScale / 2));
+    const paneStartX = horizontalSplit ? viewportWidth * splitRatio / 100 : 0;
+    const paneWidth = horizontalSplit ? viewportWidth - paneStartX : viewportWidth;
+    const paneStartY = verticalSplit ? viewportHeight * 0.65 : 0;
+    const paneHeight = verticalSplit ? viewportHeight * 0.35 : viewportHeight;
+    return {
+      x: Math.round(paneStartX + (paneWidth - petSize) / 2),
+      y: Math.round(paneStartY + (paneHeight - petSize) / 2),
+    };
+  }, [browserMode, settings.petScale, splitRatio]);
 
   const voiceAssistantPane = (
     <aside
       aria-label="Voice assistant"
       className={
         browserMode === 'floating'
-          ? 'relative h-full w-full shrink-0 overflow-hidden'
-          : `relative shrink-0 overflow-hidden ${
+          ? 'relative h-full w-full shrink-0 overflow-hidden bg-[#071410]'
+          : `relative shrink-0 overflow-hidden border-t border-white/10 bg-[#071410] md:border-l md:border-t-0 ${
               voiceCollapsed ? 'h-14 md:h-full md:w-14' : 'h-[35%] min-h-48 md:h-full'
             }`
       }
-      style={
-        browserMode === 'split' && !voiceCollapsed
+      style={{
+        background: 'linear-gradient(155deg, #0b1e19 0%, #071410 58%, #06110f 100%)',
+        ...(browserMode === 'split' && !voiceCollapsed
           ? {
               width: `${100 - splitRatio}%`,
               flex: `0 0 ${100 - splitRatio}%`,
             }
-          : undefined
-      }
+          : {}),
+      }}
     >
       <button
         aria-label={voiceCollapsed ? 'Expand voice pane' : 'Collapse voice pane'}
@@ -340,28 +357,7 @@ export function KioskPage() {
           }}
         />
 
-        {/* 4-Edge ambient/border glow layer - color matching Voice state, spread/intensity driven by settings.glow */}
-        <div
-          aria-hidden
-          data-testid="kiosk-edge-glow"
-          className="absolute inset-0 pointer-events-none transition-all duration-700"
-          style={{
-            boxShadow: edgeGlowShadow,
-            zIndex: 1,
-          }}
-        />
-
         {settings.style === '3d' && !voiceCollapsed && <AudioVisualizer getFrequencyData={voice.getFrequencyData} settings={settings} />}
-        <div className="absolute inset-x-0 bottom-12 z-20 flex justify-center pointer-events-none">
-          <div className="pointer-events-auto">
-            <VoiceWaveform
-              speaking={voice.status === 'speaking' && !voiceCollapsed}
-              voiceStatus={voiceCollapsed ? 'idle' : voice.status}
-              getFrequencyData={voice.getFrequencyData}
-              onMicClick={isVoiceActive ? endVoice : startPolicyVoice}
-            />
-          </div>
-        </div>
         <VisualizerControls
           settings={settings}
           onSettingsChange={handleSettingsChange}
@@ -370,11 +366,21 @@ export function KioskPage() {
           onUiLanguageChange={handleUiLanguageChange}
         />
 
+        {browserMode === 'floating' && (
+          <div
+            aria-hidden
+            data-testid="kiosk-edge-glow"
+            className="pointer-events-none absolute inset-0 z-30 transition-all duration-700"
+            style={{ boxShadow: edgeGlowShadow }}
+          />
+        )}
+
         {settings.showPet && (
           <FloatingCodexPet
-            initialPlacement="center"
+            initialPosition={voicePetPosition}
             scale={settings.petScale}
             storageKey="openjarvis_kiosk_pet_pos_center"
+            enableWandering={browserMode === 'floating'}
             voiceStatus={voice.status}
             activityDetail={voice.activityDetail}
             assistantCaptionText={voice.assistantCaptionText}
@@ -397,40 +403,46 @@ export function KioskPage() {
           <X size={20} />
         </button>
 
-        {kioskState === 'active' && (
-          <div
-            className={`absolute inset-x-0 bottom-0 z-20 flex flex-col items-center gap-3 px-4 ${
-              settings.style === 'screen' ? 'pb-24' : 'pb-8'
-            } pointer-events-none`}
-          >
-            {settings.showCaptions && (
-              <div className="w-full max-w-2xl flex flex-col items-center gap-2 text-center">
-                {rows.map((row) => (
-                  <p
-                    key={row.role}
-                    className="text-[13px] leading-snug text-[var(--color-text-secondary)]"
-                  >
-                    {row.text}
-                  </p>
-                ))}
-              </div>
-            )}
-            <div
-              className="text-[13px] font-medium transition-all duration-500"
-              style={{ color: STATUS_COLOR[voice.status] }}
-            >
-              <span
-                className={voiceStatusShimmers ? 'text-shimmer' : undefined}
-                style={voiceStatusShimmers ? {
-                  '--shimmer-base': STATUS_COLOR[voice.status],
-                  '--shimmer-highlight': 'var(--color-text)',
-                } as React.CSSProperties : undefined}
+        <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col items-center gap-3 px-4 pb-4 pointer-events-none">
+          {kioskState === 'active' && (
+            <>
+              {settings.showCaptions && (
+                <div className="w-full max-w-2xl flex flex-col items-center gap-2 rounded-2xl bg-black/20 px-4 py-2 text-center backdrop-blur-sm">
+                  {rows.map((row) => (
+                    <p
+                      key={row.role}
+                      className="text-sm leading-snug text-white/85"
+                    >
+                      {row.text}
+                    </p>
+                  ))}
+                </div>
+              )}
+              <div
+                className="text-[13px] font-medium transition-all duration-500"
+                style={{ color: STATUS_COLOR[voice.status] }}
               >
-                {voiceStatusLabel(uiLanguage, voice.status, voice.activityDetail)}
-              </span>
-            </div>
+                <span
+                  className={voiceStatusShimmers ? 'text-shimmer' : undefined}
+                  style={voiceStatusShimmers ? {
+                    '--shimmer-base': STATUS_COLOR[voice.status],
+                    '--shimmer-highlight': 'var(--color-text)',
+                  } as React.CSSProperties : undefined}
+                >
+                  {voiceStatusLabel(uiLanguage, voice.status, voice.activityDetail)}
+                </span>
+              </div>
+            </>
+          )}
+          <div className="pointer-events-auto">
+            <VoiceWaveform
+              speaking={voice.status === 'speaking' && !voiceCollapsed}
+              voiceStatus={voiceCollapsed ? 'idle' : voice.status}
+              getFrequencyData={voice.getFrequencyData}
+              onMicClick={isVoiceActive ? endVoice : startPolicyVoice}
+            />
           </div>
-        )}
+        </div>
       </div>
     </aside>
   );
@@ -442,20 +454,19 @@ export function KioskPage() {
       style={{ background: 'var(--color-bg)', color: 'var(--color-text)' }}
     >
       {browserMode === 'split' ? (
-        <div className="flex h-full w-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-2.5 md:p-3">
-          {/* Unified Shell: Housing both Pane 7 (Customer Display) and Pane 3 (Voice Assistant) seamlessly */}
+        <div className="flex h-full w-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-2 md:p-2.5">
+          {/* One shared frame keeps the customer display and voice assistant together. */}
           <div
-            className="flex h-full w-full min-h-0 min-w-0 flex-1 flex-col md:flex-row overflow-hidden rounded-[16px] md:rounded-[20px] border border-white/[0.08] shadow-2xl shadow-black/50 bg-[#121316]"
+            className="relative isolate flex h-full w-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[16px] border border-white/10 bg-[#08100f] shadow-2xl shadow-black/45 md:flex-row"
             style={{ borderRadius: '16px' }}
           >
-            {/* Left Pane [7 phần (~70%)]: Customer Display (Shared Browser) */}
+            {/* Customer display and its browser controls share the outer frame. */}
             <div
               data-testid="customer-display-pane-container"
               className="flex min-h-0 min-w-0 flex-col overflow-hidden"
               style={{
                 width: voiceCollapsed ? 'calc(100% - 3.5rem)' : `${splitRatio}%`,
                 flex: voiceCollapsed ? '1 1 auto' : `0 0 ${splitRatio}%`,
-                borderRadius: '16px',
               }}
             >
               <SharedBrowserPane
@@ -466,8 +477,14 @@ export function KioskPage() {
               />
             </div>
 
-            {/* Right Pane [3 phần (~30%)]: Kiosk Voice Assistant */}
+            {/* Voice status, captions, mascot, and microphone stay in this pane. */}
             {voiceAssistantPane}
+            <div
+              aria-hidden
+              data-testid="kiosk-edge-glow"
+              className="pointer-events-none absolute inset-0 z-30 rounded-[inherit] transition-all duration-700"
+              style={{ boxShadow: edgeGlowShadow }}
+            />
           </div>
         </div>
       ) : (

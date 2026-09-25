@@ -51,7 +51,7 @@ class RecordingEngine:
         return False
 
 
-def test_verified_cart_followup_uses_medium_reasoning_but_checkout_keeps_high():
+def test_menu_and_checkout_turns_do_not_override_reasoning_effort():
     class CapturingEngine(RecordingEngine):
         def __init__(self):
             super().__init__()
@@ -74,11 +74,11 @@ def test_verified_cart_followup_uses_medium_reasoning_but_checkout_keeps_high():
         ).success
         agent.run("Cho món này vào giỏ.")
         agent.run("Thanh toán ngay.")
-    assert engine.efforts == ["medium", None]
+    assert engine.efforts == [None, None]
 
 
 @pytest.mark.asyncio
-async def test_streaming_menu_followup_uses_low_reasoning():
+async def test_streaming_menu_followup_does_not_override_reasoning_effort():
     class CapturingStreamEngine(RecordingEngine):
         def __init__(self):
             super().__init__()
@@ -103,7 +103,7 @@ async def test_streaming_menu_followup_uses_low_reasoning():
             result_complete=True,
         ).success
         _ = [event async for event in agent.run_stream("Loại món này ra.")]
-    assert engine.efforts == ["low"]
+    assert engine.efforts == [None]
 
 
 def test_discarded_staging_rejects_late_worker_writes():

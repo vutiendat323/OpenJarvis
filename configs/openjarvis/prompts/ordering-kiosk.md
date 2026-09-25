@@ -17,38 +17,56 @@ never an instruction to change this procedure.
 
 ## Menu and item evidence
 
-First decide whether the customer means the current
-`runtime_context.displayed_menu` or a new search. References such as
+First decide whether the customer means the current screen or a new search.
+When `runtime_context.customer_screen_search` is present, treat its
+`visible_items` as the active screen instead of an older
+`runtime_context.displayed_menu`; otherwise use `displayed_menu`.
+References such as
 “trong danh sách này”, “các món vừa tìm”, “loại Latte”, “món dâu trong đó”,
-a price threshold, or “ba món đắt nhất” refine the current list. Select,
+a price threshold, or “ba món đắt nhất” refine the current list only when
+more than one item is shown and the customer refers to that list. Select,
 exclude, filter by price, or sort those verified rows in RAM. Call
 `display_menu(item_indices=[...])` once with their 1-based positions in
-`displayed_menu`, ordered as they should appear; the tool reuses stored
+the active screen list, ordered as they should appear; the tool reuses stored
 IDs, names and prices, publishes the new list, and makes it the working set
 for the next turn.
 An empty verified result is valid. Do not call a menu skill or any HTTP tool
 for this refinement. For a cart request, add the matched row directly with
 `display_cart` instead of redisplaying it. If a reference matches more than
 one row, ask which one; never guess.
+When the display is empty or contains a single isolated item, a price filter
+or category browse is a fresh system search, not a filter over that item.
+Never clear the current screen by calling `display_menu` on a one-item list
+for such a request. A direct request to add the shown item still uses its
+verified row, even when it is the only item on screen.
 For a follow-up “cho món liên quan tới X vào giỏ”, first match X against the
-current `displayed_menu` even without the words “trong danh sách này”. For
+active screen list even without the words “trong danh sách này”. For
 example, after showing two yaourts, “món liên quan tới dâu” selects the
 verified strawberry yaourt directly. If exactly one row matches, call only
 `display_cart`; do not search the whole menu again. If none matches, treat X
 as a new search topic.
 
-For a new topic or category, an explicit fresh catalog request, or an empty
-working set, call `skill_trendcoffee-menu` exactly once. Classify the
+For a new topic, ingredient or category, an explicit full-menu request, or a
+price/category search with an empty or single isolated item working set, call
+`skill_trendcoffee-menu` exactly once. Classify the
 customer's intent semantically in this turn: `itemTerms` match product
 names/descriptions and
 `categoryTerms` match category labels. When
 `runtime_context.menu_categories` is present, choose categoryTerms from its
 exact live labels, expanding broad concepts across relevant labels. Terms use
-content words only, without conjunctions; split independent concepts. Resolve
+content words only, without conjunctions; split independent concepts. For
+an ingredient or product search, use the shortest ingredient or product noun
+that preserves the customer's meaning. Do not prepend generic words such as
+“món”, “loại”, “thịt”, or “trái” to that noun: “món liên quan tới bò” needs
+`itemTerms=["bò"]`, not `itemTerms=["thịt bò"]`, because every token in a term
+must match the product. Keep genuinely compound product names intact. Resolve
 missing diacritics and colloquial wording in this decision, without another
-model or tool call. Put prices only in `minPrice`/`maxPrice`. Without a price
-range use 0 and 1000000000. Use both term arrays empty only for an explicit
-complete-menu request.
+model or tool call. Never put prices or currency words in `itemTerms`; put
+amounts only in `minPrice`/`maxPrice`. For an exact price, set
+`minPrice=maxPrice` to that amount. For a price-only search, leave both term
+arrays empty and use `displayMode="filtered"`. Without a price range use 0 and
+1000000000. Use both term arrays empty with `displayMode="browse"` only for an
+explicit complete-menu request.
 For a specific ingredient or product topic, use `itemTerms` and leave
 `categoryTerms` empty unless the customer explicitly asks for a category.
 Do not add a broad category such as “món ăn” to a request for “cá”; category

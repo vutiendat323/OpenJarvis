@@ -1358,6 +1358,95 @@ def test_agent_menu_tool_cannot_publish_invented_item_facts():
     assert len(recorder.events) == 2
 
 
+def test_agent_menu_tool_rejects_refinement_of_one_displayed_item():
+    display, recorder = _wired(DisplayMenuTool)
+    agent_tool = DisplayMenuMemoryTool(display)
+    row = {"id": "lipton", "name": "Trà Lipton", "price": 49_000}
+    with conversation_scope("single-item-refinement"):
+        assert display.execute(items=[row], result_complete=True).success
+        result = agent_tool.execute(item_indices=[])
+        assert not result.success
+        assert result.content == "menu_refinement_requires_multiple_items"
+        invalid = agent_tool.execute(item_indices=["1"])
+        assert invalid.content == "menu_refinement_invalid"
+        assert agent_tool.agent_context() == {"displayed_menu": [row]}
+    assert len(recorder.events) == 1
+    assert recorder.events[0].data["items"] == [row]
+
+
+def test_agent_menu_tool_can_publish_empty_result_from_multiple_items():
+    display, recorder = _wired(DisplayMenuTool)
+    agent_tool = DisplayMenuMemoryTool(display)
+    rows = [
+        {"id": "latte", "name": "Latte", "price": 60_000},
+        {"id": "mocha", "name": "Mocha", "price": 65_000},
+    ]
+    with conversation_scope("multiple-item-refinement"):
+        assert display.execute(items=rows, result_complete=True).success
+        result = agent_tool.execute(item_indices=[])
+        assert result.success
+        assert agent_tool.agent_context() == {}
+    assert len(recorder.events) == 2
+    assert recorder.events[-1].data["items"] == []
+
+
+@pytest.mark.parametrize(
+    "shown",
+    [[], [{"id": "tea", "name": "Trà", "price": 49_000, "available": True}]],
+)
+def test_agent_menu_tool_refines_verified_customer_screen_search_rows(shown):
+    bus = EventBus()
+    recorder = _Recorder(bus)
+    display = DisplayMenuTool()
+    manager = PresentationSessionManager(bus, _BlankPlaywright())
+    display._presentation = manager
+    agent_tool = DisplayMenuMemoryTool(display)
+    session = manager.ensure("http://127.0.0.1:5173")
+    typed = [
+        {"id": "coffee", "name": "Cà phê", "price": 55_000, "available": True},
+        {"id": "cocoa", "name": "Ca cao", "price": 60_000, "available": True},
+    ]
+
+    with conversation_scope("typed-menu-refinement"):
+        assert display.execute(
+            items=shown, menu_items=[*shown, *typed], result_complete=True
+        ).success
+        assert manager.share_screen_search(
+            session.session_id, ["coffee", "cocoa"]
+        ) == 2
+        result = agent_tool.execute(item_indices=[2])
+        assert result.success
+        assert agent_tool.agent_context() == {"displayed_menu": [typed[1]]}
+    assert len(recorder.events) == 2
+    assert recorder.events[-1].data["items"] == [typed[1]]
+
+
+def test_agent_menu_tool_rejects_single_typed_result_over_older_list():
+    bus = EventBus()
+    recorder = _Recorder(bus)
+    display = DisplayMenuTool()
+    manager = PresentationSessionManager(bus, _BlankPlaywright())
+    display._presentation = manager
+    agent_tool = DisplayMenuMemoryTool(display)
+    session = manager.ensure("http://127.0.0.1:5173")
+    shown = [
+        {"id": "coffee", "name": "Cà phê", "price": 55_000, "available": True},
+        {"id": "cocoa", "name": "Ca cao", "price": 60_000, "available": True},
+    ]
+
+    with conversation_scope("single-typed-menu-refinement"):
+        assert display.execute(items=shown, result_complete=True).success
+        assert manager.share_screen_search(session.session_id, ["cocoa"]) == 1
+        result = agent_tool.execute(item_indices=[])
+        assert result.content == "menu_refinement_requires_multiple_items"
+        assert agent_tool.agent_context() == {
+            "displayed_menu": shown,
+            "customer_screen_search": {"visible_items": [shown[1]]},
+        }
+    assert len(recorder.events) == 1
+    assert recorder.events[0].data["items"] == shown
+
+
 def test_identical_cart_add_is_applied_once_within_one_agent_turn():
     cart, _ = _wired(DisplayCartTool)
     item = {

@@ -190,7 +190,14 @@ def _is_openai_reasoning_model(model: str) -> bool:
 
 def _uses_openai_responses(model: str) -> bool:
     """Return whether this OpenAI model requires the Responses API here."""
-    return model.lower().startswith("gpt-5.6-") or model.lower() == "gpt-6-luna"
+    return model.lower().startswith("gpt-5.6-") or _is_gpt_6_responses_model(model)
+
+
+def _is_gpt_6_responses_model(model: str) -> bool:
+    return model.lower() == "gpt-6-luna" or (
+        _is_openrouter_model(model)
+        and openrouter_model_id(model).lower() == "openai/gpt-6-luna"
+    )
 
 
 def _is_unsupported_temperature_error(exc: Exception) -> bool:
@@ -332,7 +339,7 @@ class CloudEngine(InferenceEngine):
     is_cloud = True
 
     def supports_semantic_reasoning_stream(self, model: str) -> bool:
-        return _is_deepseek_model(model) or model.lower() == "gpt-6-luna"
+        return _is_deepseek_model(model) or _is_gpt_6_responses_model(model)
 
     def __init__(self) -> None:
         self._openai_client: Any = None
@@ -673,11 +680,14 @@ class CloudEngine(InferenceEngine):
     ) -> Dict[str, Any]:
         """Generate with high reasoning and function tools via Responses."""
         del temperature
-        if self._openai_client is None:
+        client = (
+            self._openrouter_client
+            if _is_openrouter_model(model)
+            else self._openai_client
+        )
+        if client is None:
             raise EngineConnectionError(
-                "OpenAI client not available — set "
-                "OPENAI_API_KEY and install "
-                "openjarvis[inference-cloud]"
+                "Responses client not available for selected provider"
             )
 
         instructions, input_items = self._openai_responses_input(messages)
@@ -686,16 +696,14 @@ class CloudEngine(InferenceEngine):
         tool_choice = kwargs.pop("tool_choice", None)
         requested_include = kwargs.pop("include", [])
         kwargs.pop("reasoning", None)
-        reasoning_effort = kwargs.pop("reasoning_effort", None)
-        if reasoning_effort not in {"low", "medium", "high", "xhigh", "max"}:
-            reasoning_effort = "high"
+        kwargs.pop("reasoning_effort", None)
         kwargs.pop("store", None)
         create_kwargs: Dict[str, Any] = {
-            "model": model,
+            "model": openrouter_model_id(model),
             "input": input_items,
             "max_output_tokens": max_tokens,
             **kwargs,
-            "reasoning": {"effort": reasoning_effort},
+            "reasoning": {"effort": "high"},
             "include": list(
                 dict.fromkeys([*requested_include, "reasoning.encrypted_content"])
             ),
@@ -740,7 +748,7 @@ class CloudEngine(InferenceEngine):
             create_kwargs["text"] = {"format": text_format}
 
         t0 = time.monotonic()
-        resp = self._openai_client.responses.create(**create_kwargs)
+        resp = client.responses.create(**create_kwargs)
         elapsed = time.monotonic() - t0
         usage = getattr(resp, "usage", None)
         prompt_tokens = getattr(usage, "input_tokens", 0) if usage else 0
@@ -1338,6 +1346,8 @@ class CloudEngine(InferenceEngine):
         )
         if _is_codex_model(model):
             return self._generate_codex(messages, **kw)
+        if _uses_openai_responses(model):
+            return self._generate_openai_responses(messages, **kw)
         if _is_openrouter_model(model):
             return self._generate_openrouter(messages, **kw)
         if _is_minimax_model(model):
@@ -1348,8 +1358,6 @@ class CloudEngine(InferenceEngine):
             return self._generate_anthropic(messages, **kw)
         if _is_google_model(model):
             return self._generate_google(messages, **kw)
-        if _uses_openai_responses(model):
-            return self._generate_openai_responses(messages, **kw)
         return self._generate_openai(messages, **kw)
 
     async def stream(
@@ -1367,6 +1375,13 @@ class CloudEngine(InferenceEngine):
             max_tokens=max_tokens,
             **kwargs,
         )
+        if _is_gpt_6_responses_model(model):
+            async for chunk in self._stream_full_openai_responses(
+                messages, model=model, max_tokens=max_tokens, **kwargs
+            ):
+                if chunk.content:
+                    yield chunk.content
+            return
         if _is_codex_model(model):
             async for token in self._stream_codex(messages, **kw):
                 yield token
@@ -1465,8 +1480,6 @@ class CloudEngine(InferenceEngine):
         }
         if not _is_openai_reasoning_model(model):
             create_kwargs["temperature"] = temperature
-        if model.lower() == "gpt-6-luna":
-            create_kwargs["reasoning_effort"] = "none"
         resp = self._openai_client.chat.completions.create(**create_kwargs)
         for chunk in resp:
             delta = chunk.choices[0].delta if chunk.choices else None
@@ -1804,7 +1817,7 @@ class CloudEngine(InferenceEngine):
             ):
                 yield chunk
             return
-        if model.lower() == "gpt-6-luna":
+        if _is_gpt_6_responses_model(model):
             async for chunk in self._stream_full_openai_responses(
                 messages, model=model, max_tokens=max_tokens, **kwargs
             ):
@@ -1862,8 +1875,6 @@ class CloudEngine(InferenceEngine):
             }
             if not _is_openai_reasoning_model(model):
                 create_kwargs["temperature"] = temperature
-            if model.lower() == "gpt-6-luna":
-                create_kwargs["reasoning_effort"] = "none"
         resp = await client.chat.completions.create(**create_kwargs)
         try:
             async for chunk in resp:
@@ -1914,19 +1925,24 @@ class CloudEngine(InferenceEngine):
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
         """Stream GPT-6 text and function calls while retaining reasoning items."""
-        if self._openai_async_client is None:
-            raise EngineConnectionError("OpenAI client not available")
+        client = (
+            self._openrouter_async_client
+            if _is_openrouter_model(model)
+            else self._openai_async_client
+        )
+        if client is None:
+            raise EngineConnectionError(
+                "Responses client not available for selected provider"
+            )
         instructions, input_items = self._openai_responses_input(messages)
         tools = kwargs.pop("tools", None)
         tool_choice = kwargs.pop("tool_choice", None)
-        reasoning_effort = kwargs.pop("reasoning_effort", None)
-        if reasoning_effort not in {"low", "medium", "high", "xhigh", "max"}:
-            reasoning_effort = "high"
+        kwargs.pop("reasoning_effort", None)
         create_kwargs: Dict[str, Any] = {
-            "model": model,
+            "model": openrouter_model_id(model),
             "input": input_items,
             "max_output_tokens": max_tokens,
-            "reasoning": {"effort": reasoning_effort},
+            "reasoning": {"effort": "high"},
             "include": ["reasoning.encrypted_content"],
             "store": False,
             "stream": True,
@@ -1946,7 +1962,7 @@ class CloudEngine(InferenceEngine):
             else:
                 create_kwargs["tool_choice"] = tool_choice
 
-        events = await self._openai_async_client.responses.create(**create_kwargs)
+        events = await client.responses.create(**create_kwargs)
         completed = False
         try:
             async for event in events:
