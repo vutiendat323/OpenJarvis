@@ -103,3 +103,41 @@ def test_reset_starts_a_new_session_with_fresh_slots():
     )
 
     np.testing.assert_allclose(first, again, atol=1e-4)
+
+
+def _replay_module():
+    import importlib.util
+
+    path = Path(__file__).parents[2] / "scripts" / "voice_speaker_replay.py"
+    spec = importlib.util.spec_from_file_location("voice_speaker_replay", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_replay_rejects_the_playback_voice_and_accepts_the_customer():
+    from openjarvis.server.voice.speaker import Verdict
+
+    rttm = [line.split() for line in _asset("sample.rttm").read_text().splitlines()]
+
+    def segments(who):
+        return [(float(f[3]), float(f[3]) + float(f[4])) for f in rttm if f[7] == who]
+
+    bot, customer = segments("speaker90"), segments("speaker91")
+    frames = _replay_module().replay(_asset("sample.wav"), bot, latency="ultra_low")
+    t = np.arange(len(frames)) * 0.08
+
+    def within(spans, collar=0.0):
+        inside = np.zeros(len(frames), bool)
+        for start, end in spans:
+            inside |= (t >= start - collar) & (t < end + collar)
+        return inside
+
+    accepted = np.array([v is Verdict.ACCEPT for _, v in frames])
+    # Spec §9's 0.25 s collar: the diarizer smears a speaker's edges by ~0.2 s,
+    # and those edge frames are the customer's own voice, not echo.
+    playback_only = within(bot) & ~within(customer, 0.25)
+    customer_only = within(customer) & ~within(bot, 0.25)
+
+    assert (accepted & playback_only).sum() == 0
+    assert accepted[customer_only].mean() >= 0.9

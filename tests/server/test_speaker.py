@@ -249,3 +249,16 @@ def test_sustained_overlap_with_the_target_is_uncertain():
 
     assert gate.frame(BOTH, bot_speaking=False) is Verdict.ACCEPT
     assert gate.frame(BOTH, bot_speaking=False) is Verdict.UNCERTAIN
+
+
+def test_a_target_later_proven_to_be_echo_is_released():
+    gate = _gate()
+    # A reverb tail longer than the playback tail binds the bot's own voice.
+    gate.frame(SLOT0, bot_speaking=False)
+    assert gate.target == 0
+    for _ in range(30):
+        gate.frame(SLOT0, bot_speaking=True)
+
+    assert gate.target is None
+    assert gate.frame(SLOT1, bot_speaking=False) is Verdict.ACCEPT
+    assert gate.target == 1

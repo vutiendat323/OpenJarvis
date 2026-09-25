@@ -203,6 +203,10 @@ class AudioOnlyGate:
             if bot_speaking:
                 self._bot_frames[slot] += 1
         voices = [slot for slot in active if not self.is_echo(slot)]
+        # A playback tail longer than the processor's can bind Jarvis's own
+        # voice; once that slot proves to be echo, let the customer rebind.
+        if self.target is not None and self.is_echo(self.target):
+            self.target = None
         overlap = self._overlap.update(len(voices))
         if not active:
             return None
