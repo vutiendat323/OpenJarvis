@@ -220,7 +220,12 @@ class SpeakerAudioProcessor(FrameProcessor):
             pcm = np.frombuffer(chunk, dtype=np.int16)
             probs = await loop.run_in_executor(self._executor, self._diarizer.push, pcm)
             for row in probs:
+                target = self._gate.target
                 verdict = self._gate.frame(row, bot_speaking=bot_speaking)
+                if self._gate.target != target:
+                    logger.info(
+                        f"{self}: speaker target slot {target} -> {self._gate.target}"
+                    )
                 if verdict is not None:
                     await self.push_frame(SpeakerVerdictFrame(verdict=verdict))
 
