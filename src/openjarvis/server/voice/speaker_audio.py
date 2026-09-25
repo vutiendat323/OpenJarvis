@@ -6,9 +6,27 @@ them: the ``voice-speaker`` extra is optional.
 
 from __future__ import annotations
 
+import asyncio
+import math
+import time
+from concurrent.futures import Executor, ThreadPoolExecutor
 from typing import Protocol
 
 import numpy as np
+from loguru import logger
+from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    CancelFrame,
+    EndFrame,
+    Frame,
+    InputAudioRawFrame,
+    StartFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+from openjarvis.server.voice.speaker import AudioOnlyGate
+from openjarvis.server.voice.turn_detection import SpeakerVerdictFrame
 
 SAMPLE_RATE = 16_000
 SORTFORMER_MODEL = "nvidia/diar_streaming_sortformer_4spk-v2"
@@ -123,3 +141,96 @@ class SortformerDiarizer:
             # Only the newest chunk is ever read; keep the history bounded.
             self._preds = preds[:, -self._chunk :]
         return self._preds[0].float().cpu().numpy()
+
+
+# One GPU model, one thread: pushes and resets never interleave.
+DIARIZER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="diarizer")
+# Room reverb keeps the bot audible briefly after playback ends.
+BOT_TAIL_SECS = 0.3
+_MAX_QUEUED_CHUNKS = 2
+
+
+class SpeakerAudioProcessor(FrameProcessor):
+    """Diarize the customer mic off the event loop; emit per-frame verdicts.
+
+    Audio is pushed on before anything else, so STT never waits on the model.
+    """
+
+    def __init__(
+        self,
+        *,
+        diarizer: Diarizer,
+        gate: AudioOnlyGate,
+        executor: Executor | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._diarizer = diarizer
+        self._gate = gate
+        self._executor = executor or DIARIZER_EXECUTOR
+        self._pending = bytearray()
+        self._queue: asyncio.Queue[tuple[bytes, bool]] = asyncio.Queue(
+            maxsize=_MAX_QUEUED_CHUNKS
+        )
+        self._worker: asyncio.Task | None = None
+        self._bot_audible_until = 0.0
+        self._warned_format = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            self._executor.submit(self._diarizer.reset)
+            self._worker = self.create_task(self._diarize(), "diarize")
+        elif isinstance(frame, (EndFrame, CancelFrame)):
+            await self._stop()
+        elif isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_audible_until = math.inf
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_audible_until = time.monotonic() + BOT_TAIL_SECS
+        elif (
+            isinstance(frame, InputAudioRawFrame)
+            and direction is FrameDirection.DOWNSTREAM
+        ):
+            self._enqueue(frame)
+
+    def _enqueue(self, frame: InputAudioRawFrame) -> None:
+        if frame.sample_rate != SAMPLE_RATE or frame.num_channels != 1:
+            if not self._warned_format:
+                logger.warning(
+                    f"{self}: diarizer needs 16 kHz mono, got "
+                    f"{frame.sample_rate} Hz x{frame.num_channels}; skipping"
+                )
+                self._warned_format = True
+            return
+        self._pending.extend(frame.audio)
+        size = self._diarizer.chunk_samples * 2
+        while len(self._pending) >= size:
+            chunk = bytes(self._pending[:size])
+            del self._pending[:size]
+            if self._queue.full():
+                self._queue.get_nowait()
+                logger.warning(f"{self}: diarizer behind realtime; dropped a chunk")
+            self._queue.put_nowait((chunk, time.monotonic() < self._bot_audible_until))
+
+    async def _diarize(self) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            chunk, bot_speaking = await self._queue.get()
+            pcm = np.frombuffer(chunk, dtype=np.int16)
+            probs = await loop.run_in_executor(self._executor, self._diarizer.push, pcm)
+            for row in probs:
+                verdict = self._gate.frame(row, bot_speaking=bot_speaking)
+                if verdict is not None:
+                    await self.push_frame(SpeakerVerdictFrame(verdict=verdict))
+
+    async def _stop(self) -> None:
+        if self._worker is not None:
+            await self.cancel_task(self._worker)
+            self._worker = None
+        # Queued behind any in-flight push on the same thread.
+        self._executor.submit(self._diarizer.reset)
+
+    async def cleanup(self) -> None:
+        await self._stop()
+        await super().cleanup()
