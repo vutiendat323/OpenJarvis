@@ -166,3 +166,47 @@ async def test_stop_strategy_closes_the_turn_through_the_gate(monkeypatch):
 
     assert events[-1] == "reset"
     assert tracker.take_turn_verdict() is Verdict.REJECT
+
+
+def _built_aggregator(speaker):
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    from openjarvis.server.voice.pipeline import build_voice_pipeline
+
+    stt = FrameProcessor()
+    build_voice_pipeline(
+        connection=MagicMock(),
+        binding=MagicMock(),
+        renderer=MagicMock(),
+        stt=stt,
+        speaker=speaker,
+    )
+    aggregator = stt._next
+    return aggregator, aggregator._next
+
+
+def test_disabled_gate_keeps_todays_pipeline():
+    from pipecat.turns.user_turn_strategies import default_user_turn_start_strategies
+
+    aggregator, llm = _built_aggregator(SpeakerSettings())
+    strategies = aggregator._params.user_turn_strategies
+
+    assert [type(s) for s in strategies.start] == [
+        type(s) for s in default_user_turn_start_strategies()
+    ]
+    assert strategies.stop[0]._speaker_gate is None
+    assert llm._speaker_tracker is None
+
+
+def test_enabled_gate_shares_one_tracker():
+    aggregator, llm = _built_aggregator(
+        SpeakerSettings(enabled=True, uncertain_allowed_tools=("display_menu",))
+    )
+    strategies = aggregator._params.user_turn_strategies
+    gate = strategies.start[0]
+
+    assert isinstance(gate, TargetSpeakerTurnStartStrategy)
+    assert len(strategies.start) == 1
+    assert strategies.stop[0]._speaker_gate is gate
+    assert llm._speaker_tracker is gate._tracker
+    assert llm._uncertain_allowed_tools == ("display_menu",)

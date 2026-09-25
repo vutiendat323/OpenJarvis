@@ -46,9 +46,11 @@ def build_voice_pipeline(
     renderer: Any,
     stt: Any,
     recall: tuple[Any, Any] | None = None,
+    speaker: Any | None = None,
 ) -> Any:
     """Wire transport, VAD, STT, Agent, and voice into one runnable worker.
 
+    ``speaker`` is the ``[voice.speaker]`` settings; None loads the preset's.
     Returns the worker and the shared context, which the caller reads on
     teardown to write the conversation to the Chat thread.
     """
@@ -73,17 +75,39 @@ def build_voice_pipeline(
         OpenJarvisLLMService,
         VoiceTurnState,
     )
+    from openjarvis.server.voice.speaker import SpeakerTracker, load_speaker_settings
     from openjarvis.server.voice.tts import VieNeuTTSService
     from openjarvis.server.voice.turn_detection import (
         ConfirmedTurnAnalyzerUserTurnStopStrategy,
+        TargetSpeakerTurnStartStrategy,
     )
 
     transport = SmallWebRTCTransport(
         webrtc_connection=connection,
         params=TransportParams(audio_in_enabled=True, audio_out_enabled=True),
     )
+    if speaker is None:
+        speaker = load_speaker_settings()
+    tracker = SpeakerTracker(speaker) if speaker.enabled else None
+    # Disabled: Pipecat's default start strategies, exactly as before.
+    # Enabled: one gate decides turn starts and barge-in; the stop strategy
+    # closes turns through it and the LLM service reads its verdict.
+    speaker_gate = (
+        TargetSpeakerTurnStartStrategy(
+            tracker=tracker,
+            bargein_accept_frames=speaker.bargein_accept_frames,
+        )
+        if tracker is not None
+        else None
+    )
     turn_state = VoiceTurnState()
-    llm = OpenJarvisLLMService(binding, recall=recall, turn_state=turn_state)
+    llm = OpenJarvisLLMService(
+        binding,
+        recall=recall,
+        turn_state=turn_state,
+        speaker_tracker=tracker,
+        uncertain_allowed_tools=speaker.uncertain_allowed_tools,
+    )
     context = LLMContext()
     # The VAD analyser belongs to the user aggregator, not the transport, and
     # interruption is always on — there is no flag to enable. Running it here,
@@ -111,6 +135,7 @@ def build_voice_pipeline(
         user_params=LLMUserAggregatorParams(
             vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=VAD_STOP_SECS)),
             user_turn_strategies=UserTurnStrategies(
+                start=[speaker_gate] if speaker_gate is not None else None,
                 stop=[
                     ConfirmedTurnAnalyzerUserTurnStopStrategy(
                         turn_analyzer=LocalSmartTurnAnalyzerV3(
@@ -118,8 +143,9 @@ def build_voice_pipeline(
                         ),
                         wait_for_transcript=True,
                         minimum_silence_secs=MIN_TURN_SILENCE_SECS,
+                        speaker_gate=speaker_gate,
                     )
-                ]
+                ],
             ),
         ),
         realtime_service_mode=False,

@@ -198,6 +198,14 @@ custom_vocabulary = [
   "heo muối Parma",
 ]
 
+[voice.speaker]
+# Target-speaker gate (docs spec 2026-09-25). Off until a diarizer ships:
+# with no speaker evidence every turn is accepted, exactly as before. When
+# the gate is unsure who spoke, only these tools may run and the Agent asks
+# the customer to confirm first.
+enabled = false
+uncertain_allowed_tools = ["display_menu"]
+
 [tools.mcp]
 enabled = true
 servers = '''[{"name": "playwright", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.79", "--browser", "chromium", "--user-data-dir", ".openjarvis/ordering-kiosk/browser-profile", "--sandbox", "--caps=testing", "--snapshot-mode", "none"], "presentation_only": true}]'''
