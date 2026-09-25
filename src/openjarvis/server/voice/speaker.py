@@ -127,6 +127,10 @@ class SpeakerTracker:
     def begin_span(self) -> None:
         """Speech started outside a turn: its frames start a fresh count."""
         self._counts.clear()
+
+    def begin_turn(self) -> None:
+        """A turn opened. A closed verdict nobody took is stale: its turn had
+        no transcript, or this turn's interruption dropped its LLM frame."""
         self._closed = None
 
     def span_verdict(self) -> Verdict:
@@ -148,7 +152,6 @@ class SpeakerTracker:
         """
         verdict = self._closed if self._closed is not None else self.span_verdict()
         self._closed = None
-        self._counts.clear()
         return verdict
 
 

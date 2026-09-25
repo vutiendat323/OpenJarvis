@@ -112,3 +112,32 @@ def test_malformed_settings_fail_loudly(tmp_path, monkeypatch, body):
 
     with pytest.raises(ValueError):
         load_speaker_settings()
+
+
+def test_taking_a_closed_verdict_keeps_the_next_span_evidence():
+    tracker = SpeakerTracker(SpeakerSettings(enabled=True))
+    tracker.begin_span()
+    tracker.record(A)
+    tracker.close_turn()
+    # A bystander starts talking before the LLM service takes the verdict.
+    tracker.begin_span()
+    for _ in range(5):
+        tracker.record(R)
+
+    assert tracker.take_turn_verdict() is A
+    assert tracker.span_verdict() is R
+
+
+def test_a_new_turn_drops_a_closed_verdict_nobody_took():
+    tracker = SpeakerTracker(SpeakerSettings(enabled=True))
+    tracker.begin_span()
+    tracker.record(A)
+    # Closed ACCEPT with no transcript: no LLM frame ever takes it.
+    tracker.close_turn()
+    tracker.begin_span()
+    tracker.begin_turn()
+    for _ in range(9):
+        tracker.record(R)
+
+    # This turn is finalized by Pipecat's watchdog, not through close_turn.
+    assert tracker.take_turn_verdict() is R

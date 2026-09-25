@@ -210,3 +210,17 @@ def test_enabled_gate_shares_one_tracker():
     assert strategies.stop[0]._speaker_gate is gate
     assert llm._speaker_tracker is gate._tracker
     assert llm._uncertain_allowed_tools == ("display_menu",)
+
+
+@pytest.mark.anyio
+async def test_opening_a_turn_clears_an_untaken_verdict():
+    strategy, tracker, _ = await _strategy()
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+    await strategy.process_frame(SpeakerVerdictFrame(verdict=Verdict.UNCERTAIN))
+    await strategy.close_turn()
+    await strategy.handle_user_turn_stopped()
+    await strategy.process_frame(VADUserStoppedSpeakingFrame())
+
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+
+    assert tracker.take_turn_verdict() is Verdict.ACCEPT

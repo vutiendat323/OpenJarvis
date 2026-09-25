@@ -96,6 +96,7 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
         # reset still lands in the new turn; tag transcripts by span if the
         # bench shows it.
         await self.trigger_reset_aggregation()
+        self._tracker.begin_turn()
         await self.trigger_user_turn_started()
 
     async def close_turn(self) -> Verdict:
