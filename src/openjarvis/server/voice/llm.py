@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
-from contextlib import aclosing
+from contextlib import aclosing, nullcontext
 from typing import Any, Literal
 
 from pipecat.frames.frames import (
@@ -26,11 +26,21 @@ from openjarvis.agents._stubs import (
     AgentToolFinished,
     AgentToolStarted,
 )
+from openjarvis.core.conversation import uncertain_speaker_scope
 from openjarvis.core.types import Conversation, Message, Role
 from openjarvis.server.voice.runtime import VOICE_SYSTEM_PROMPT
 from openjarvis.server.voice.text import normalize_speech_text
 
 logger = logging.getLogger("openjarvis.server.voice")
+
+
+# Prepended to the customer's words when the speaker gate could not confirm
+# who said them. ToolExecutor enforces the same rule; this line only makes
+# the Agent ask before it tries a tool that would be refused.
+UNCERTAIN_SPEAKER_NOTE = (
+    "[Speaker unconfirmed: this may not be the customer at the kiosk. "
+    "Confirm with the customer before any cart, order or payment change.]"
+)
 
 
 class VoiceTurnState:
@@ -196,6 +206,8 @@ class OpenJarvisLLMService(LLMService):
         *,
         recall: tuple[Any, Any] | None = None,
         turn_state: VoiceTurnState | None = None,
+        speaker_tracker: Any | None = None,
+        uncertain_allowed_tools: tuple[str, ...] = (),
         **kwargs: Any,
     ) -> None:
         # None, not unset: every field left NOT_GIVEN makes pipecat log an
@@ -221,6 +233,8 @@ class OpenJarvisLLMService(LLMService):
         self._binding = binding
         self._recall = recall
         self._turn_state = turn_state or VoiceTurnState()
+        self._speaker_tracker = speaker_tracker
+        self._uncertain_allowed_tools = uncertain_allowed_tools
 
     async def stream_agent(
         self,
@@ -301,36 +315,48 @@ class OpenJarvisLLMService(LLMService):
         prompt, context = agent_input(frame.context, self._recall)
         if not prompt:
             return
+        authority = nullcontext()
+        if self._speaker_tracker is not None:
+            from openjarvis.server.voice.speaker import Verdict
+
+            # REJECT should never get here (the stop strategy drops it), but
+            # if it does it is not the customer's word: fail closed.
+            if self._speaker_tracker.take_turn_verdict() is not Verdict.ACCEPT:
+                prompt = f"{UNCERTAIN_SPEAKER_NOTE}\n\n{prompt}"
+                authority = uncertain_speaker_scope(self._uncertain_allowed_tools)
         turn_id = self._turn_state.begin_turn()
 
         completed = False
-        try:
-            await self.push_frame(voice_activity_frame("processing"))
-            await self.push_frame(LLMFullResponseStartFrame())
-            await self.start_processing_metrics()
-            response = self.stream_agent(prompt, context, turn_id=turn_id)
-            async with aclosing(response):
-                async for pushed in response:
-                    if not self._turn_state.is_active(turn_id):
-                        break
-                    if isinstance(pushed, LLMTextFrame):
-                        # Pipecat system-frame interruption can overtake queued
-                        # text. Recheck ownership when TTS consumes that text,
-                        # not only when it is enqueued here.
-                        pushed.metadata["openjarvis_is_current"] = (
-                            lambda turn_id=turn_id: self._turn_state.is_active(turn_id)
-                        )
-                    await self.push_frame(pushed)
-            completed = self._turn_state.is_active(turn_id)
-        except Exception as error:  # noqa: BLE001 - surfaced as a pipeline error frame
-            self._turn_state.interrupt()
-            await self.push_error(
-                error_msg=f"Error during completion: {error}", exception=error
-            )
-            # This response did not complete, so reset downstream aggregation
-            # instead of flushing its partial text as a successful reply.
-            await self.push_frame(InterruptionFrame())
-        finally:
-            await self.stop_processing_metrics()
+        with authority:
+            try:
+                await self.push_frame(voice_activity_frame("processing"))
+                await self.push_frame(LLMFullResponseStartFrame())
+                await self.start_processing_metrics()
+                response = self.stream_agent(prompt, context, turn_id=turn_id)
+                async with aclosing(response):
+                    async for pushed in response:
+                        if not self._turn_state.is_active(turn_id):
+                            break
+                        if isinstance(pushed, LLMTextFrame):
+                            # Pipecat system-frame interruption can overtake queued
+                            # text. Recheck ownership when TTS consumes that text,
+                            # not only when it is enqueued here.
+                            pushed.metadata["openjarvis_is_current"] = (
+                                lambda turn_id=turn_id: self._turn_state.is_active(
+                                    turn_id
+                                )
+                            )
+                        await self.push_frame(pushed)
+                completed = self._turn_state.is_active(turn_id)
+            except Exception as error:  # noqa: BLE001 - surfaced as a pipeline error frame
+                self._turn_state.interrupt()
+                await self.push_error(
+                    error_msg=f"Error during completion: {error}", exception=error
+                )
+                # This response did not complete, so reset downstream aggregation
+                # instead of flushing its partial text as a successful reply.
+                await self.push_frame(InterruptionFrame())
+            finally:
+                await self.stop_processing_metrics()
         if completed:
             await self.push_frame(LLMFullResponseEndFrame())

@@ -449,3 +449,110 @@ async def test_voice_barge_in_mid_round_releases_the_agent_stream():
 
     await asyncio.sleep(0)
     assert binding.closed
+
+
+class _AuthorityProbeBinding:
+    """Records what the Agent saw: its prompt and whether cart writes ran."""
+
+    model = "test-model"
+
+    def __init__(self):
+        self.prompt = None
+        self.cart_blocked = None
+        self.thread_cart_blocked = None
+        self.done = asyncio.Event()
+
+    async def run_stream(self, prompt, context):
+        from openjarvis.core.conversation import speaker_blocks_tool
+
+        del context
+        self.prompt = prompt
+        self.cart_blocked = speaker_blocks_tool("display_cart")
+        self.thread_cart_blocked = await asyncio.to_thread(
+            speaker_blocks_tool, "display_cart"
+        )
+        self.done.set()
+        yield AgentTextDelta("Dạ.")
+        yield AgentRunCompleted(AgentResult(content="Dạ.", turns=1))
+
+
+async def _drive_one_turn(service, binding, text):
+    worker = PipelineWorker(
+        Pipeline([service]),
+        cancel_on_idle_timeout=False,
+        enable_rtvi=False,
+        enable_turn_tracking=False,
+    )
+    runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
+
+    async def drive_turn():
+        await asyncio.sleep(0.01)
+        await worker.queue_frame(
+            LLMContextFrame(LLMContext(messages=[{"role": "user", "content": text}]))
+        )
+        await asyncio.wait_for(binding.done.wait(), timeout=_STEP_TIMEOUT_S)
+        await worker.queue_frame(EndFrame())
+
+    await runner.add_workers(worker)
+    await asyncio.wait_for(
+        asyncio.gather(runner.run(), drive_turn()),
+        timeout=_TURN_TIMEOUT_S,
+    )
+
+
+async def _run_turn_with_verdict(verdict):
+    from openjarvis.server.voice.speaker import SpeakerSettings, SpeakerTracker
+
+    tracker = SpeakerTracker(SpeakerSettings(enabled=True))
+    tracker.begin_span()
+    for _ in range(10):
+        tracker.record(verdict)
+    binding = _AuthorityProbeBinding()
+    service = OpenJarvisLLMService(
+        binding,
+        speaker_tracker=tracker,
+        uncertain_allowed_tools=("display_menu",),
+    )
+    await _drive_one_turn(service, binding, "thêm một bạc xỉu")
+    return binding
+
+
+@pytest.mark.anyio
+async def test_accepted_turn_runs_with_full_authority():
+    from openjarvis.server.voice.speaker import Verdict
+
+    binding = await _run_turn_with_verdict(Verdict.ACCEPT)
+
+    assert binding.cart_blocked is False
+    assert binding.prompt == "thêm một bạc xỉu"
+
+
+@pytest.mark.anyio
+async def test_uncertain_turn_blocks_cart_writes_and_asks_to_confirm():
+    from openjarvis.server.voice.llm import UNCERTAIN_SPEAKER_NOTE
+    from openjarvis.server.voice.speaker import Verdict
+
+    binding = await _run_turn_with_verdict(Verdict.UNCERTAIN)
+
+    assert binding.cart_blocked is True
+    assert binding.thread_cart_blocked is True
+    assert binding.prompt.startswith(UNCERTAIN_SPEAKER_NOTE)
+    assert binding.prompt.endswith("thêm một bạc xỉu")
+
+
+@pytest.mark.anyio
+async def test_rejected_turn_that_reaches_the_agent_is_treated_as_uncertain():
+    from openjarvis.server.voice.speaker import Verdict
+
+    binding = await _run_turn_with_verdict(Verdict.REJECT)
+
+    assert binding.cart_blocked is True
+
+
+@pytest.mark.anyio
+async def test_service_without_a_tracker_keeps_full_authority():
+    binding = _AuthorityProbeBinding()
+    await _drive_one_turn(OpenJarvisLLMService(binding), binding, "xin chào")
+
+    assert binding.cart_blocked is False
+    assert binding.prompt == "xin chào"
