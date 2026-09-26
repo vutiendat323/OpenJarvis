@@ -45,6 +45,8 @@ class SpeakerSettings:
     anchor_max_m: float = 1.5
     stt_mask: bool = False
     stt_mask_delay_secs: float = 0.5
+    separator: str = "none"
+    separator_model: str = "~/.cache/openjarvis/tse/bsrnn_spk_emb_100.ts"
 
 
 def _fraction(section: Mapping[str, Any], key: str, default: float) -> float:
@@ -117,6 +119,15 @@ def load_speaker_settings() -> SpeakerSettings:
         section, "bargein_accept_frames", defaults.bargein_accept_frames
     )
 
+    stt_mask = _boolean(section, "stt_mask", defaults.stt_mask)
+    separator = _choice(section, "separator", defaults.separator, ("none", "tse"))
+    if separator != "none" and not stt_mask:
+        # Separation holds overlapped audio in the delayed STT copy.
+        raise ValueError("voice_speaker_separator_needs_stt_mask")
+    separator_model = section.get("separator_model", defaults.separator_model)
+    if not isinstance(separator_model, str) or not separator_model.strip():
+        raise ValueError("voice_speaker_separator_model_must_be_a_path")
+
     return SpeakerSettings(
         enabled=enabled,
         uncertain_allowed_tools=tuple(
@@ -147,10 +158,12 @@ def load_speaker_settings() -> SpeakerSettings:
         vision_faces=_boolean(section, "vision_faces", defaults.vision_faces),
         mouth_active=_fraction(section, "mouth_active", defaults.mouth_active),
         anchor_max_m=_positive_float(section, "anchor_max_m", defaults.anchor_max_m),
-        stt_mask=_boolean(section, "stt_mask", defaults.stt_mask),
+        stt_mask=stt_mask,
         stt_mask_delay_secs=_positive_float(
             section, "stt_mask_delay_secs", defaults.stt_mask_delay_secs
         ),
+        separator=separator,
+        separator_model=separator_model,
     )
 
 

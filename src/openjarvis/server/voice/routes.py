@@ -30,9 +30,10 @@ from openjarvis.server.voice.speaker import load_speaker_settings
 logger = logging.getLogger(__name__)
 
 try:
-    from openjarvis.server.voice.speaker_audio import SortformerDiarizer
+    from openjarvis.server.voice.speaker_audio import SortformerDiarizer, TseSeparator
 except ImportError:  # pipecat missing: the voice router is not mounted anyway
     SortformerDiarizer = None  # type: ignore[assignment,misc]
+    TseSeparator = None  # type: ignore[assignment,misc]
 
 router = APIRouter(tags=["pipecat-voice"])
 
@@ -252,9 +253,39 @@ async def _diarizer() -> Any | None:
     return _DIARIZER
 
 
+_SEPARATOR: Any | None = None
+_SEPARATOR_FAILED = False
+_SEPARATOR_LOCK = asyncio.Lock()
+
+
+async def _separator() -> Any | None:
+    """The process's speaker separator, or None to transcribe the mix.
+
+    Needs the diarizer (it decides what overlaps). A failure is logged once
+    and remembered, like the diarizer's.
+    """
+    global _SEPARATOR, _SEPARATOR_FAILED
+    settings = load_speaker_settings()
+    if not settings.enabled or settings.separator != "tse":
+        return None
+    if await _diarizer() is None:
+        return None
+    async with _SEPARATOR_LOCK:
+        if _SEPARATOR is None and not _SEPARATOR_FAILED:
+            try:
+                _SEPARATOR = await asyncio.to_thread(
+                    TseSeparator, settings.separator_model
+                )
+            except Exception:  # noqa: BLE001 - optional capability
+                _SEPARATOR_FAILED = True
+                logger.exception("speaker separator unavailable; STT hears the mix")
+    return _SEPARATOR
+
+
 async def warm_speaker_models() -> None:
-    """Load the diarizer at startup so the first customer does not wait."""
+    """Load the speaker models at startup so the first customer does not wait."""
     await _diarizer()
+    await _separator()
 
 
 async def _renderer() -> Any:
@@ -442,6 +473,7 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
                 recall=recall,
                 diarizer=await _diarizer(),
                 faces=getattr(request.app.state, "face_tracks", None),
+                separator=await _separator(),
             )
             request.app.state.pipecat_voice_context = context
             # Not awaited: the handshake must answer now, and the pipeline

@@ -214,6 +214,11 @@ vision_faces = false
 # Send Gemini a copy of the mic delayed 0.5 s with rejected speech silenced,
 # so a phone video or bystander never lands in the customer's transcript.
 stt_mask = false
+# "tse" (needs stt_mask): hold overlapped speech back from Gemini and send
+# the customer's voice extracted from it. Export the model first with
+# scripts/voice_tse_export.py (~0.7 GB VRAM). Experimental: overlap stays
+# UNCERTAIN either way.
+separator = "none"
 
 [tools.mcp]
 enabled = true

@@ -175,6 +175,8 @@ def test_diarizer_settings_load_from_the_preset(tmp_path, monkeypatch):
         "speaker_active_prob = 0",
         "overlap_on_frames = 0",
         'overlap_off_frames = "4"',
+        'separator = "sepformer"',
+        'separator = "tse"',  # needs stt_mask: it holds the delayed STT copy
     ],
 )
 def test_malformed_diarizer_settings_fail_loudly(tmp_path, monkeypatch, body):
@@ -184,6 +186,21 @@ def test_malformed_diarizer_settings_fail_loudly(tmp_path, monkeypatch, body):
 
     with pytest.raises(ValueError):
         load_speaker_settings()
+
+
+def test_separator_settings_load_from_the_preset(tmp_path, monkeypatch):
+    preset = tmp_path / "preset.toml"
+    preset.write_text(
+        '[voice.speaker]\nstt_mask = true\nseparator = "tse"\n'
+        'separator_model = "/models/tse.ts"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENJARVIS_CONFIG", str(preset))
+
+    settings = load_speaker_settings()
+
+    assert (settings.separator, settings.separator_model) == ("tse", "/models/tse.ts")
+    assert SpeakerSettings().separator == "none"
 
 
 def test_overlap_needs_sustained_dual_activity():

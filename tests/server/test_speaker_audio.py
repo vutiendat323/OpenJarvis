@@ -266,3 +266,116 @@ async def test_without_a_delay_no_gemini_copy_is_made():
     collector = await _run(processor, [_audio()], until=lambda: diarizer.pushed == 1)
 
     assert collector.stt == []
+
+
+FRAME = 1280  # one 80 ms diarizer frame
+
+
+class _FakeSeparator:
+    window_samples = FRAME * 20
+    enroll_samples = FRAME * 2
+
+    def __init__(self):
+        self.calls = []
+
+    def separate(self, mix, enroll):
+        self.calls.append((mix.copy(), enroll.copy()))
+        return np.full(len(mix), 0.5, np.float32)  # "the customer's voice"
+
+
+def _separating_processor():
+    separator = _FakeSeparator()
+    processor = SpeakerAudioProcessor(
+        diarizer=_FakeDiarizer([]),
+        gate=_FixedGate(Verdict.ACCEPT),
+        executor=ThreadPoolExecutor(max_workers=1),
+        stt_delay_secs=0.5,
+        separator=separator,
+        separator_executor=ThreadPoolExecutor(max_workers=1),
+    )
+    pushed = []
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        if isinstance(frame, SttAudioFrame):
+            pushed.append(np.frombuffer(frame.audio, np.int16))
+
+    processor.push_frame = push
+    return processor, separator, pushed
+
+
+def _line(processor, frames):
+    """Queue 80 ms mic frames for STT with their (verdict, overlap) marks."""
+    for i, (level, verdict, overlap) in enumerate(frames):
+        start = 100.0 + i * 0.08
+        processor._remember_verdict(start, verdict, overlap)
+        frame = InputAudioRawFrame(
+            audio=(np.ones(FRAME, np.int16) * level).tobytes(),
+            sample_rate=16_000,
+            num_channels=1,
+        )
+        processor._stt_line.append((start + 0.08, frame))
+
+
+def _enroll(processor):
+    processor._add_enrollment(np.ones(FRAME * 2, np.int16) * 300)
+
+
+@pytest.mark.anyio
+async def test_overlap_is_held_and_replaced_by_the_customers_voice():
+    processor, separator, pushed = _separating_processor()
+    _enroll(processor)
+    alone, both = (1000, Verdict.ACCEPT, False), (2000, Verdict.UNCERTAIN, True)
+    _line(processor, [alone, alone, both, both, alone])
+
+    await processor._release_stt(200.0)
+
+    assert [int(p[0]) for p in pushed] == [1000, 1000, 16383, 16383, 1000]
+    ((mix, enroll),) = separator.calls
+    # The separator sees the clean lead-in as context, then the held overlap.
+    assert len(mix) == FRAME * 4 and mix[-1] == pytest.approx(2000 / 32768)
+    assert len(enroll) == FRAME * 2
+
+
+@pytest.mark.anyio
+async def test_overlap_before_enrollment_goes_to_gemini_as_the_mix():
+    processor, separator, pushed = _separating_processor()
+    _line(processor, [(2000, Verdict.UNCERTAIN, True)] * 2)
+
+    await processor._release_stt(200.0)
+
+    assert [int(p[0]) for p in pushed] == [2000, 2000] and separator.calls == []
+
+
+@pytest.mark.anyio
+async def test_drain_separates_overlap_still_held_at_end_of_utterance():
+    processor, separator, pushed = _separating_processor()
+    _enroll(processor)
+    _line(processor, [(2000, Verdict.UNCERTAIN, True)] * 2)
+
+    await processor._release_stt(200.0)
+    assert pushed == []  # held: the overlap has not ended yet
+
+    await processor.drain()
+    assert [int(p[0]) for p in pushed] == [16383, 16383]
+
+
+@pytest.mark.anyio
+async def test_teardown_sends_held_overlap_without_separating():
+    import math
+
+    processor, separator, pushed = _separating_processor()
+    _enroll(processor)
+    _line(processor, [(2000, Verdict.UNCERTAIN, True)] * 2)
+
+    await processor._release_stt(math.inf, separate=False)
+
+    assert [int(p[0]) for p in pushed] == [2000, 2000] and separator.calls == []
+
+
+def test_enrollment_keeps_the_latest_clean_speech():
+    processor, _, _ = _separating_processor()
+    for level in (1, 2, 3):
+        processor._add_enrollment(np.ones(FRAME, np.int16) * level * 1000)
+
+    enroll = np.concatenate(processor._enroll)
+    assert len(enroll) == FRAME * 2 and enroll[0] == pytest.approx(2000 / 32768)

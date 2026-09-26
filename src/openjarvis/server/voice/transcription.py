@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +27,8 @@ from pipecat.services.google.gemini_live.stt import GeminiSTTService
 DEFAULT_LANGUAGE_CODES = ("vi-VN", "en-US")
 DEFAULT_TRANSCRIPTION_MODE = AudioTranscriptionConfigMode.VERBATIM
 MAX_CUSTOM_VOCABULARY_TERMS = 1_000
+# Longest the final transcript waits for held-back overlap to be separated.
+DRAIN_TIMEOUT_SECS = 1.0
 
 
 @dataclass(frozen=True)
@@ -110,20 +112,29 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
     def __init__(self, *, profile: GeminiSTTProfile, **kwargs: Any) -> None:
         self._openjarvis_profile = profile
         self._masked_delay = 0.0
+        self._drain: Callable[[], Awaitable[None]] | None = None
         self._finalize_task: asyncio.Task | None = None
         super().__init__(**kwargs)
 
-    def enable_masked_feed(self, delay_secs: float) -> None:
+    def enable_masked_feed(
+        self,
+        delay_secs: float,
+        drain: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         """Transcribe only the delayed, speaker-gated copy of the mic.
 
         Live audio still passes straight through to the VAD, so barge-in and
         endpointing keep their timing; Gemini hears the ``SttAudioFrame``s the
-        speaker processor releases ``delay_secs`` later.
+        speaker processor releases ``delay_secs`` later. ``drain`` releases
+        audio the processor is holding back for speaker separation; it is
+        awaited before each utterance is finalized.
         """
         self._masked_delay = delay_secs
-        # The final transcript now lands delay_secs later; the turn-stop
-        # safety timer downstream must wait that much longer for it.
-        self._ttfs_p99_latency = (self._ttfs_p99_latency or 0.0) + delay_secs
+        self._drain = drain
+        # The final transcript now lands delay_secs later (plus separation);
+        # the turn-stop safety timer downstream must wait that much longer.
+        extra = delay_secs + (DRAIN_TIMEOUT_SECS if drain is not None else 0.0)
+        self._ttfs_p99_latency = (self._ttfs_p99_latency or 0.0) + extra
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         if self._masked_delay:
@@ -161,6 +172,11 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
 
     async def _finalize_after_delay(self) -> None:
         await asyncio.sleep(self._masked_delay + 0.05)
+        if self._drain is not None:
+            try:
+                await asyncio.wait_for(self._drain(), DRAIN_TIMEOUT_SECS)
+            except TimeoutError:
+                logger.warning(f"{self}: held audio not drained; finalizing")
         await super()._send_finalization_signal()
 
     async def cleanup(self) -> None:

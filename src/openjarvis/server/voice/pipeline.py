@@ -49,12 +49,14 @@ def build_voice_pipeline(
     speaker: Any | None = None,
     diarizer: Any | None = None,
     faces: Any | None = None,
+    separator: Any | None = None,
 ) -> Any:
     """Wire transport, VAD, STT, Agent, and voice into one runnable worker.
 
     ``speaker`` is the ``[voice.speaker]`` settings; None loads the preset's.
     ``diarizer`` is a loaded speaker diarizer, used only while the gate is on.
     ``faces`` is Vision's face-track buffer, used when ``vision_faces`` is on.
+    ``separator`` is a loaded target-speaker extractor, used with ``stt_mask``.
     Returns the worker and the shared context, which the caller reads on
     teardown to write the conversation to the Chat thread.
     """
@@ -118,12 +120,17 @@ def build_voice_pipeline(
         stt_delay = 0.0
         if speaker.stt_mask and hasattr(stt, "enable_masked_feed"):
             stt_delay = speaker.stt_mask_delay_secs
-            stt.enable_masked_feed(stt_delay)
         speaker_audio = SpeakerAudioProcessor(
             diarizer=diarizer,
             stt_delay_secs=stt_delay,
             gate=AudioOnlyGate(speaker, faces=faces if speaker.vision_faces else None),
+            separator=separator,
         )
+        if stt_delay:
+            stt.enable_masked_feed(
+                stt_delay,
+                drain=speaker_audio.drain if separator is not None else None,
+            )
     turn_state = VoiceTurnState()
     llm = OpenJarvisLLMService(
         binding,

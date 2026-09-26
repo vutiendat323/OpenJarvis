@@ -610,3 +610,27 @@ async def test_final_transcripts_are_logged(monkeypatch):
 
     assert pushed == [frame]
     assert any("cho tôi một ly cà phê" in m for m in logged)
+
+
+@pytest.mark.anyio
+async def test_finalization_waits_for_held_overlap_to_drain(monkeypatch):
+    """Separated overlap must reach Gemini before the utterance is closed."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    stt = _transcriber()
+    events = []
+
+    async def drain():
+        await asyncio.sleep(0.05)
+        events.append("drained")
+
+    async def fake_finalize(self):
+        events.append("finalized")
+
+    stt.enable_masked_feed(0.01, drain=drain)
+    monkeypatch.setattr(GeminiSTTService, "_send_finalization_signal", fake_finalize)
+
+    await stt._send_finalization_signal()
+    await asyncio.sleep(0.2)
+
+    assert events == ["drained", "finalized"]
+    assert stt.service_metadata_frame().ttfs_p99_latency == pytest.approx(2.61)

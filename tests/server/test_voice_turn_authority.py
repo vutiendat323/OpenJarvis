@@ -288,6 +288,33 @@ async def test_diarizer_load_failure_leaves_voice_working(monkeypatch):
     assert await routes._diarizer() is None  # failure is remembered, not retried
 
 
+@pytest.mark.anyio
+async def test_separator_load_failure_leaves_voice_on_the_mix(monkeypatch):
+    from openjarvis.server.voice import routes
+
+    monkeypatch.setattr(routes, "_DIARIZER", object())
+    monkeypatch.setattr(routes, "_SEPARATOR", None)
+    monkeypatch.setattr(routes, "_SEPARATOR_FAILED", False)
+    monkeypatch.setattr(
+        routes,
+        "load_speaker_settings",
+        lambda: SpeakerSettings(
+            enabled=True, diarizer="sortformer", stt_mask=True, separator="tse"
+        ),
+    )
+    loads = []
+
+    def boom(path):
+        loads.append(path)
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(routes, "TseSeparator", boom)
+
+    assert await routes._separator() is None
+    assert await routes._separator() is None
+    assert len(loads) == 1  # failure is remembered, not retried
+
+
 def _built_processors_with(speaker, diarizer, faces):
     from pipecat.processors.frame_processor import FrameProcessor
 
@@ -381,9 +408,11 @@ def test_stt_mask_wires_the_delayed_gemini_feed():
 
     class _MaskableStt(FrameProcessor):
         delay = None
+        drain = None
 
-        def enable_masked_feed(self, delay_secs):
+        def enable_masked_feed(self, delay_secs, drain=None):
             self.delay = delay_secs
+            self.drain = drain
 
     diarizer = MagicMock(chunk_samples=3840, frame_secs=0.08)
     for mask, expected in ((True, 0.5), (False, None)):
@@ -398,3 +427,19 @@ def test_stt_mask_wires_the_delayed_gemini_feed():
         )
         assert stt.delay == expected
         assert stt._prev._stt_delay == (expected or 0.0)
+        assert stt.drain is None
+
+    # A separator holds overlap back, so finalization must drain it first.
+    stt = _MaskableStt()
+    build_voice_pipeline(
+        connection=MagicMock(),
+        binding=MagicMock(),
+        renderer=MagicMock(),
+        stt=stt,
+        speaker=SpeakerSettings(
+            enabled=True, diarizer="sortformer", stt_mask=True, separator="tse"
+        ),
+        diarizer=diarizer,
+        separator=MagicMock(),
+    )
+    assert stt.drain == stt._prev.drain
