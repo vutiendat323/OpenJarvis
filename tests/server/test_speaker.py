@@ -176,6 +176,7 @@ def test_diarizer_settings_load_from_the_preset(tmp_path, monkeypatch):
         "overlap_on_frames = 0",
         'overlap_off_frames = "4"',
         'separator = "sepformer"',
+        'confirm_uncertain = "no"',
         'separator = "tse"',  # needs stt_mask: it holds the delayed STT copy
     ],
 )

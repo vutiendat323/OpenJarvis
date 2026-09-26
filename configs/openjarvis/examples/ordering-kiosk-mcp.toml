@@ -206,6 +206,9 @@ custom_vocabulary = [
 # skill runs its own fixed steps.
 enabled = false
 uncertain_allowed_tools = ["display_menu", "skill_trendcoffee-menu", "skill_trendcoffee-tables"]
+# false: when unsure who spoke, act anyway (no confirmation, no tool block).
+# Chosen for this kiosk on 2026-09-26; REJECTed speech is still dropped.
+confirm_uncertain = false
 # "sortformer" needs the voice-speaker extra and a CUDA GPU (~1 GB VRAM).
 diarizer = "none"
 diarizer_latency = "ultra_low"

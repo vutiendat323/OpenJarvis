@@ -500,7 +500,7 @@ async def _drive_one_turn(service, binding, text):
     )
 
 
-async def _run_turn_with_verdict(verdict):
+async def _run_turn_with_verdict(verdict, *, confirm_uncertain=True):
     from openjarvis.server.voice.speaker import SpeakerSettings, SpeakerTracker
 
     tracker = SpeakerTracker(SpeakerSettings(enabled=True))
@@ -512,6 +512,7 @@ async def _run_turn_with_verdict(verdict):
         binding,
         speaker_tracker=tracker,
         uncertain_allowed_tools=("display_menu",),
+        confirm_uncertain=confirm_uncertain,
     )
     await _drive_one_turn(service, binding, "thêm một bạc xỉu")
     return binding
@@ -545,6 +546,25 @@ async def test_rejected_turn_that_reaches_the_agent_is_treated_as_uncertain():
     from openjarvis.server.voice.speaker import Verdict
 
     binding = await _run_turn_with_verdict(Verdict.REJECT)
+
+    assert binding.cart_blocked is True
+
+
+@pytest.mark.anyio
+async def test_uncertain_turn_acts_without_asking_when_confirmation_is_off():
+    from openjarvis.server.voice.speaker import Verdict
+
+    binding = await _run_turn_with_verdict(Verdict.UNCERTAIN, confirm_uncertain=False)
+
+    assert binding.cart_blocked is False
+    assert binding.prompt == "thêm một bạc xỉu"
+
+
+@pytest.mark.anyio
+async def test_rejected_turn_fails_closed_even_when_confirmation_is_off():
+    from openjarvis.server.voice.speaker import Verdict
+
+    binding = await _run_turn_with_verdict(Verdict.REJECT, confirm_uncertain=False)
 
     assert binding.cart_blocked is True
 
