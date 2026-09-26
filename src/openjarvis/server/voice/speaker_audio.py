@@ -227,6 +227,11 @@ class SpeakerAudioProcessor(FrameProcessor):
                 # Wall-clock time of this frame, to line it up with Vision.
                 t = ended - (len(probs) - 1 - i) * step
                 verdict = self._gate.frame(row, bot_speaking=bot_speaking, t=t)
+                if verdict is not None:
+                    logger.debug(
+                        f"{self}: speaker frame t={t:.2f} verdict={verdict.value} "
+                        f"bot={bot_speaking} evidence={self._gate.last_evidence}"
+                    )
                 if self._gate.target != target:
                     logger.info(
                         f"{self}: speaker target slot {target} -> {self._gate.target}"

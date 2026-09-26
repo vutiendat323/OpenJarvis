@@ -51,6 +51,10 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
         self._turn_open = False
         self._accept_run = 0
 
+    @property
+    def turn_open(self) -> bool:
+        return self._turn_open
+
     async def handle_user_turn_started(self) -> None:
         self._turn_open = True
         await super().handle_user_turn_started()
@@ -183,7 +187,9 @@ class ConfirmedTurnAnalyzerUserTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy
         await self._finish_turn(enable_user_speaking_frames)
 
     async def _finish_turn(self, enable_user_speaking_frames: bool | None) -> None:
-        if self._speaker_gate is not None:
+        # Smart Turn also fires with no turn open (Pipecat ignores that stop);
+        # only a real turn gets a verdict.
+        if self._speaker_gate is not None and self._speaker_gate.turn_open:
             await self._speaker_gate.close_turn()
         await super().trigger_user_turn_stopped(
             enable_user_speaking_frames=enable_user_speaking_frames

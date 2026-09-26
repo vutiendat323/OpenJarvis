@@ -223,6 +223,8 @@ class AudioOnlyGate:
         self._active_frames: Counter[int] = Counter()
         self._bot_frames: Counter[int] = Counter()
         self.target: int | None = None
+        # (anchor track, mouth activity) behind the last vision verdict, for logs.
+        self.last_evidence: tuple[int | None, float | None] | None = None
         self._floor_slot: int | None = None
         self._floor_run = 0
 
@@ -265,10 +267,12 @@ class AudioOnlyGate:
                 return Verdict.UNCERTAIN
             anchor = self._faces.anchor(t, self._anchor_max_m)
             if anchor is None:
+                self.last_evidence = (None, None)
                 return Verdict.UNCERTAIN
             mouth = self._faces.mouth(
                 anchor, t - VISION_WINDOW_SECS, t + VISION_WINDOW_SECS
             )
+            self.last_evidence = (anchor, mouth)
             if mouth is not None and mouth >= self._mouth_active:
                 return Verdict.ACCEPT
             return Verdict.REJECT
@@ -321,18 +325,23 @@ class FaceTrackBuffer:
                 for f in e.get("tracks", ())
                 if f["track_id"] == track_id and f.get("mouth_activity") is not None
             ]
-        return max(values) if values else None
+        # Mean, not max: one noisy sample (a glance, a nod) must not read as
+        # the customer talking for the whole window.
+        return sum(values) / len(values) if values else None
 
 
 class SpeakerTracker:
     """One Voice session's speaker evidence, shared by the turn strategies
     and the LLM service. Everything runs on the pipeline's event loop."""
 
-    def __init__(self, settings: SpeakerSettings) -> None:
+    def __init__(self, settings: SpeakerSettings, *, diarized: bool = False) -> None:
         self._settings = settings
+        self._diarized = diarized
         self._counts: Counter[Verdict] = Counter()
         self._closed: Verdict | None = None
-        self.has_evidence = False
+        # With a diarizer, every decision waits for its evidence from the
+        # first frame of the session; without one, the legacy behaviour.
+        self.has_evidence = diarized
 
     def record(self, verdict: Verdict) -> None:
         self.has_evidence = True
@@ -348,6 +357,10 @@ class SpeakerTracker:
         self._closed = None
 
     def span_verdict(self) -> Verdict:
+        if self._diarized and not self._counts:
+            # The diarizer ran but never confirmed this speech (it lagged, or
+            # placed nobody): not the customer's word.
+            return Verdict.UNCERTAIN
         return turn_verdict(
             self._counts,
             accept_fraction=self._settings.accept_turn_fraction,

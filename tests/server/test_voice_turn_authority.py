@@ -322,3 +322,53 @@ def test_vision_faces_reach_the_gate_only_when_enabled():
 
     assert on._gate._faces is faces
     assert off._gate._faces is None
+
+
+@pytest.mark.anyio
+async def test_a_diarized_session_never_barges_in_without_evidence():
+    tracker = SpeakerTracker(SpeakerSettings(enabled=True), diarized=True)
+    strategy = TargetSpeakerTurnStartStrategy(tracker=tracker, bargein_accept_frames=3)
+    await strategy.setup(
+        FrameProcessorSetup(
+            clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=MagicMock()
+        )
+    )
+    events = []
+
+    @strategy.event_handler("on_user_turn_started")
+    async def _started(_strategy, params):
+        events.append("start")
+
+    await strategy.process_frame(BotStartedSpeakingFrame())
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+
+    assert events == []
+
+
+@pytest.mark.anyio
+async def test_stopping_without_an_open_turn_does_not_close_one():
+    from openjarvis.server.voice.turn_detection import (
+        ConfirmedTurnAnalyzerUserTurnStopStrategy,
+    )
+
+    gate, tracker, events = await _strategy()
+    stop = ConfirmedTurnAnalyzerUserTurnStopStrategy(
+        turn_analyzer=MagicMock(), minimum_silence_secs=0.0, speaker_gate=gate
+    )
+
+    await stop._finish_turn(None)
+
+    assert events == []
+    assert gate.turn_open is False
+
+
+def test_a_loaded_diarizer_marks_the_tracker_diarized():
+    diarizer = MagicMock(chunk_samples=3840, frame_secs=0.08)
+    processor = _built_processors(
+        SpeakerSettings(enabled=True, diarizer="sortformer"), diarizer
+    )
+
+    assert processor._gate is not None
+    aggregator = processor._next._next
+    gate = aggregator._params.user_turn_strategies.start[0]
+    assert gate._tracker.has_evidence is True

@@ -92,7 +92,11 @@ def build_voice_pipeline(
     )
     if speaker is None:
         speaker = load_speaker_settings()
-    tracker = SpeakerTracker(speaker) if speaker.enabled else None
+    tracker = (
+        SpeakerTracker(speaker, diarized=diarizer is not None)
+        if speaker.enabled
+        else None
+    )
     # Disabled: Pipecat's default start strategies, exactly as before.
     # Enabled: one gate decides turn starts and barge-in; the stop strategy
     # closes turns through it and the LLM service reads its verdict.

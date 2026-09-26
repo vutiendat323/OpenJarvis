@@ -311,12 +311,12 @@ def test_face_buffer_picks_the_nearest_engaged_face():
     assert buffer.anchor(10.0, max_m=0.5) is None
 
 
-def test_face_buffer_reports_the_loudest_mouth_in_a_window():
+def test_face_buffer_averages_the_mouth_over_a_window():
     buffer = FaceTrackBuffer()
     for i, m in enumerate((0.1, 0.9, 0.2)):
         buffer.add(_faces(10.0 + i * 0.1, (2, 0.8, m)))
 
-    assert buffer.mouth(2, 9.95, 10.25) == 0.9
+    assert buffer.mouth(2, 9.95, 10.25) == pytest.approx(0.4)
     assert buffer.mouth(2, 10.15, 10.25) == 0.2
     assert buffer.mouth(9, 9.0, 11.0) is None
 
@@ -365,13 +365,26 @@ def test_nobody_engaged_is_uncertain_not_accepted():
     assert gate.frame(SLOT1, bot_speaking=False, t=100.1) is Verdict.UNCERTAIN
 
 
-def test_mouth_evidence_counts_within_three_tenths_of_a_second():
-    gate, faces = _vision_gate()
-    faces.add(_faces(100.0, (2, 0.7, 0.9)))
-    faces.add(_faces(100.5, (2, 0.7, 0.05)))
+def _mouth_stream(faces, start, values, track=2, dist=0.7):
+    for i, m in enumerate(values):
+        faces.add(_faces(start + i * 0.1, (track, dist, m)))
 
-    assert gate.frame(SLOT1, bot_speaking=False, t=100.25) is Verdict.ACCEPT
-    assert gate.frame(SLOT1, bot_speaking=False, t=100.4) is Verdict.REJECT
+
+def test_sustained_mouth_movement_accepts_and_stillness_rejects():
+    gate, faces = _vision_gate()
+    _mouth_stream(faces, 100.0, [0.8] * 8 + [0.05] * 10)
+
+    assert gate.frame(SLOT1, bot_speaking=False, t=100.3) is Verdict.ACCEPT
+    assert gate.frame(SLOT1, bot_speaking=False, t=101.4) is Verdict.REJECT
+
+
+def test_one_noisy_mouth_sample_does_not_accept():
+    gate, faces = _vision_gate()
+    # A glance at the phone: one high sample among a still mouth, which
+    # the old max-over-window turned into ~0.6 s of ACCEPT.
+    _mouth_stream(faces, 100.0, [0.05] * 3 + [1.0] + [0.05] * 5)
+
+    assert gate.frame(SLOT1, bot_speaking=True, t=100.3) is Verdict.REJECT
 
 
 def test_stale_vision_falls_back_to_audio_only():
@@ -408,3 +421,21 @@ def test_vision_settings_load(tmp_path, monkeypatch):
         0.4,
         1.2,
     )
+
+
+def test_a_diarized_turn_without_evidence_is_uncertain():
+    tracker = SpeakerTracker(SpeakerSettings(enabled=True), diarized=True)
+    tracker.begin_span()
+
+    # The diarizer ran but never confirmed the speech (it lagged, or heard
+    # nobody it could place): that is not the customer's word.
+    assert tracker.has_evidence is True
+    assert tracker.close_turn() is U
+
+
+def test_without_a_diarizer_no_evidence_stays_the_legacy_accept():
+    tracker = SpeakerTracker(SpeakerSettings(enabled=True))
+    tracker.begin_span()
+
+    assert tracker.has_evidence is False
+    assert tracker.close_turn() is A
