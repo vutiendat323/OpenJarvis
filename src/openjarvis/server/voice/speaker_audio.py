@@ -7,8 +7,10 @@ them: the ``voice-speaker`` extra is optional.
 from __future__ import annotations
 
 import asyncio
+import bisect
 import math
 import time
+from collections import deque
 from concurrent.futures import Executor, ThreadPoolExecutor
 from typing import Protocol
 
@@ -25,7 +27,8 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from openjarvis.server.voice.speaker import AudioOnlyGate
+from openjarvis.server.voice.speaker import AudioOnlyGate, Verdict
+from openjarvis.server.voice.transcription import SttAudioFrame
 from openjarvis.server.voice.turn_detection import SpeakerVerdictFrame
 
 SAMPLE_RATE = 16_000
@@ -153,7 +156,11 @@ _MAX_QUEUED_CHUNKS = 2
 class SpeakerAudioProcessor(FrameProcessor):
     """Diarize the customer mic off the event loop; emit per-frame verdicts.
 
-    Audio is pushed on before anything else, so STT never waits on the model.
+    Audio is pushed on before anything else, so the VAD never waits on the
+    model. With ``stt_delay_secs`` it also releases a delayed copy of the mic
+    for Gemini (``SttAudioFrame``), silencing every stretch the gate
+    rejected, so a phone video or a bystander never lands in the customer's
+    transcript. Audio whose verdict is not in yet goes through unchanged.
     """
 
     def __init__(
@@ -162,9 +169,16 @@ class SpeakerAudioProcessor(FrameProcessor):
         diarizer: Diarizer,
         gate: AudioOnlyGate,
         executor: Executor | None = None,
+        stt_delay_secs: float = 0.0,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
+        self._stt_delay = stt_delay_secs
+        self._stt_line: deque[tuple[float, InputAudioRawFrame]] = deque()
+        # Start times and verdicts of recent 80 ms frames, in time order.
+        self._verdict_starts: list[float] = []
+        self._verdict_values: list[Verdict | None] = []
+        self._releaser: asyncio.Task | None = None
         self._diarizer = diarizer
         self._gate = gate
         self._executor = executor or DIARIZER_EXECUTOR
@@ -178,10 +192,14 @@ class SpeakerAudioProcessor(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
+        if isinstance(frame, (EndFrame, CancelFrame)) and self._stt_delay:
+            await self._release_stt(math.inf)
         await self.push_frame(frame, direction)
         if isinstance(frame, StartFrame):
             self._executor.submit(self._diarizer.reset)
             self._worker = self.create_task(self._diarize(), "diarize")
+            if self._stt_delay:
+                self._releaser = self.create_task(self._release_loop(), "stt_release")
         elif isinstance(frame, (EndFrame, CancelFrame)):
             await self._stop()
         elif isinstance(frame, BotStartedSpeakingFrame):
@@ -192,6 +210,8 @@ class SpeakerAudioProcessor(FrameProcessor):
             isinstance(frame, InputAudioRawFrame)
             and direction is FrameDirection.DOWNSTREAM
         ):
+            if self._stt_delay:
+                self._stt_line.append((time.time(), frame))
             self._enqueue(frame)
 
     def _enqueue(self, frame: InputAudioRawFrame) -> None:
@@ -227,6 +247,8 @@ class SpeakerAudioProcessor(FrameProcessor):
                 # Wall-clock time of this frame, to line it up with Vision.
                 t = ended - (len(probs) - 1 - i) * step
                 verdict = self._gate.frame(row, bot_speaking=bot_speaking, t=t)
+                if self._stt_delay:
+                    self._remember_verdict(t - step, verdict)
                 if verdict is not None:
                     logger.debug(
                         f"{self}: speaker frame t={t:.2f} verdict={verdict.value} "
@@ -239,7 +261,40 @@ class SpeakerAudioProcessor(FrameProcessor):
                 if verdict is not None:
                     await self.push_frame(SpeakerVerdictFrame(verdict=verdict))
 
+    def _remember_verdict(self, start: float, verdict: Verdict | None) -> None:
+        self._verdict_starts.append(start)
+        self._verdict_values.append(verdict)
+        if len(self._verdict_starts) > 512:  # ~40 s of frames
+            del self._verdict_starts[:256], self._verdict_values[:256]
+
+    def _verdict_at(self, t: float) -> Verdict | None:
+        i = bisect.bisect_right(self._verdict_starts, t) - 1
+        if i >= 0 and t < self._verdict_starts[i] + self._diarizer.frame_secs:
+            return self._verdict_values[i]
+        return None
+
+    async def _release_loop(self) -> None:
+        while True:
+            await asyncio.sleep(0.02)
+            await self._release_stt(time.time() - self._stt_delay)
+
+    async def _release_stt(self, cutoff: float) -> None:
+        while self._stt_line and self._stt_line[0][0] <= cutoff:
+            arrived, frame = self._stt_line.popleft()
+            duration = frame.num_frames / frame.sample_rate if frame.sample_rate else 0
+            rejected = self._verdict_at(arrived - duration / 2) is Verdict.REJECT
+            await self.push_frame(
+                SttAudioFrame(
+                    audio=bytes(len(frame.audio)) if rejected else frame.audio,
+                    sample_rate=frame.sample_rate,
+                    num_channels=frame.num_channels,
+                )
+            )
+
     async def _stop(self) -> None:
+        if self._releaser is not None:
+            await self.cancel_task(self._releaser)
+            self._releaser = None
         if self._worker is not None:
             await self.cancel_task(self._worker)
             self._worker = None

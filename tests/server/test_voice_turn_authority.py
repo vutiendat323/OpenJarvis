@@ -372,3 +372,29 @@ def test_a_loaded_diarizer_marks_the_tracker_diarized():
     aggregator = processor._next._next
     gate = aggregator._params.user_turn_strategies.start[0]
     assert gate._tracker.has_evidence is True
+
+
+def test_stt_mask_wires_the_delayed_gemini_feed():
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    from openjarvis.server.voice.pipeline import build_voice_pipeline
+
+    class _MaskableStt(FrameProcessor):
+        delay = None
+
+        def enable_masked_feed(self, delay_secs):
+            self.delay = delay_secs
+
+    diarizer = MagicMock(chunk_samples=3840, frame_secs=0.08)
+    for mask, expected in ((True, 0.5), (False, None)):
+        stt = _MaskableStt()
+        build_voice_pipeline(
+            connection=MagicMock(),
+            binding=MagicMock(),
+            renderer=MagicMock(),
+            stt=stt,
+            speaker=SpeakerSettings(enabled=True, diarizer="sortformer", stt_mask=mask),
+            diarizer=diarizer,
+        )
+        assert stt.delay == expected
+        assert stt._prev._stt_delay == (expected or 0.0)

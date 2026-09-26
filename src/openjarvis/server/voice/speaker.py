@@ -43,6 +43,8 @@ class SpeakerSettings:
     vision_faces: bool = False
     mouth_active: float = 0.5
     anchor_max_m: float = 1.5
+    stt_mask: bool = False
+    stt_mask_delay_secs: float = 0.5
 
 
 def _fraction(section: Mapping[str, Any], key: str, default: float) -> float:
@@ -145,6 +147,10 @@ def load_speaker_settings() -> SpeakerSettings:
         vision_faces=_boolean(section, "vision_faces", defaults.vision_faces),
         mouth_active=_fraction(section, "mouth_active", defaults.mouth_active),
         anchor_max_m=_positive_float(section, "anchor_max_m", defaults.anchor_max_m),
+        stt_mask=_boolean(section, "stt_mask", defaults.stt_mask),
+        stt_mask_delay_secs=_positive_float(
+            section, "stt_mask_delay_secs", defaults.stt_mask_delay_secs
+        ),
     )
 
 

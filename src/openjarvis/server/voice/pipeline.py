@@ -113,8 +113,15 @@ def build_voice_pipeline(
         from openjarvis.server.voice.speaker import AudioOnlyGate
         from openjarvis.server.voice.speaker_audio import SpeakerAudioProcessor
 
+        # Gemini hears only a delayed, speaker-gated copy of the mic, so a
+        # phone video or a bystander never lands in the customer's words.
+        stt_delay = 0.0
+        if speaker.stt_mask and hasattr(stt, "enable_masked_feed"):
+            stt_delay = speaker.stt_mask_delay_secs
+            stt.enable_masked_feed(stt_delay)
         speaker_audio = SpeakerAudioProcessor(
             diarizer=diarizer,
+            stt_delay_secs=stt_delay,
             gate=AudioOnlyGate(speaker, faces=faces if speaker.vision_faces else None),
         )
     turn_state = VoiceTurnState()

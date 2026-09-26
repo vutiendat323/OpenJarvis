@@ -439,3 +439,16 @@ def test_without_a_diarizer_no_evidence_stays_the_legacy_accept():
 
     assert tracker.has_evidence is False
     assert tracker.close_turn() is A
+
+
+def test_stt_mask_settings_load(tmp_path, monkeypatch):
+    preset = tmp_path / "preset.toml"
+    preset.write_text(
+        "[voice.speaker]\nstt_mask = true\nstt_mask_delay_secs = 0.6\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENJARVIS_CONFIG", str(preset))
+    settings = load_speaker_settings()
+
+    assert (settings.stt_mask, settings.stt_mask_delay_secs) == (True, 0.6)
+    assert SpeakerSettings().stt_mask is False

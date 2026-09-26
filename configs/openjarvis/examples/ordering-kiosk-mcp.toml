@@ -211,6 +211,9 @@ diarizer_latency = "ultra_low"
 # Accept speech only while the nearest face within 1.5 m moves its mouth
 # (Vision `faces` stream); speech with that mouth still is rejected.
 vision_faces = false
+# Send Gemini a copy of the mic delayed 0.5 s with rejected speech silenced,
+# so a phone video or bystander never lands in the customer's transcript.
+stt_mask = false
 
 [tools.mcp]
 enabled = true

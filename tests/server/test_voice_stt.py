@@ -520,3 +520,65 @@ async def test_live_observed_late_final_does_not_start_a_second_turn(monkeypatch
     )
     assert inference_count == 1
     await strategy.cleanup()
+
+
+@pytest.mark.anyio
+async def test_masked_feed_keeps_realtime_audio_away_from_gemini(monkeypatch):
+    """Live mic audio still reaches the VAD at once; Gemini hears only the
+    delayed copy the speaker gate has silenced wherever it rejected speech."""
+    from pipecat.frames.frames import InputAudioRawFrame
+
+    from openjarvis.server.voice.transcription import SttAudioFrame
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    stt = _transcriber()
+    stt.enable_masked_feed(0.5)
+    fed, pushed = [], []
+
+    async def feed(frame, direction):
+        fed.append(frame)
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append(frame)
+
+    monkeypatch.setattr(stt, "process_audio_frame", feed)
+    monkeypatch.setattr(stt, "push_frame", push)
+    live = InputAudioRawFrame(
+        audio=b"\x01\x00" * 160, sample_rate=16000, num_channels=1
+    )
+    masked = SttAudioFrame(audio=b"\x00\x00" * 160, sample_rate=16000, num_channels=1)
+
+    await stt.process_frame(live, FrameDirection.DOWNSTREAM)
+    await stt.process_frame(masked, FrameDirection.DOWNSTREAM)
+
+    assert pushed == [live]
+    assert [frame.audio for frame in fed] == [masked.audio]
+
+
+def test_masked_feed_extends_the_final_transcript_wait(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    stt = _transcriber()
+    stt.enable_masked_feed(0.5)
+
+    assert stt.service_metadata_frame().ttfs_p99_latency == pytest.approx(2.1)
+
+
+@pytest.mark.anyio
+async def test_masked_feed_finalizes_after_the_delayed_audio(monkeypatch):
+    import time
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    stt = _transcriber()
+    stt.enable_masked_feed(0.05)
+    calls = []
+
+    async def fake_finalize(self):
+        calls.append(time.monotonic())
+
+    monkeypatch.setattr(GeminiSTTService, "_send_finalization_signal", fake_finalize)
+    started = time.monotonic()
+    await stt._send_finalization_signal()
+
+    assert calls == []
+    await asyncio.sleep(0.15)
+    assert calls and calls[0] - started >= 0.05

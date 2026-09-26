@@ -23,6 +23,7 @@ from pipecat.workers.runner import WorkerRunner
 
 from openjarvis.server.voice.speaker import AudioOnlyGate, SpeakerSettings, Verdict
 from openjarvis.server.voice.speaker_audio import SpeakerAudioProcessor
+from openjarvis.server.voice.transcription import SttAudioFrame
 from openjarvis.server.voice.turn_detection import SpeakerVerdictFrame
 
 CHUNK = 320  # 20 ms at 16 kHz
@@ -51,6 +52,7 @@ class _Collector(FrameProcessor):
         super().__init__()
         self.audio = 0
         self.verdicts = []
+        self.stt = []
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
@@ -58,6 +60,8 @@ class _Collector(FrameProcessor):
             self.audio += 1
         if isinstance(frame, SpeakerVerdictFrame):
             self.verdicts.append(frame.verdict)
+        if isinstance(frame, SttAudioFrame):
+            self.stt.append(frame)
         await self.push_frame(frame, direction)
 
 
@@ -69,8 +73,8 @@ def _audio(samples=CHUNK, rate=16_000, channels=1):
     )
 
 
-async def _run(processor, frames, *, until=lambda: True):
-    collector = _Collector()
+async def _run(processor, frames, *, until=lambda: True, collector=None):
+    collector = collector or _Collector()
     worker = PipelineWorker(
         Pipeline([processor, collector]),
         cancel_on_idle_timeout=False,
@@ -181,3 +185,83 @@ async def test_frames_carry_wall_clock_times_for_vision_fusion():
     await _run(processor, [_audio()], until=lambda: diarizer.pushed == 1)
 
     assert seen and before - 1 <= seen[0] <= time.time()
+
+
+class _FixedGate:
+    target = None
+    last_evidence = None
+
+    def __init__(self, verdict):
+        self.verdict = verdict
+
+    def frame(self, probs, *, bot_speaking, t=None):
+        return self.verdict
+
+
+def _loud(samples=CHUNK):
+    return InputAudioRawFrame(
+        audio=(np.ones(samples, np.int16) * 1000).tobytes(),
+        sample_rate=16_000,
+        num_channels=1,
+    )
+
+
+def _masking_processor(verdict, delay):
+    diarizer = _FakeDiarizer([(0.9, 0.0, 0.0, 0.0)] * 4)
+    processor = SpeakerAudioProcessor(
+        diarizer=diarizer,
+        gate=_FixedGate(verdict),
+        executor=ThreadPoolExecutor(max_workers=1),
+        stt_delay_secs=delay,
+    )
+    return processor, diarizer
+
+
+@pytest.mark.anyio
+async def test_rejected_speech_reaches_gemini_as_silence():
+    processor, diarizer = _masking_processor(Verdict.REJECT, 0.05)
+
+    collector = await _run(
+        processor, [_loud(), _loud()], until=lambda: diarizer.pushed == 2
+    )
+
+    assert collector.audio == 2  # the live mic still reaches the VAD
+    assert len(collector.stt) == 2
+    assert all(not any(frame.audio) for frame in collector.stt)
+
+
+@pytest.mark.anyio
+async def test_accepted_speech_reaches_gemini_unchanged():
+    processor, diarizer = _masking_processor(Verdict.ACCEPT, 0.05)
+
+    collector = await _run(
+        processor, [_loud(), _loud()], until=lambda: diarizer.pushed == 2
+    )
+
+    assert [frame.audio for frame in collector.stt] == [_loud().audio] * 2
+
+
+@pytest.mark.anyio
+async def test_gemini_copy_waits_out_the_delay():
+    processor, diarizer = _masking_processor(Verdict.ACCEPT, 0.4)
+    collector = _Collector()
+    early = []
+
+    def until():
+        if diarizer.pushed == 1 and not early:
+            early.append(len(collector.stt))
+        return diarizer.pushed == 1 and bool(collector.stt)
+
+    await _run(processor, [_loud()], until=until, collector=collector)
+
+    assert early == [0]
+    assert len(collector.stt) == 1
+
+
+@pytest.mark.anyio
+async def test_without_a_delay_no_gemini_copy_is_made():
+    processor, diarizer, _ = _processor([(0.9, 0.0, 0.0, 0.0)])
+
+    collector = await _run(processor, [_audio()], until=lambda: diarizer.pushed == 1)
+
+    assert collector.stt == []

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -13,6 +14,12 @@ from google.genai.types import (
     AudioTranscriptionConfig,
     AudioTranscriptionConfigMode,
 )
+from pipecat.frames.frames import (
+    Frame,
+    InputAudioRawFrame,
+    SystemFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.google.gemini_live.stt import GeminiSTTService
 
 DEFAULT_LANGUAGE_CODES = ("vi-VN", "en-US")
@@ -82,12 +89,74 @@ def load_gemini_stt_profile() -> GeminiSTTProfile:
     )
 
 
+@dataclass
+class SttAudioFrame(SystemFrame):
+    """Delayed mic audio for Gemini only, with rejected speech silenced.
+
+    A SystemFrame so an interruption does not drop it: the customer's
+    barge-in words are exactly the audio that must still be transcribed.
+    """
+
+    audio: bytes = b""
+    sample_rate: int = 16_000
+    num_channels: int = 1
+
+
 class OpenJarvisGeminiSTTService(GeminiSTTService):
     """Use current Gemini transcription fields missing from Pipecat 1.8.1."""
 
     def __init__(self, *, profile: GeminiSTTProfile, **kwargs: Any) -> None:
         self._openjarvis_profile = profile
+        self._masked_delay = 0.0
+        self._finalize_task: asyncio.Task | None = None
         super().__init__(**kwargs)
+
+    def enable_masked_feed(self, delay_secs: float) -> None:
+        """Transcribe only the delayed, speaker-gated copy of the mic.
+
+        Live audio still passes straight through to the VAD, so barge-in and
+        endpointing keep their timing; Gemini hears the ``SttAudioFrame``s the
+        speaker processor releases ``delay_secs`` later.
+        """
+        self._masked_delay = delay_secs
+        # The final transcript now lands delay_secs later; the turn-stop
+        # safety timer downstream must wait that much longer for it.
+        self._ttfs_p99_latency = (self._ttfs_p99_latency or 0.0) + delay_secs
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        if self._masked_delay:
+            if isinstance(frame, SttAudioFrame):
+                await self.process_audio_frame(
+                    InputAudioRawFrame(
+                        audio=frame.audio,
+                        sample_rate=frame.sample_rate,
+                        num_channels=frame.num_channels,
+                    ),
+                    direction,
+                )
+                return
+            if isinstance(frame, InputAudioRawFrame):
+                await self.push_frame(frame, direction)
+                return
+        await super().process_frame(frame, direction)
+
+    async def _send_finalization_signal(self):
+        if not self._masked_delay:
+            await super()._send_finalization_signal()
+            return
+        # The utterance's last audio is still in the delay line: flush it first.
+        if self._finalize_task is not None:
+            self._finalize_task.cancel()
+        self._finalize_task = asyncio.create_task(self._finalize_after_delay())
+
+    async def _finalize_after_delay(self) -> None:
+        await asyncio.sleep(self._masked_delay + 0.05)
+        await super()._send_finalization_signal()
+
+    async def cleanup(self) -> None:
+        if self._finalize_task is not None:
+            self._finalize_task.cancel()
+        await super().cleanup()
 
     def _build_live_config(self):
         config = super()._build_live_config()
@@ -103,5 +172,6 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
 __all__ = [
     "GeminiSTTProfile",
     "OpenJarvisGeminiSTTService",
+    "SttAudioFrame",
     "load_gemini_stt_profile",
 ]
