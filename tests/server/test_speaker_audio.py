@@ -232,6 +232,20 @@ async def test_rejected_speech_reaches_gemini_as_silence():
 
 
 @pytest.mark.anyio
+async def test_sound_with_no_diarized_voice_reaches_gemini_as_silence():
+    """A quiet phone video trips the VAD, not the diarizer: Gemini hears nothing."""
+    processor, diarizer = _masking_processor(None, 0.05)
+
+    collector = await _run(
+        processor, [_loud(), _loud()], until=lambda: diarizer.pushed == 2
+    )
+
+    assert collector.audio == 2
+    assert len(collector.stt) == 2
+    assert all(not any(frame.audio) for frame in collector.stt)
+
+
+@pytest.mark.anyio
 async def test_accepted_speech_reaches_gemini_unchanged():
     processor, diarizer = _masking_processor(Verdict.ACCEPT, 0.05)
 

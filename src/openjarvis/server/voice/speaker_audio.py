@@ -183,6 +183,10 @@ class TseSeparator:
         self._torch = torch
         self._device = device
         self._model = torch.jit.load(str(Path(path).expanduser()), map_location=device)
+        # The first call costs ~1.2 s, past the STT's drain timeout.
+        self.separate(
+            np.zeros(SAMPLE_RATE, np.float32), np.zeros(self.enroll_samples, np.float32)
+        )
 
     def separate(self, mix: np.ndarray, enroll: np.ndarray) -> np.ndarray:
         torch = self._torch
@@ -213,7 +217,8 @@ class SpeakerAudioProcessor(FrameProcessor):
     model. With ``stt_delay_secs`` it also releases a delayed copy of the mic
     for Gemini (``SttAudioFrame``), silencing every stretch the gate
     rejected, so a phone video or a bystander never lands in the customer's
-    transcript. Audio whose verdict is not in yet goes through unchanged.
+    transcript, and every stretch the diarizer heard no voice in. Audio whose
+    verdict is not in yet goes through unchanged.
 
     With a ``separator``, overlapped speech is held back from Gemini and
     replaced by the customer's voice extracted from it, enrolled from their
@@ -354,9 +359,15 @@ class SpeakerAudioProcessor(FrameProcessor):
             return i
         return None
 
-    def _verdict_at(self, t: float) -> Verdict | None:
+    def _silenced(self, t: float) -> bool:
+        """Rejected speech, or sound the diarizer heard no voice in.
+
+        The 2026-09-26 live test: a quiet phone video tripped the VAD but not
+        Sortformer, and Gemini transcribed it into turns with no speaker
+        evidence. Audio the diarizer has not reached yet still goes through.
+        """
         i = self._frame_at(t)
-        return None if i is None else self._verdict_values[i]
+        return i is not None and self._verdict_values[i] in (Verdict.REJECT, None)
 
     def _overlap_at(self, t: float) -> bool:
         i = self._frame_at(t)
@@ -397,9 +408,8 @@ class SpeakerAudioProcessor(FrameProcessor):
                         await self._flush_held(separate=separate)
                     continue
                 await self._flush_held(separate=separate)
-                rejected = self._verdict_at(t) is Verdict.REJECT
                 await self._push_stt(
-                    frame, bytes(len(frame.audio)) if rejected else frame.audio
+                    frame, bytes(len(frame.audio)) if self._silenced(t) else frame.audio
                 )
             if not math.isfinite(cutoff):
                 await self._flush_held(separate=separate)
