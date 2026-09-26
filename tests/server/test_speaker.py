@@ -365,6 +365,16 @@ def test_nobody_engaged_is_uncertain_not_accepted():
     assert gate.frame(SLOT1, bot_speaking=False, t=100.1) is Verdict.UNCERTAIN
 
 
+def test_overlap_frames_still_log_the_customers_mouth():
+    gate, faces = _vision_gate(overlap_on_frames=1)
+    faces.add(_faces(100.0, (2, 0.7, 0.9)))
+
+    assert gate.frame(BOTH, bot_speaking=False, t=100.1) is Verdict.UNCERTAIN
+    assert gate.overlap and gate.last_evidence == (2, 0.9)
+    assert gate.frame(SILENT, bot_speaking=False, t=100.2) is None
+    assert gate.last_evidence is None
+
+
 def _mouth_stream(faces, start, values, track=2, dist=0.7):
     for i, m in enumerate(values):
         faces.add(_faces(start + i * 0.1, (track, dist, m)))

@@ -252,7 +252,8 @@ class SpeakerAudioProcessor(FrameProcessor):
                 if verdict is not None:
                     logger.debug(
                         f"{self}: speaker frame t={t:.2f} verdict={verdict.value} "
-                        f"bot={bot_speaking} evidence={self._gate.last_evidence}"
+                        f"bot={bot_speaking} overlap={self._gate.overlap} "
+                        f"evidence={self._gate.last_evidence}"
                     )
                 if self._gate.target != target:
                     logger.info(

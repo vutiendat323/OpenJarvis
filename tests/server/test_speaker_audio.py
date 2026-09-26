@@ -190,6 +190,7 @@ async def test_frames_carry_wall_clock_times_for_vision_fusion():
 class _FixedGate:
     target = None
     last_evidence = None
+    overlap = False
 
     def __init__(self, verdict):
         self.verdict = verdict

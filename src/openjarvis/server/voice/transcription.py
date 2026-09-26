@@ -14,10 +14,12 @@ from google.genai.types import (
     AudioTranscriptionConfig,
     AudioTranscriptionConfigMode,
 )
+from loguru import logger
 from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
     SystemFrame,
+    TranscriptionFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.google.gemini_live.stt import GeminiSTTService
@@ -139,6 +141,14 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
                 await self.push_frame(frame, direction)
                 return
         await super().process_frame(frame, direction)
+
+    async def push_frame(
+        self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM
+    ) -> None:
+        if isinstance(frame, TranscriptionFrame):
+            # What Gemini actually heard, for checking the speaker gate live.
+            logger.info(f"{self}: transcript {frame.text!r}")
+        await super().push_frame(frame, direction)
 
     async def _send_finalization_signal(self):
         if not self._masked_delay:

@@ -234,6 +234,10 @@ class AudioOnlyGate:
         self._floor_slot: int | None = None
         self._floor_run = 0
 
+    @property
+    def overlap(self) -> bool:
+        return self._overlap.active
+
     def is_echo(self, slot: int) -> bool:
         heard = self._active_frames[slot]
         return (
@@ -255,6 +259,7 @@ class AudioOnlyGate:
         if self.target is not None and self.is_echo(self.target):
             self.target = None
         overlap = self._overlap.update(len(voices))
+        self.last_evidence = None
         if not active:
             return None
         if not voices:
@@ -269,16 +274,17 @@ class AudioOnlyGate:
         else:
             self._floor_slot, self._floor_run = None, 0
         if self._faces is not None and t is not None and self._faces.fresh(t):
-            if overlap:
-                return Verdict.UNCERTAIN
             anchor = self._faces.anchor(t, self._anchor_max_m)
-            if anchor is None:
-                self.last_evidence = (None, None)
-                return Verdict.UNCERTAIN
-            mouth = self._faces.mouth(
-                anchor, t - VISION_WINDOW_SECS, t + VISION_WINDOW_SECS
+            mouth = (
+                self._faces.mouth(
+                    anchor, t - VISION_WINDOW_SECS, t + VISION_WINDOW_SECS
+                )
+                if anchor is not None
+                else None
             )
             self.last_evidence = (anchor, mouth)
+            if overlap or anchor is None:
+                return Verdict.UNCERTAIN
             if mouth is not None and mouth >= self._mouth_active:
                 return Verdict.ACCEPT
             return Verdict.REJECT

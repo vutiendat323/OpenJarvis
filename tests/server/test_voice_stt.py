@@ -582,3 +582,31 @@ async def test_masked_feed_finalizes_after_the_delayed_audio(monkeypatch):
     assert calls == []
     await asyncio.sleep(0.15)
     assert calls and calls[0] - started >= 0.05
+
+
+@pytest.mark.anyio
+async def test_final_transcripts_are_logged(monkeypatch):
+    """The live check of the speaker gate reads what Gemini actually heard."""
+    from loguru import logger
+    from pipecat.frames.frames import TranscriptionFrame
+    from pipecat.services.stt_service import STTService
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    stt = _transcriber()
+    pushed, logged = [], []
+
+    async def parent_push(self, frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append(frame)
+
+    monkeypatch.setattr(STTService, "push_frame", parent_push)
+    sink = logger.add(lambda message: logged.append(message), level="INFO")
+    try:
+        frame = TranscriptionFrame(
+            text="cho tôi một ly cà phê", user_id="", timestamp=""
+        )
+        await stt.push_frame(frame)
+    finally:
+        logger.remove(sink)
+
+    assert pushed == [frame]
+    assert any("cho tôi một ly cà phê" in m for m in logged)
