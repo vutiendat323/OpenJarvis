@@ -184,8 +184,14 @@ class TseSeparator:
         self._device = device
         self._model = torch.jit.load(str(Path(path).expanduser()), map_location=device)
         # The first call costs ~1.2 s, past the STT's drain timeout.
+        started = time.monotonic()
         self.separate(
-            np.zeros(SAMPLE_RATE, np.float32), np.zeros(self.enroll_samples, np.float32)
+            np.zeros(SAMPLE_RATE, np.float32),
+            np.zeros(self.enroll_samples, np.float32),
+        )
+        logger.info(
+            f"TSE separator loaded from {path} "
+            f"(warm-up {time.monotonic() - started:.2f} s)"
         )
 
     def separate(self, mix: np.ndarray, enroll: np.ndarray) -> np.ndarray:

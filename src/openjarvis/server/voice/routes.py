@@ -276,7 +276,6 @@ async def _separator() -> Any | None:
                 _SEPARATOR = await asyncio.to_thread(
                     TseSeparator, settings.separator_model
                 )
-                logger.info("speaker separator loaded: %s", settings.separator_model)
             except Exception:  # noqa: BLE001 - optional capability
                 _SEPARATOR_FAILED = True
                 logger.exception("speaker separator unavailable; STT hears the mix")
