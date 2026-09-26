@@ -8,6 +8,7 @@ from datetime import datetime
 from threading import RLock
 from typing import Any, Dict, List, Optional, Set
 
+from openjarvis.core.conversation import allowed_tool_steps
 from openjarvis.core.types import ToolResult
 from openjarvis.skills.executor import SkillExecutor
 from openjarvis.skills.types import SkillManifest
@@ -295,7 +296,8 @@ class SkillTool(BaseTool):
                 "today": datetime.now().astimezone().date().isoformat(),
             }
 
-            result = self._executor.run(self._manifest, initial_context=initial_ctx)
+            with allowed_tool_steps(tool_name):
+                result = self._executor.run(self._manifest, initial_context=initial_ctx)
 
             if not result.success:
                 # Propagate failure immediately

@@ -8,6 +8,7 @@ import pytest
 
 from openjarvis.core.conversation import (
     SPEAKER_UNCONFIRMED_MESSAGE,
+    allowed_tool_steps,
     speaker_blocks_tool,
     uncertain_speaker_scope,
 )
@@ -53,6 +54,25 @@ def test_uncertain_speaker_blocks_tools_outside_the_allow_list():
     assert cart.calls == 0
     assert allowed.success is True
     assert menu.calls == 1
+
+
+def test_an_allowed_skill_runs_its_fixed_steps_and_a_blocked_one_does_not():
+    """Live 2026-09-26: an unconfirmed "open the menu" was refused because
+    the allowed menu skill's own http_request step was blocked."""
+    http = _Tool("http_request")
+    executor = ToolExecutor([http])
+
+    with uncertain_speaker_scope(["skill_trendcoffee-menu"]):
+        with allowed_tool_steps("skill_trendcoffee-menu"):
+            inside_allowed = executor.execute(_call("http_request"))
+        with allowed_tool_steps("skill_trendcoffee-checkout"):
+            inside_blocked = executor.execute(_call("http_request"))
+        after = executor.execute(_call("http_request"))
+
+    assert inside_allowed.success is True
+    assert inside_blocked.content == SPEAKER_UNCONFIRMED_MESSAGE
+    assert after.content == SPEAKER_UNCONFIRMED_MESSAGE
+    assert http.calls == 1
 
 
 def test_scope_ends_with_the_turn():

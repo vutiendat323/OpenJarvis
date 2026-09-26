@@ -99,6 +99,25 @@ def speaker_blocks_tool(tool_name: str) -> bool:
 
 
 @contextmanager
+def allowed_tool_steps(tool_name: str) -> Iterator[None]:
+    """Let an allow-listed prepared skill run its own fixed steps.
+
+    The allow-list names what an unconfirmed speaker may ask for (e.g. the
+    read-only ``skill_trendcoffee-menu``); the skill's templated steps
+    (``http_request`` GET, ``display_menu``) are its implementation, not the
+    speaker's choice. A skill that is not allowed keeps every step blocked.
+    """
+    if _UNCERTAIN_SPEAKER_TOOLS.get() is None or speaker_blocks_tool(tool_name):
+        yield
+        return
+    token = _UNCERTAIN_SPEAKER_TOOLS.set(None)
+    try:
+        yield
+    finally:
+        _UNCERTAIN_SPEAKER_TOOLS.reset(token)
+
+
+@contextmanager
 def agent_turn_scope() -> Iterator[str]:
     """Issue one unguessable nonce that expires with the current agent turn."""
     nonce = secrets.token_hex(16)
@@ -141,6 +160,7 @@ __all__ = [
     "current_conversation_id",
     "current_turn_nonce",
     "speaker_blocks_tool",
+    "allowed_tool_steps",
     "turn_nonce_is_active",
     "uncertain_speaker_scope",
 ]
