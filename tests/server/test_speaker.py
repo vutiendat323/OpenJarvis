@@ -460,6 +460,41 @@ def test_a_diarized_turn_without_evidence_is_uncertain():
     assert tracker.close_turn() is U
 
 
+def _masked_turn(*frames):
+    tracker = SpeakerTracker(SpeakerSettings(enabled=True, stt_mask=True))
+    tracker.begin_span()
+    for verdict, n in frames:
+        for _ in range(n):
+            tracker.record(verdict)
+    return tracker
+
+
+def test_masked_rejected_speech_does_not_decide_the_turn():
+    """Live 2026-09-26 13:54: "Giờ là mấy giờ rồi bạn?" between phone-video
+    speech closed REJECT (33 R, 14 A) and was dropped; the video never
+    reached the transcript."""
+    tracker = _masked_turn((R, 33), (A, 14))
+
+    assert tracker.span_verdict() is R  # turn starts still count everything
+    assert tracker.close_turn() is A
+    assert _masked_turn((R, 18), (A, 17), (U, 3)).take_turn_verdict() is A
+    assert _masked_turn((R, 9), (A, 5), (U, 8)).close_turn() is U
+
+
+def test_masked_turn_of_only_rejected_speech_stays_rejected():
+    assert _masked_turn((R, 31)).close_turn() is R
+
+
+def test_without_stt_mask_rejected_speech_still_counts():
+    tracker = SpeakerTracker(SpeakerSettings(enabled=True))
+    tracker.begin_span()
+    for verdict, n in ((R, 33), (A, 14)):
+        for _ in range(n):
+            tracker.record(verdict)
+
+    assert tracker.close_turn() is R
+
+
 def test_without_a_diarizer_no_evidence_stays_the_legacy_accept():
     tracker = SpeakerTracker(SpeakerSettings(enabled=True))
     tracker.begin_span()

@@ -381,19 +381,38 @@ class SpeakerTracker:
         no transcript, or this turn's interruption dropped its LLM frame."""
         self._closed = None
 
-    def span_verdict(self) -> Verdict:
-        if self._diarized and not self._counts:
+    def span_verdict(self, counts: Mapping[Verdict, int] | None = None) -> Verdict:
+        counts = self._counts if counts is None else counts
+        if self._diarized and not counts:
             # The diarizer ran but never confirmed this speech (it lagged, or
             # placed nobody): not the customer's word.
             return Verdict.UNCERTAIN
         return turn_verdict(
-            self._counts,
+            counts,
             accept_fraction=self._settings.accept_turn_fraction,
             reject_fraction=self._settings.reject_turn_fraction,
         )
 
+    def _turn_verdict(self) -> Verdict:
+        """The finished turn's verdict, from the speech its transcript holds.
+
+        With ``stt_mask``, REJECTed audio reached Gemini as silence, so it put
+        no words in the transcript: only the other frames decide. Live
+        2026-09-26: a phone video between the customer's words turned their
+        turns UNCERTAIN, or REJECTed and dropped them. A turn of nothing but
+        rejected speech stays REJECT. Turn starts still count every frame.
+        """
+        counts = self._counts
+        if self._settings.stt_mask and (
+            counts[Verdict.ACCEPT] or counts[Verdict.UNCERTAIN]
+        ):
+            counts = Counter(
+                {v: n for v, n in counts.items() if v is not Verdict.REJECT}
+            )
+        return self.span_verdict(counts)
+
     def close_turn(self) -> Verdict:
-        self._closed = self.span_verdict()
+        self._closed = self._turn_verdict()
         return self._closed
 
     def frame_counts(self) -> dict[str, int]:
@@ -406,7 +425,7 @@ class SpeakerTracker:
         Falls back to the live count when the turn was finalized without
         ``close_turn`` (Pipecat's stop watchdog).
         """
-        verdict = self._closed if self._closed is not None else self.span_verdict()
+        verdict = self._closed if self._closed is not None else self._turn_verdict()
         self._closed = None
         return verdict
 
