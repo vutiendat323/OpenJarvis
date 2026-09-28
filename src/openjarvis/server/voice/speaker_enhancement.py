@@ -21,11 +21,11 @@ class OptionalRNNoiseFilter(BaseAudioFilter):
     async def start(self, sample_rate: int) -> None:
         try:
             await self._delegate.start(sample_rate)
-            # Pipecat catches initialization failures without raising.
-            if not self._delegate._rnnoise_ready:
-                raise RuntimeError("RNNoise initialization failed")
         except Exception as exc:
             logger.warning("audio enhancer requested=rnnoise effective=none: {}", exc)
+            return
+        # Pipecat logs initialization failures before returning without raising.
+        if not self._delegate._rnnoise_ready:
             return
         self.effective_name = "rnnoise"
 

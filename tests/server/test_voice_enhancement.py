@@ -60,22 +60,37 @@ def test_disabled_enhancer_never_imports_optional_provider(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_failed_start_reports_bypass():
-    import openjarvis.server.voice.speaker_enhancement as enhancement
+async def test_failed_start_bypasses():
+    adapter = OptionalRNNoiseFilter(FakeRNNoise(ready=False))
+    pcm = b"\x01\x00" * 320
+    await adapter.start(16000)
+    assert adapter.effective_name == "none"
+    assert await adapter.filter(pcm) == pcm
 
+
+@pytest.mark.asyncio
+async def test_pipecat_initialization_failure_logs_only_once(monkeypatch):
+    from pipecat.audio.filters import rnnoise_filter
+
+    class BrokenRNNoise:
+        def __init__(self, *, sample_rate):
+            raise RuntimeError("model init failed")
+
+    monkeypatch.setattr(rnnoise_filter, "RNNoise", BrokenRNNoise)
     messages = []
-    sink = enhancement.logger.add(
+    sink = rnnoise_filter.logger.add(
         lambda message: messages.append(str(message)), level="WARNING"
     )
-    adapter = OptionalRNNoiseFilter(FakeRNNoise(ready=False))
+    adapter = OptionalRNNoiseFilter(rnnoise_filter.RNNoiseFilter())
     pcm = b"\x01\x00" * 320
     try:
         await adapter.start(16000)
         assert adapter.effective_name == "none"
         assert await adapter.filter(pcm) == pcm
     finally:
-        enhancement.logger.remove(sink)
+        rnnoise_filter.logger.remove(sink)
     assert len(messages) == 1
+    assert "model init failed" in messages[0]
 
 
 @pytest.mark.asyncio
