@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import builtins
 import importlib.util
+import wave
+from pathlib import Path
 
 import pytest
 
@@ -229,3 +231,123 @@ def test_missing_provider_falls_back_with_one_diagnostic(monkeypatch):
     finally:
         enhancement.logger.remove(sink)
     assert len(messages) == 1
+
+
+def _write_wav(path: Path, samples: bytes, *, rate=16000, channels=1, width=2):
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(width)
+        wav.setframerate(rate)
+        wav.writeframes(samples)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rate", "channels", "width", "message"),
+    [(8000, 1, 2, "16000"), (16000, 2, 2, "mono"), (16000, 1, 1, "PCM16")],
+)
+async def test_replay_rejects_wrong_wav_format(
+    tmp_path, rate, channels, width, message
+):
+    from scripts.voice_enhancement_replay import replay
+
+    source = tmp_path / "source.wav"
+    _write_wav(source, b"\x00" * 640, rate=rate, channels=channels, width=width)
+    with pytest.raises(ValueError, match=message):
+        await replay(source, tmp_path / "output.wav")
+
+
+@pytest.mark.asyncio
+async def test_replay_refuses_input_output_collision(tmp_path):
+    from scripts.voice_enhancement_replay import replay
+
+    source = tmp_path / "source.wav"
+    _write_wav(source, b"\x00\x00" * 320)
+    with pytest.raises(ValueError, match="same|input"):
+        await replay(source, source)
+
+
+class _ReplayFilter:
+    def __init__(self, *, buffer_first=False, bypass=False):
+        self.effective_name = "rnnoise"
+        self.buffer_first = buffer_first
+        self.bypass = bypass
+        self.calls = []
+
+    async def start(self, sample_rate):
+        assert sample_rate == 16000
+        if self.bypass:
+            self.effective_name = "none"
+
+    async def filter(self, audio):
+        self.calls.append(audio)
+        if self.buffer_first and len(self.calls) == 1:
+            return b""
+        return audio
+
+    async def stop(self):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_replay_writes_pcm16_mono_and_processes_partial_final_chunk(
+    tmp_path, monkeypatch
+):
+    from scripts import voice_enhancement_replay as replay_module
+
+    source = tmp_path / "source.wav"
+    output = tmp_path / "output.wav"
+    pcm = b"\x01\x00" * 330
+    _write_wav(source, pcm)
+    fake = _ReplayFilter()
+    monkeypatch.setattr(replay_module, "build_audio_enhancer", lambda _: fake)
+    report = await replay_module.replay(source, output)
+    with wave.open(str(output), "rb") as wav:
+        assert (wav.getframerate(), wav.getnchannels(), wav.getsampwidth()) == (
+            16000,
+            1,
+            2,
+        )
+        assert wav.readframes(wav.getnframes()) == pcm
+    assert [len(chunk) // 2 for chunk in fake.calls] == [320, 10]
+    assert (
+        report["input_samples"],
+        report["output_samples"],
+        report["sample_delta"],
+    ) == (330, 330, 0)
+    assert report["effective"] == "rnnoise"
+    assert "si_snr" not in report
+
+
+@pytest.mark.asyncio
+async def test_replay_reports_native_buffering_without_padding(tmp_path, monkeypatch):
+    from scripts import voice_enhancement_replay as replay_module
+
+    source = tmp_path / "source.wav"
+    output = tmp_path / "output.wav"
+    _write_wav(source, b"\x01\x00" * 640)
+    fake = _ReplayFilter(buffer_first=True)
+    monkeypatch.setattr(replay_module, "build_audio_enhancer", lambda _: fake)
+    report = await replay_module.replay(source, output)
+    with wave.open(str(output), "rb") as wav:
+        assert wav.getnframes() == 320
+    assert (
+        report["input_samples"],
+        report["output_samples"],
+        report["sample_delta"],
+    ) == (640, 320, -320)
+    assert report["first_output_ms"] is not None
+
+
+@pytest.mark.asyncio
+async def test_replay_reports_effective_bypass(tmp_path, monkeypatch):
+    from scripts import voice_enhancement_replay as replay_module
+
+    source = tmp_path / "source.wav"
+    _write_wav(source, b"\x01\x00" * 320)
+    monkeypatch.setattr(
+        replay_module, "build_audio_enhancer", lambda _: _ReplayFilter(bypass=True)
+    )
+    report = await replay_module.replay(source, tmp_path / "output.wav")
+    assert report["requested"] == "rnnoise"
+    assert report["effective"] == "none"
