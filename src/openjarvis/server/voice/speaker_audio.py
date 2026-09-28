@@ -366,6 +366,7 @@ class SpeakerAudioProcessor(FrameProcessor):
             probs = await loop.run_in_executor(self._executor, self._diarizer.push, pcm)
             step = self._diarizer.frame_secs
             row_samples = len(pcm) // max(len(probs), 1)
+            wait_timed_out = False
             if (
                 self._asd_enabled
                 and self._vision_audio is not None
@@ -379,43 +380,58 @@ class SpeakerAudioProcessor(FrameProcessor):
                     ended,
                     timeout=self._gate.asd_wait_secs,
                 )
-            for i, row in enumerate(probs):
-                target = self._gate.target
-                # Wall-clock time of this frame, to line it up with Vision.
-                t = ended - (len(probs) - 1 - i) * step
+                wait_timed_out = getattr(
+                    self._vision_audio, "last_wait_timed_out", False
+                )
+            if self._asd_enabled and self._gate._faces is not None:
+                self._gate._asd_snapshot = self._gate._faces.snapshot(
+                    include_asd=not wait_timed_out
+                )
+                self._gate._asd_now = time.time()
+            try:
+                for i, row in enumerate(probs):
+                    target = self._gate.target
+                    # Wall-clock time of this frame, to line it up with Vision.
+                    t = ended - (len(probs) - 1 - i) * step
+                    if self._asd_enabled:
+                        verdict = self._gate.frame(
+                            row,
+                            bot_speaking=bot_speaking,
+                            t=t,
+                            asd_stream_id=stream_id,
+                        )
+                    else:
+                        verdict = self._gate.frame(row, bot_speaking=bot_speaking, t=t)
+                    if self._stt_delay:
+                        self._remember_verdict(t - step, verdict, self._gate.overlap)
+                    if (
+                        self._separator is not None
+                        and verdict is Verdict.ACCEPT
+                        and not self._gate.overlap
+                    ):
+                        enrollment = pcm[i * row_samples : (i + 1) * row_samples]
+                        self._add_enrollment(enrollment)
+                    if verdict is not None:
+                        evidence = (
+                            getattr(self._gate, "last_evidence_detail", None)
+                            or self._gate.last_evidence
+                        )
+                        logger.debug(
+                            f"{self}: speaker frame t={t:.2f} verdict={verdict.value} "
+                            f"bot={bot_speaking} overlap={self._gate.overlap} "
+                            f"evidence={evidence}"
+                        )
+                    if self._gate.target != target:
+                        logger.info(
+                            f"{self}: speaker target slot {target} -> "
+                            f"{self._gate.target}"
+                        )
+                    if verdict is not None:
+                        await self.push_frame(SpeakerVerdictFrame(verdict=verdict))
+            finally:
                 if self._asd_enabled:
-                    verdict = self._gate.frame(
-                        row,
-                        bot_speaking=bot_speaking,
-                        t=t,
-                        asd_stream_id=stream_id,
-                    )
-                else:
-                    verdict = self._gate.frame(row, bot_speaking=bot_speaking, t=t)
-                if self._stt_delay:
-                    self._remember_verdict(t - step, verdict, self._gate.overlap)
-                if (
-                    self._separator is not None
-                    and verdict is Verdict.ACCEPT
-                    and not self._gate.overlap
-                ):
-                    self._add_enrollment(pcm[i * row_samples : (i + 1) * row_samples])
-                if verdict is not None:
-                    evidence = (
-                        getattr(self._gate, "last_evidence_detail", None)
-                        or self._gate.last_evidence
-                    )
-                    logger.debug(
-                        f"{self}: speaker frame t={t:.2f} verdict={verdict.value} "
-                        f"bot={bot_speaking} overlap={self._gate.overlap} "
-                        f"evidence={evidence}"
-                    )
-                if self._gate.target != target:
-                    logger.info(
-                        f"{self}: speaker target slot {target} -> {self._gate.target}"
-                    )
-                if verdict is not None:
-                    await self.push_frame(SpeakerVerdictFrame(verdict=verdict))
+                    self._gate._asd_snapshot = None
+                    self._gate._asd_now = None
 
     def _remember_verdict(
         self, start: float, verdict: Verdict | None, overlap: bool = False

@@ -6,9 +6,11 @@ verdicts in; the turn strategies and the LLM service read turn verdicts out.
 
 from __future__ import annotations
 
+import copy
 import math
 import os
 import threading
+import time
 from collections import Counter, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -285,6 +287,8 @@ class AudioOnlyGate:
         # (anchor track, mouth activity) behind the last vision verdict, for logs.
         self.last_evidence: tuple[int | None, float | None] | None = None
         self.last_evidence_detail: dict[str, object] | None = None
+        self._asd_snapshot: FaceTrackBuffer | None = None
+        self._asd_now: float | None = None
         self._floor_slot: int | None = None
         self._floor_run = 0
 
@@ -369,8 +373,16 @@ class AudioOnlyGate:
                 )
                 return Verdict.UNCERTAIN
             if self.vision_asd and asd_stream_id is not None:
-                probability = self._faces.active_speaker(
-                    anchor, t - 0.08, t, stream_id=asd_stream_id, now=t
+                probability = (
+                    (self._asd_snapshot or self._faces).active_speaker(
+                        anchor,
+                        t - 0.08,
+                        t,
+                        stream_id=asd_stream_id,
+                        now=self._asd_now if self._asd_now is not None else time.time(),
+                    )
+                    if self._faces.asd_stream_matches(asd_stream_id)
+                    else None
                 )
                 if probability is not None:
                     self.last_evidence_detail["probability"] = probability
@@ -425,6 +437,22 @@ class FaceTrackBuffer:
             for event in self._events:
                 for track in event.get("tracks", ()):
                     track.pop("asd", None)
+
+    def asd_stream_matches(self, stream_id: str) -> bool:
+        with self._lock:
+            return stream_id == self._asd_stream
+
+    def snapshot(self, *, include_asd: bool = True) -> FaceTrackBuffer:
+        """Freeze current evidence before yielding row verdicts downstream."""
+        snapshot = FaceTrackBuffer(self._history)
+        with self._lock:
+            snapshot._events = copy.deepcopy(self._events)
+            snapshot._asd_stream = self._asd_stream
+        if not include_asd:
+            for event in snapshot._events:
+                for track in event.get("tracks", ()):
+                    track.pop("asd", None)
+        return snapshot
 
     def add(self, event: dict) -> None:
         with self._lock:

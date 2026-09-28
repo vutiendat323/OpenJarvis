@@ -337,7 +337,11 @@ async def test_asd_diarizer_uses_sample_timeline():
 
 
 @pytest.mark.anyio
-async def test_delayed_asd_result_changes_the_current_chunk():
+@pytest.mark.parametrize(
+    ("timed_out", "expected"),
+    [(False, Verdict.ACCEPT), (True, Verdict.REJECT)],
+)
+async def test_asd_result_at_wait_return_respects_deadline(timed_out, expected):
     import time
 
     now = time.time()
@@ -353,6 +357,7 @@ async def test_delayed_asd_result_changes_the_current_chunk():
 
     class Bridge:
         stream_id = "current"
+        last_wait_timed_out = False
 
         async def start(self):
             pass
@@ -361,7 +366,7 @@ async def test_delayed_asd_result_changes_the_current_chunk():
             return AudioSpan(now - 0.02, now, self.stream_id)
 
         async def wait_for_evidence(self, faces, t0, t1, *, timeout):
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(timeout if timed_out else 0.02)
             track = dict(base_track)
             track["asd"] = {
                 "stream_id": "current",
@@ -370,6 +375,7 @@ async def test_delayed_asd_result_changes_the_current_chunk():
                 "probabilities": [0.8] * 25,
             }
             faces.add({"event": "faces", "ts": now, "tracks": [track]})
+            self.last_wait_timed_out = timed_out
 
         async def close(self):
             pass
@@ -390,7 +396,7 @@ async def test_delayed_asd_result_changes_the_current_chunk():
         until=lambda: bool(collector.verdicts),
     )
     assert collector.audio == 1
-    assert collector.verdicts == [Verdict.ACCEPT]
+    assert collector.verdicts == [expected]
 
 
 @pytest.mark.anyio
@@ -501,6 +507,70 @@ async def test_late_asd_keeps_mar_verdict_and_does_not_hold_live_audio():
         2, now - 0.08, now, stream_id="current", now=now
     ) == pytest.approx(0.9)
     assert collector.verdicts == [Verdict.REJECT]
+
+
+@pytest.mark.anyio
+async def test_asd_arriving_between_row_deliveries_cannot_change_this_chunk():
+    import time
+
+    now = time.time()
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("current")
+    track = {"track_id": 2, "distance_m": 0.7, "mouth_activity": 0.05}
+    faces.add({"event": "faces", "ts": now, "tracks": [track]})
+
+    class TwoRows(_FakeDiarizer):
+        def push(self, pcm):
+            self.pushed += 1
+            return np.array([(0, 0.9, 0, 0), (0, 0.9, 0, 0)])
+
+    class Bridge:
+        stream_id = "current"
+
+        async def start(self):
+            pass
+
+        def offer(self, audio, sample_rate, num_channels):
+            return AudioSpan(now - 0.02, now, self.stream_id)
+
+        async def wait_for_evidence(self, faces, t0, t1, *, timeout):
+            pass
+
+        async def close(self):
+            pass
+
+    class PublishingProcessor(SpeakerAudioProcessor):
+        published = False
+
+        async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+            if isinstance(frame, SpeakerVerdictFrame) and not self.published:
+                self.published = True
+                scored = dict(track)
+                scored["asd"] = {
+                    "stream_id": "current",
+                    "t0": now - 0.8,
+                    "frame_secs": 0.04,
+                    "probabilities": [0.9] * 25,
+                }
+                faces.add({"event": "faces", "ts": now, "tracks": [scored]})
+            await super().push_frame(frame, direction)
+
+    processor = PublishingProcessor(
+        diarizer=TwoRows([]),
+        gate=AudioOnlyGate(
+            SpeakerSettings(enabled=True, vision_faces=True, vision_asd=True), faces
+        ),
+        executor=ThreadPoolExecutor(max_workers=1),
+        vision_audio=Bridge(),
+    )
+    collector = _Collector()
+    await _run(
+        processor,
+        [_audio()],
+        collector=collector,
+        until=lambda: len(collector.verdicts) == 2,
+    )
+    assert collector.verdicts == [Verdict.REJECT, Verdict.REJECT]
 
 
 @pytest.mark.anyio

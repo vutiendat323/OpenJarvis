@@ -48,6 +48,7 @@ class VisionAudioBridge:
         self._queued = asyncio.Event()
         self._seq = 0
         self.asd_late = 0
+        self.last_wait_timed_out = False
 
     @property
     def ready(self) -> bool:
@@ -67,6 +68,7 @@ class VisionAudioBridge:
         self, faces: FaceTrackBuffer, t0: float, t1: float, *, timeout: float
     ) -> None:
         """Give a current ASD window one bounded chance to reach this chunk."""
+        self.last_wait_timed_out = False
         stream_id = self.stream_id
         if (
             timeout <= 0
@@ -80,14 +82,20 @@ class VisionAudioBridge:
             return
         deadline = time.monotonic() + min(timeout, 0.12)
         while self.stream_id == stream_id:
-            if (
-                faces.active_speaker(track_id, t0, t1, stream_id=stream_id, now=t1)
-                is not None
-            ):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.asd_late += 1
+                self.last_wait_timed_out = True
+                return
+            probability = faces.active_speaker(
+                track_id, t0, t1, stream_id=stream_id, now=time.time()
+            )
+            if probability is not None and time.monotonic() < deadline:
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self.asd_late += 1
+                self.last_wait_timed_out = True
                 return
             await asyncio.sleep(min(0.01, remaining))
 

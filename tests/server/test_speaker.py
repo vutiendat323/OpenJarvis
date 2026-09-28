@@ -429,7 +429,10 @@ def test_asd_lookup_selects_newest_valid_window():
     ("probability", "mouth", "expected"),
     [(0.7, 0.05, A), (0.3, 0.9, R), (0.5, 0.9, A), (0.5, 0.05, R)],
 )
-def test_asd_policy_uses_thresholds_then_mouth_fallback(probability, mouth, expected):
+def test_asd_policy_uses_thresholds_then_mouth_fallback(
+    probability, mouth, expected, monkeypatch
+):
+    monkeypatch.setattr("openjarvis.server.voice.speaker.time.time", lambda: 100.24)
     gate, faces = _vision_gate(vision_asd=True)
     faces.set_asd_stream("current")
     faces.add(_asd_faces([probability] * 25, ts=100.24, mouth=mouth))
@@ -437,6 +440,20 @@ def test_asd_policy_uses_thresholds_then_mouth_fallback(probability, mouth, expe
         gate.frame(SLOT1, bot_speaking=False, t=100.24, asd_stream_id="current")
         is expected
     )
+
+
+def test_delayed_diarizer_cannot_use_an_expired_supporting_window():
+    import time
+
+    now = time.time()
+    start = now - 3.5
+    t = start + 0.24
+    gate, faces = _vision_gate(vision_asd=True)
+    faces.set_asd_stream("current")
+    faces.add(_asd_faces([0.9] * 25, ts=t, start=start, mouth=0.05))
+
+    assert gate.frame(SLOT1, bot_speaking=False, t=t, asd_stream_id="current") is R
+    assert gate.last_evidence_detail["fallback_reason"] == "asd_gap"
 
 
 def test_asd_never_resolves_overlap_or_missing_anchor():

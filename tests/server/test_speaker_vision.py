@@ -125,6 +125,37 @@ async def test_wait_skips_before_ready_or_one_second_warmup():
 
 
 @pytest.mark.anyio
+async def test_result_completed_after_deadline_is_late(monkeypatch):
+    now = time.time()
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("current")
+    track = {"track_id": 2, "distance_m": 0.7, "mouth_activity": 0.05}
+    faces.add({"event": "faces", "ts": now, "tracks": [track]})
+    bridge = VisionAudioBridge("ws://vision", "voice-1", faces)
+    bridge._ready = True
+    bridge._stream_id = "current"
+    bridge._start, bridge._end = now - 1.2, now
+    original = faces.active_speaker
+
+    def publish_during_lookup(*args, **kwargs):
+        time.sleep(0.02)  # the first lookup finishes after the 10 ms deadline
+        scored = dict(track)
+        scored["asd"] = {
+            "stream_id": "current",
+            "t0": now - 0.8,
+            "frame_secs": 0.04,
+            "probabilities": [0.9] * 25,
+        }
+        faces.add({"event": "faces", "ts": now, "tracks": [scored]})
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(faces, "active_speaker", publish_during_lookup)
+    await bridge.wait_for_evidence(faces, now - 0.08, now, timeout=0.01)
+    assert bridge.asd_late == 1
+    assert bridge.last_wait_timed_out is True
+
+
+@pytest.mark.anyio
 async def test_bridge_packetizes_actual_samples_and_stops(monkeypatch):
     import websockets
 
