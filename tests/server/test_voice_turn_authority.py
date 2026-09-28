@@ -671,3 +671,58 @@ async def test_masked_stt_keeps_words_heard_while_no_turn_was_open():
     await strategy.process_frame(VADUserStartedSpeakingFrame())
 
     assert events == ["start:True"]
+
+
+async def _closing_turn(evidence=True):
+    """A stop strategy whose turn is waiting out its confirmation silence."""
+    from unittest.mock import AsyncMock
+
+    from openjarvis.server.voice.turn_detection import (
+        ConfirmedTurnAnalyzerUserTurnStopStrategy,
+    )
+
+    gate, tracker, _ = await _strategy()
+    if evidence:
+        tracker.record(Verdict.UNCERTAIN)  # the diarizer is live this session
+    stop = ConfirmedTurnAnalyzerUserTurnStopStrategy(
+        turn_analyzer=MagicMock(), minimum_silence_secs=1.0, speaker_gate=gate
+    )
+    stop._confirmation_task = MagicMock()  # the turn is about to close
+    stop._cancel_confirmation = AsyncMock()
+    stop._discard_pending_end_of_turn = AsyncMock()
+    return stop
+
+
+@pytest.mark.anyio
+async def test_other_voices_do_not_hold_the_customers_turn_open():
+    # Live retest 2026-09-28: in a crowd, Smart Turn said COMPLETE three times
+    # but every VAD onset (457 REJECT frames of other voices) cancelled the
+    # closing, so one turn stayed open 50 s and was never answered.
+    stop = await _closing_turn()
+
+    await stop._handle_vad_user_started_speaking(VADUserStartedSpeakingFrame())
+    for verdict in (Verdict.REJECT, Verdict.UNCERTAIN, Verdict.REJECT):
+        await stop.process_frame(SpeakerVerdictFrame(verdict=verdict))
+
+    stop._cancel_confirmation.assert_not_called()
+    stop._discard_pending_end_of_turn.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_the_customer_speaking_again_keeps_the_turn_open():
+    stop = await _closing_turn()
+
+    await stop._handle_vad_user_started_speaking(VADUserStartedSpeakingFrame())
+    await stop.process_frame(SpeakerVerdictFrame(verdict=Verdict.ACCEPT))
+
+    stop._cancel_confirmation.assert_awaited()
+    stop._discard_pending_end_of_turn.assert_awaited()
+
+
+@pytest.mark.anyio
+async def test_without_diarizer_evidence_any_speech_keeps_the_turn_open():
+    stop = await _closing_turn(evidence=False)
+
+    await stop._handle_vad_user_started_speaking(VADUserStartedSpeakingFrame())
+
+    stop._cancel_confirmation.assert_awaited()

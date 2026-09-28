@@ -66,6 +66,11 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
     def turn_open(self) -> bool:
         return self._turn_open
 
+    @property
+    def has_evidence(self) -> bool:
+        """A diarizer is feeding verdicts, so speech can be told apart."""
+        return self._tracker.has_evidence
+
     async def handle_user_turn_started(self) -> None:
         self._turn_open = True
         await super().handle_user_turn_started()
@@ -149,16 +154,32 @@ class ConfirmedTurnAnalyzerUserTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy
         self._speaker_gate = speaker_gate
         self._silence_started_at: float | None = None
         self._confirmation_task: asyncio.Task[None] | None = None
+        # A VAD onset while the turn waits to close, held until the gate says
+        # whose voice it is (see _handle_vad_user_started_speaking).
+        self._contested_onset: VADUserStartedSpeakingFrame | None = None
 
     async def handle_user_turn_started(self) -> None:
         await self._cancel_confirmation()
         self._silence_started_at = None
+        self._contested_onset = None
         await super().handle_user_turn_started()
 
     async def handle_user_turn_stopped(self) -> None:
         await self._cancel_confirmation()
         self._silence_started_at = None
+        self._contested_onset = None
         await super().handle_user_turn_stopped()
+
+    async def process_frame(self, frame: Frame) -> ProcessFrameResult:
+        if (
+            isinstance(frame, SpeakerVerdictFrame)
+            and self._contested_onset is not None
+            and frame.verdict is Verdict.ACCEPT
+        ):
+            # The customer is still talking: the turn is not over after all.
+            onset, self._contested_onset = self._contested_onset, None
+            await self._reopen(onset)
+        return await super().process_frame(frame)
 
     async def cleanup(self) -> None:
         await self._cancel_confirmation()
@@ -167,6 +188,20 @@ class ConfirmedTurnAnalyzerUserTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy
     async def _handle_vad_user_started_speaking(
         self, frame: VADUserStartedSpeakingFrame
     ) -> None:
+        # VAD hears anyone. In a crowd, other voices kept cancelling the
+        # closing of the customer's finished turn (live 2026-09-28: one turn
+        # open 50 s, never answered). With diarizer evidence, only a voice
+        # the gate ACCEPTs reopens a turn that is waiting to close.
+        if (
+            self._confirmation_task is not None
+            and self._speaker_gate is not None
+            and self._speaker_gate.has_evidence
+        ):
+            self._contested_onset = frame
+            return
+        await self._reopen(frame)
+
+    async def _reopen(self, frame: VADUserStartedSpeakingFrame) -> None:
         await self._cancel_confirmation()
         self._silence_started_at = None
         await super()._handle_vad_user_started_speaking(frame)
@@ -174,6 +209,10 @@ class ConfirmedTurnAnalyzerUserTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy
     async def _handle_vad_user_stopped_speaking(
         self, frame: VADUserStoppedSpeakingFrame
     ) -> None:
+        if self._contested_onset is not None:
+            # Another voice came and went; the customer's silence continues.
+            self._contested_onset = None
+            return
         self._silence_started_at = time.monotonic() - frame.stop_secs
         await super()._handle_vad_user_stopped_speaking(frame)
 
