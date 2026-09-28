@@ -213,7 +213,11 @@ def test_enabled_gate_shares_one_tracker():
 
 
 @pytest.mark.anyio
-async def test_opening_a_turn_clears_an_untaken_verdict():
+async def test_opening_a_turn_clears_an_untaken_verdict(monkeypatch):
+    import openjarvis.server.voice.turn_detection as td
+
+    clock = [100.0]
+    monkeypatch.setattr(td.time, "monotonic", lambda: clock[0])
     strategy, tracker, _ = await _strategy()
     await strategy.process_frame(VADUserStartedSpeakingFrame())
     await strategy.process_frame(SpeakerVerdictFrame(verdict=Verdict.UNCERTAIN))
@@ -221,6 +225,7 @@ async def test_opening_a_turn_clears_an_untaken_verdict():
     await strategy.handle_user_turn_stopped()
     await strategy.process_frame(VADUserStoppedSpeakingFrame())
 
+    clock[0] += td.REPLY_PENDING_SECS + 0.1  # the reply never came
     await strategy.process_frame(VADUserStartedSpeakingFrame())
 
     assert tracker.take_turn_verdict() is Verdict.ACCEPT
@@ -581,3 +586,75 @@ def test_stt_mask_wires_the_delayed_gemini_feed():
         separator=MagicMock(),
     )
     assert stt.drain == stt._prev.drain
+
+
+async def _answered_turn(strategy, tracker, events, verdict=Verdict.ACCEPT):
+    """Open and close one turn, as when the Agent is about to reply."""
+    tracker.record(Verdict.UNCERTAIN)  # the diarizer is live this session
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+    await strategy.process_frame(SpeakerVerdictFrame(verdict=verdict))
+    await strategy.process_frame(VADUserStoppedSpeakingFrame())
+    await strategy.close_turn()
+    await strategy.handle_user_turn_stopped()
+    events.clear()
+
+
+@pytest.mark.anyio
+async def test_unconfirmed_speech_does_not_cancel_a_pending_reply():
+    # Live trial 2026-09-28: the Agent takes 1.7-4 s before the bot speaks;
+    # any VAD onset in that gap opened a turn and cancelled the reply.
+    strategy, tracker, events = await _strategy(frames=3)
+    await _answered_turn(strategy, tracker, events)
+
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+    for verdict in (Verdict.UNCERTAIN, Verdict.ACCEPT, Verdict.REJECT):
+        await strategy.process_frame(SpeakerVerdictFrame(verdict=verdict))
+
+    assert events == []
+
+
+@pytest.mark.anyio
+async def test_sustained_accept_still_interrupts_a_pending_reply():
+    strategy, tracker, events = await _strategy(frames=3)
+    await _answered_turn(strategy, tracker, events)
+
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+    for _ in range(3):
+        await strategy.process_frame(SpeakerVerdictFrame(verdict=Verdict.ACCEPT))
+
+    assert events == ["reset", "start:True"]
+
+
+@pytest.mark.anyio
+async def test_pending_reply_window_ends_when_no_reply_comes(monkeypatch):
+    import openjarvis.server.voice.turn_detection as td
+
+    clock = [100.0]
+    monkeypatch.setattr(td.time, "monotonic", lambda: clock[0])
+    strategy, tracker, events = await _strategy(frames=3)
+    await _answered_turn(strategy, tracker, events)
+
+    clock[0] += td.REPLY_PENDING_SECS + 0.1
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+
+    assert events == ["reset", "start:True"]
+
+
+@pytest.mark.anyio
+async def test_bot_finishing_or_a_rejected_turn_leaves_no_pending_reply():
+    strategy, tracker, events = await _strategy(frames=3)
+    await _answered_turn(strategy, tracker, events)
+    await strategy.process_frame(BotStartedSpeakingFrame())
+    await strategy.process_frame(BotStoppedSpeakingFrame())
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+    assert events == ["reset", "start:True"]
+
+    strategy, tracker, events = await _strategy(frames=3)
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+    for _ in range(3):
+        await strategy.process_frame(SpeakerVerdictFrame(verdict=Verdict.REJECT))
+    assert await strategy.close_turn() is Verdict.REJECT  # dropped: no reply
+    await strategy.handle_user_turn_stopped()
+    events.clear()
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+    assert events == ["reset", "start:True"]

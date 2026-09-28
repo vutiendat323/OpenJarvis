@@ -25,6 +25,15 @@ from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
 
 from openjarvis.server.voice.speaker import SpeakerTracker, Verdict
 
+# After a turn closes, the Agent takes seconds before the bot speaks. Until it
+# does, unconfirmed speech must not open a turn: that interruption cancels
+# the reply being prepared (live trial 2026-09-28: 1.7-4 s gaps, 3 of 4 replies
+# lost). The start strategy never sees the Agent finish silently, so the
+# window also ends on its own.
+# ponytail: fixed window; end it on an explicit "reply done" signal if one
+# reaches the user aggregator.
+REPLY_PENDING_SECS = 6.0
+
 
 @dataclass
 class SpeakerVerdictFrame(SystemFrame):
@@ -50,6 +59,7 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
         self._user_speaking = False
         self._turn_open = False
         self._accept_run = 0
+        self._reply_pending_until = 0.0
 
     @property
     def turn_open(self) -> bool:
@@ -68,6 +78,7 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
             self._bot_speaking = True
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
+            self._reply_pending_until = 0.0
         elif isinstance(frame, VADUserStartedSpeakingFrame):
             self._user_speaking = True
             self._accept_run = 0
@@ -87,7 +98,7 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
     async def _maybe_start(self) -> None:
         if self._turn_open or not self._user_speaking:
             return
-        if self._bot_speaking:
+        if self._bot_speaking or time.monotonic() < self._reply_pending_until:
             if (
                 self._tracker.has_evidence
                 and self._accept_run < self._bargein_accept_frames
@@ -113,6 +124,8 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
         )
         if verdict is Verdict.REJECT:
             await self.trigger_reset_aggregation()
+        else:
+            self._reply_pending_until = time.monotonic() + REPLY_PENDING_SECS
         return verdict
 
 
