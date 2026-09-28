@@ -433,3 +433,122 @@ def test_invalid_asd_settings_fail_at_load(tmp_path, monkeypatch, body):
     monkeypatch.setenv("OPENJARVIS_CONFIG", str(preset))
     with pytest.raises(ValueError, match="voice_speaker_"):
         load_speaker_settings()
+
+
+@pytest.mark.anyio
+async def test_packet_posterior_subscription_gate_and_reconnect(monkeypatch):
+    """Fake Vision consumes actual bridge packets; existing subscriber feeds gate."""
+    import copy
+    from pathlib import Path
+
+    from openjarvis.kiosk.vision_client import VisionClient
+    from openjarvis.server.voice.speaker import AudioOnlyGate, SpeakerSettings, Verdict
+
+    example = json.loads(
+        (Path(__file__).parents[1] / "fixtures/asd_protocol_v1.json").read_text()
+    )
+    subscriber = FakeSocket()
+    audio_sockets = []
+    clock = [10.0]
+
+    class FakeVision(FakeSocket):
+        def __init__(self):
+            super().__init__()
+            self.count = 0
+            self.previous_seq = None
+
+        async def send(self, raw):
+            await super().send(raw)
+            packet = self.sent[-1]
+            if packet["cmd"] == "asd_audio_start":
+                self.status(packet["stream_id"], "ready")
+            elif packet["cmd"] == "asd_audio":
+                assert len(base64.b64decode(packet["pcm16_b64"])) == 2560
+                if (
+                    self.previous_seq is not None
+                    and packet["seq"] != self.previous_seq + 1
+                ):
+                    self.count = 0
+                self.previous_seq = packet["seq"]
+                self.count += 1
+                event = copy.deepcopy(example["faces"])
+                event["ts"] = packet["t0"] + 0.08
+                track = event["tracks"][0]
+                if self.count < 13:
+                    track.pop("asd")
+                    track["active_speaker_probability"] = None
+                else:
+                    track["asd"]["stream_id"] = packet["stream_id"]
+                    track["asd"]["t0"] = event["ts"] - 1
+                subscriber.inbound.put_nowait(event)
+
+    @asynccontextmanager
+    async def connect(url, **kwargs):
+        if url == "ws://faces":
+            yield subscriber
+        else:
+            socket = FakeVision()
+            audio_sockets.append(socket)
+            yield socket
+
+    monkeypatch.setattr("websockets.connect", connect)
+    monkeypatch.setattr("openjarvis.server.voice.speaker_vision._now", lambda: clock[0])
+    monkeypatch.setattr("openjarvis.server.voice.speaker_vision.RECONNECT_DELAYS", (0,))
+    monkeypatch.setattr("openjarvis.server.voice.speaker.time.time", lambda: clock[0])
+    faces = FaceTrackBuffer()
+    client = VisionClient("ws://faces", faces=faces)
+    client_task = asyncio.create_task(client.run())
+    bridge = VisionAudioBridge("ws://audio", "fixture", faces)
+    gate = AudioOnlyGate(SpeakerSettings(vision_asd=True), faces)
+    await bridge.start()
+    try:
+        await eventually(lambda: bridge.ready and bool(subscriber.sent))
+        for _ in range(13):
+            clock[0] += 0.08
+            bridge.offer(bytes(2560), 16000, 1)
+            await asyncio.sleep(0.001)
+        await eventually(
+            lambda: (
+                faces.active_speaker(
+                    1,
+                    clock[0] - 0.08,
+                    clock[0],
+                    stream_id=bridge.stream_id,
+                    now=clock[0],
+                )
+                is not None
+            )
+        )
+        assert (
+            gate.frame(
+                [0.9], bot_speaking=False, t=clock[0], asd_stream_id=bridge.stream_id
+            )
+            == Verdict.ACCEPT
+        )
+        assert gate.last_evidence_detail["source"] == "asd"
+        old = bridge.stream_id
+        audio_sockets[-1].inbound.put_nowait(None)
+        await eventually(lambda: bridge.ready and bridge.stream_id != old)
+        assert (
+            gate.frame(
+                [0.9], bot_speaking=False, t=clock[0], asd_stream_id=bridge.stream_id
+            )
+            == Verdict.REJECT
+        )
+        # Overflow exposes a packet sequence gap; fake provider loses its window.
+        for _ in range(13):
+            clock[0] += 0.08
+            bridge.offer(bytes(2560), 16000, 1)
+        await asyncio.sleep(0.02)
+        assert (
+            faces.active_speaker(
+                1, clock[0] - 0.08, clock[0], stream_id=bridge.stream_id, now=clock[0]
+            )
+            is None
+        )
+        assert client.events.empty()
+    finally:
+        await bridge.close()
+        await client.stop()
+        client_task.cancel()
+        await asyncio.gather(client_task, return_exceptions=True)
