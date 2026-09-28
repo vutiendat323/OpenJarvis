@@ -82,18 +82,27 @@ def build_voice_pipeline(
         VoiceTurnState,
     )
     from openjarvis.server.voice.speaker import SpeakerTracker, load_speaker_settings
+    from openjarvis.server.voice.speaker_enhancement import (
+        AudioFrameMetadataProcessor,
+        build_audio_enhancer,
+    )
     from openjarvis.server.voice.tts import VieNeuTTSService
     from openjarvis.server.voice.turn_detection import (
         ConfirmedTurnAnalyzerUserTurnStopStrategy,
         TargetSpeakerTurnStartStrategy,
     )
 
-    transport = SmallWebRTCTransport(
-        webrtc_connection=connection,
-        params=TransportParams(audio_in_enabled=True, audio_out_enabled=True),
-    )
     if speaker is None:
         speaker = load_speaker_settings()
+    enhancer = build_audio_enhancer(speaker)
+    transport = SmallWebRTCTransport(
+        webrtc_connection=connection,
+        params=TransportParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            audio_in_filter=enhancer,
+        ),
+    )
     tracker = (
         SpeakerTracker(speaker, diarized=diarizer is not None)
         if speaker.enabled
@@ -185,6 +194,7 @@ def build_voice_pipeline(
     pipeline = Pipeline(
         [
             transport.input(),
+            *([AudioFrameMetadataProcessor()] if enhancer is not None else []),
             *([speaker_audio] if speaker_audio is not None else []),
             stt,
             user_aggregator,

@@ -267,6 +267,128 @@ def test_no_diarizer_keeps_milestone_one_wiring():
         )
 
 
+def test_disabled_enhancer_keeps_input_processor_order():
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    from openjarvis.server.voice.pipeline import build_voice_pipeline
+
+    stt = FrameProcessor()
+    build_voice_pipeline(
+        connection=MagicMock(),
+        binding=MagicMock(),
+        renderer=MagicMock(),
+        stt=stt,
+        speaker=SpeakerSettings(enabled=True, enhancer="none"),
+    )
+    assert stt._prev.__class__.__name__ == "SmallWebRTCInputTransport"
+    assert stt._prev._params.audio_in_filter is None
+
+
+def test_enhancer_with_no_diarizer_repairs_audio_before_stt(monkeypatch):
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    from openjarvis.server.voice import speaker_enhancement
+    from openjarvis.server.voice.pipeline import build_voice_pipeline
+    from openjarvis.server.voice.speaker_enhancement import OptionalRNNoiseFilter
+
+    filters = []
+
+    def make_filter(settings):
+        assert settings.enhancer == "rnnoise"
+        result = OptionalRNNoiseFilter(MagicMock())
+        filters.append(result)
+        return result
+
+    monkeypatch.setattr(speaker_enhancement, "build_audio_enhancer", make_filter)
+    stt = FrameProcessor()
+    build_voice_pipeline(
+        connection=MagicMock(),
+        binding=MagicMock(),
+        renderer=MagicMock(),
+        stt=stt,
+        speaker=SpeakerSettings(enabled=True, enhancer="rnnoise", diarizer="none"),
+    )
+    assert len(filters) == 1
+    assert stt._prev.__class__.__name__ == "AudioFrameMetadataProcessor"
+    assert stt._prev._prev._params.audio_in_filter is filters[0]
+
+
+def test_enhancer_precedes_speaker_audio_and_stt(monkeypatch):
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    from openjarvis.server.voice import speaker_enhancement
+    from openjarvis.server.voice.pipeline import build_voice_pipeline
+    from openjarvis.server.voice.speaker_audio import SpeakerAudioProcessor
+    from openjarvis.server.voice.speaker_enhancement import OptionalRNNoiseFilter
+
+    filter_instance = OptionalRNNoiseFilter(MagicMock())
+    monkeypatch.setattr(
+        speaker_enhancement, "build_audio_enhancer", lambda settings: filter_instance
+    )
+    stt = FrameProcessor()
+    build_voice_pipeline(
+        connection=MagicMock(),
+        binding=MagicMock(),
+        renderer=MagicMock(),
+        stt=stt,
+        speaker=SpeakerSettings(
+            enabled=True, enhancer="rnnoise", diarizer="sortformer"
+        ),
+        diarizer=MagicMock(chunk_samples=3840, frame_secs=0.08),
+    )
+    assert isinstance(stt._prev, SpeakerAudioProcessor)
+    assert stt._prev._prev.__class__.__name__ == "AudioFrameMetadataProcessor"
+    assert stt._prev._prev._prev._params.audio_in_filter is filter_instance
+
+
+@pytest.mark.anyio
+async def test_enhancer_filter_state_is_per_pipeline(monkeypatch):
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    from openjarvis.server.voice import speaker_enhancement
+    from openjarvis.server.voice.pipeline import build_voice_pipeline
+    from openjarvis.server.voice.speaker_enhancement import OptionalRNNoiseFilter
+
+    class Delegate:
+        _rnnoise_ready = True
+
+        def __init__(self):
+            self.stopped = False
+
+        async def start(self, sample_rate):
+            pass
+
+        async def filter(self, audio):
+            return b"filtered" if not self.stopped else audio
+
+        async def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(
+        speaker_enhancement,
+        "build_audio_enhancer",
+        lambda settings: OptionalRNNoiseFilter(Delegate()),
+    )
+    filters = []
+    for _ in range(2):
+        stt = FrameProcessor()
+        build_voice_pipeline(
+            connection=MagicMock(),
+            binding=MagicMock(),
+            renderer=MagicMock(),
+            stt=stt,
+            speaker=SpeakerSettings(enabled=True, enhancer="rnnoise"),
+        )
+        filters.append(stt._prev._prev._params.audio_in_filter)
+    assert filters[0]._delegate is not filters[1]._delegate
+    for item in filters:
+        await item.start(16000)
+    await filters[0].stop()
+    assert filters[0]._delegate.stopped
+    assert not filters[1]._delegate.stopped
+    assert await filters[1].filter(b"pcm") == b"filtered"
+
+
 @pytest.mark.anyio
 async def test_diarizer_load_failure_leaves_voice_working(monkeypatch):
     from openjarvis.server.voice import routes

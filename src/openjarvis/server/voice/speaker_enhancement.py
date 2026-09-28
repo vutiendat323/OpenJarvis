@@ -7,8 +7,20 @@ from typing import Any
 
 from loguru import logger
 from pipecat.audio.filters.base_audio_filter import BaseAudioFilter
+from pipecat.frames.frames import InputAudioRawFrame
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from openjarvis.server.voice.speaker import SpeakerSettings
+
+
+class AudioFrameMetadataProcessor(FrameProcessor):
+    """Refresh the sample count after the transport has filtered input PCM."""
+
+    async def process_frame(self, frame: Any, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InputAudioRawFrame):
+            frame.num_frames = len(frame.audio) // (frame.num_channels * 2)
+        await self.push_frame(frame, direction)
 
 
 class OptionalRNNoiseFilter(BaseAudioFilter):

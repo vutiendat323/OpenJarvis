@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import importlib.util
 
@@ -9,11 +10,78 @@ import pytest
 
 pytest.importorskip("pipecat", reason="openjarvis[voice] not installed")
 
+from pipecat.frames.frames import EndFrame, InputAudioRawFrame
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.worker import PipelineWorker
+from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.workers.runner import WorkerRunner
+
 from openjarvis.server.voice.speaker import SpeakerSettings
 from openjarvis.server.voice.speaker_enhancement import (
     OptionalRNNoiseFilter,
     build_audio_enhancer,
 )
+
+
+class _Capture(FrameProcessor):
+    def __init__(self):
+        super().__init__()
+        self.frames = []
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        self.frames.append(frame)
+        await self.push_frame(frame, direction)
+
+
+async def _forward_through_metadata_processor(frame):
+    from openjarvis.server.voice.speaker_enhancement import AudioFrameMetadataProcessor
+
+    capture = _Capture()
+    worker = PipelineWorker(
+        Pipeline([AudioFrameMetadataProcessor(), capture]),
+        cancel_on_idle_timeout=False,
+        enable_rtvi=False,
+        enable_turn_tracking=False,
+    )
+    runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
+
+    async def drive():
+        await asyncio.sleep(0.05)
+        await worker.queue_frame(frame)
+        for _ in range(200):
+            if frame in capture.frames:
+                break
+            await asyncio.sleep(0.01)
+        await worker.queue_frame(EndFrame())
+
+    await runner.add_workers(worker)
+    await asyncio.wait_for(asyncio.gather(runner.run(), drive()), timeout=10)
+    return capture.frames
+
+
+@pytest.mark.asyncio
+async def test_post_filter_duration_uses_current_pcm_length():
+    frame = InputAudioRawFrame(
+        audio=b"\x00\x00" * 320, sample_rate=16000, num_channels=1
+    )
+    frame.audio = b"\x01\x00" * 480
+    frame.transport_source = "microphone"
+    forwarded = await _forward_through_metadata_processor(frame)
+    out = next(item for item in forwarded if isinstance(item, InputAudioRawFrame))
+    assert out is frame
+    assert out.audio == b"\x01\x00" * 480
+    assert out.num_frames == 480
+    assert out.sample_rate == 16000 and out.num_channels == 1
+    assert out.transport_source == "microphone"
+
+
+@pytest.mark.asyncio
+async def test_post_filter_metadata_preserves_non_audio_frame():
+    from pipecat.frames.frames import TextFrame
+
+    marker = TextFrame(text="unchanged")
+    assert marker in await _forward_through_metadata_processor(marker)
 
 
 class FakeRNNoise:
