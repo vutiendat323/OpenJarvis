@@ -151,6 +151,10 @@ voice = [
 voice-speaker = [
     "nemo_toolkit[asr]>=3.0,<4 ; python_full_version >= '3.11'",
 ]
+# Install only when [voice.speaker] enhancer = "rnnoise" is selected.
+voice-enhancement = [
+    "pipecat-ai[rnnoise]==1.8.1 ; python_full_version >= '3.11'",
+]
 eval-wandb = ["wandb>=0.17"]
 eval-sheets = ["gspread>=6.0", "google-auth>=2.0"]
 mining-pearl-cpu = [

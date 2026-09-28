@@ -212,6 +212,8 @@ confirm_uncertain = false
 # "sortformer" needs the voice-speaker extra and a CUDA GPU (~1 GB VRAM).
 diarizer = "none"
 diarizer_latency = "ultra_low"
+# "rnnoise" needs the voice-enhancement extra; off by default.
+enhancer = "none"
 # Accept speech only while the nearest face within 1.5 m moves its mouth
 # (Vision `faces` stream); speech with that mouth still is rejected.
 vision_faces = false

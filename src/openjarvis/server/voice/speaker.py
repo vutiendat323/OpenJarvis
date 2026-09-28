@@ -39,6 +39,7 @@ class SpeakerSettings:
     accept_turn_fraction: float = 0.7
     reject_turn_fraction: float = 0.7
     diarizer: str = "none"
+    enhancer: str = "none"
     diarizer_latency: str = "ultra_low"
     speaker_active_prob: float = 0.5
     overlap_on_frames: int = 3
@@ -149,6 +150,7 @@ def load_speaker_settings() -> SpeakerSettings:
         diarizer=_choice(
             section, "diarizer", defaults.diarizer, ("none", "sortformer")
         ),
+        enhancer=_choice(section, "enhancer", defaults.enhancer, ("none", "rnnoise")),
         diarizer_latency=_choice(
             section, "diarizer_latency", defaults.diarizer_latency, ("ultra_low", "low")
         ),

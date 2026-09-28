@@ -74,6 +74,7 @@ def test_take_consumes_the_closed_verdict_once():
 def test_settings_default_off_without_a_preset(monkeypatch):
     monkeypatch.delenv("OPENJARVIS_CONFIG", raising=False)
     assert load_speaker_settings() == SpeakerSettings()
+    assert SpeakerSettings().enhancer == "none"
 
 
 def test_settings_load_from_the_preset(tmp_path, monkeypatch):
@@ -202,6 +203,27 @@ def test_separator_settings_load_from_the_preset(tmp_path, monkeypatch):
 
     assert (settings.separator, settings.separator_model) == ("tse", "/models/tse.ts")
     assert SpeakerSettings().separator == "none"
+
+
+def test_enhancer_loads_without_diarizer(tmp_path, monkeypatch):
+    preset = tmp_path / "preset.toml"
+    preset.write_text(
+        '[voice.speaker]\nenabled = true\nenhancer = "rnnoise"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("OPENJARVIS_CONFIG", str(preset))
+
+    settings = load_speaker_settings()
+    assert settings.enhancer == "rnnoise"
+    assert settings.diarizer == "none"
+
+
+def test_unknown_enhancer_is_rejected(tmp_path, monkeypatch):
+    preset = tmp_path / "preset.toml"
+    preset.write_text('[voice.speaker]\nenhancer = "maxine"\n', encoding="utf-8")
+    monkeypatch.setenv("OPENJARVIS_CONFIG", str(preset))
+
+    with pytest.raises(ValueError, match="voice_speaker_enhancer"):
+        load_speaker_settings()
 
 
 def test_overlap_needs_sustained_dual_activity():
