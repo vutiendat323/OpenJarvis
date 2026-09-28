@@ -24,11 +24,17 @@ def _percentile(values: list[float], fraction: float) -> float:
     ) * (position - lower)
 
 
+def _same_file(left: Path, right: Path) -> bool:
+    return left.resolve() == right.resolve() or (
+        left.exists() and right.exists() and left.samefile(right)
+    )
+
+
 async def replay(input_path: Path, output_path: Path, *, chunk_ms: int = 20) -> dict:
     """Process a saved WAV without masking the filter's startup or tail buffering."""
     input_path = Path(input_path)
     output_path = Path(output_path)
-    if input_path.resolve() == output_path.resolve():
+    if _same_file(input_path, output_path):
         raise ValueError("input and output must be different files")
     if chunk_ms < 1 or 16000 * chunk_ms % 1000:
         raise ValueError("chunk_ms must be a positive whole-sample duration")
@@ -106,7 +112,7 @@ def main() -> None:
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--chunk-ms", type=int, default=20)
     args = parser.parse_args()
-    if args.report.resolve() in (args.input.resolve(), args.output.resolve()):
+    if _same_file(args.report, args.input) or _same_file(args.report, args.output):
         raise ValueError("report must differ from input and output WAV paths")
     report = asyncio.run(replay(args.input, args.output, chunk_ms=args.chunk_ms))
     args.report.write_text(json.dumps(report, indent=2) + "\n")

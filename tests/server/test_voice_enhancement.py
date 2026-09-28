@@ -268,6 +268,21 @@ async def test_replay_refuses_input_output_collision(tmp_path):
         await replay(source, source)
 
 
+@pytest.mark.asyncio
+async def test_replay_refuses_input_output_hard_link(tmp_path):
+    from scripts.voice_enhancement_replay import replay
+
+    source = tmp_path / "source.wav"
+    output = tmp_path / "output.wav"
+    _write_wav(source, b"\x01\x00" * 320)
+    output.hardlink_to(source)
+    original = source.read_bytes()
+    with pytest.raises(ValueError, match="same|input"):
+        await replay(source, output)
+    assert source.read_bytes() == original
+    assert output.read_bytes() == original
+
+
 class _ReplayFilter:
     def __init__(self, *, buffer_first=False, bypass=False):
         self.effective_name = "rnnoise"
@@ -354,7 +369,10 @@ async def test_replay_reports_effective_bypass(tmp_path, monkeypatch):
     assert report["effective"] == "none"
 
 
-@pytest.mark.parametrize("report_target", ["input", "input_symlink", "output"])
+@pytest.mark.parametrize(
+    "report_target",
+    ["input", "input_symlink", "input_hardlink", "output", "output_hardlink"],
+)
 def test_replay_cli_refuses_report_wav_path_collision(
     tmp_path, monkeypatch, report_target
 ):
@@ -368,10 +386,16 @@ def test_replay_cli_refuses_report_wav_path_collision(
     original_output = output.read_bytes()
     alias = tmp_path / "source-link.wav"
     alias.symlink_to(source)
+    source_hardlink = tmp_path / "source-hardlink.wav"
+    source_hardlink.hardlink_to(source)
+    output_hardlink = tmp_path / "output-hardlink.wav"
+    output_hardlink.hardlink_to(output)
     report = {
         "input": source,
         "input_symlink": alias,
+        "input_hardlink": source_hardlink,
         "output": output,
+        "output_hardlink": output_hardlink,
     }[report_target]
     monkeypatch.setattr(
         sys,
