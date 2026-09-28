@@ -573,6 +573,11 @@ class SpeakerTracker:
         self.has_evidence = True
         self._counts[verdict] += 1
 
+    @property
+    def masks_stt(self) -> bool:
+        """REJECTed audio reaches STT as silence, so no rejected words exist."""
+        return self._settings.stt_mask
+
     def begin_span(self) -> None:
         """Speech started outside a turn: its frames start a fresh count."""
         self._counts.clear()

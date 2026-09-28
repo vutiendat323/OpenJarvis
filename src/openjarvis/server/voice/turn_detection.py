@@ -107,12 +107,16 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
                 return
         elif self._tracker.span_verdict() is Verdict.REJECT:
             return
-        # Anything aggregated while no turn was open is speech the gate
-        # declined; it must not ride along into this customer's turn.
+        # Without stt_mask, anything aggregated while no turn was open is
+        # speech the gate declined; it must not ride along into this turn.
+        # With stt_mask, REJECTed audio reached STT as silence, so what was
+        # aggregated is speech the gate did not reject (e.g. words said while
+        # the bot spoke): keep it, or the customer is never answered.
         # ponytail: a declined span's transcript that arrives after this
         # reset still lands in the new turn; tag transcripts by span if the
         # bench shows it.
-        await self.trigger_reset_aggregation()
+        if not self._tracker.masks_stt:
+            await self.trigger_reset_aggregation()
         self._tracker.begin_turn()
         await self.trigger_user_turn_started()
 

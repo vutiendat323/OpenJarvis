@@ -25,8 +25,8 @@ from openjarvis.server.voice.turn_detection import (
 )
 
 
-async def _strategy(frames: int = 3):
-    tracker = SpeakerTracker(SpeakerSettings(enabled=True))
+async def _strategy(frames: int = 3, **settings):
+    tracker = SpeakerTracker(SpeakerSettings(enabled=True, **settings))
     strategy = TargetSpeakerTurnStartStrategy(
         tracker=tracker, bargein_accept_frames=frames
     )
@@ -658,3 +658,16 @@ async def test_bot_finishing_or_a_rejected_turn_leaves_no_pending_reply():
     events.clear()
     await strategy.process_frame(VADUserStartedSpeakingFrame())
     assert events == ["reset", "start:True"]
+
+
+@pytest.mark.anyio
+async def test_masked_stt_keeps_words_heard_while_no_turn_was_open():
+    # Live retest 2026-09-28: a sentence said while the bot spoke reached STT,
+    # then the next turn's reset erased it, so it was never answered. With
+    # stt_mask, REJECTed audio reached STT as silence: any transcript left is
+    # speech the gate did not reject, so it rides along into the next turn.
+    strategy, _, events = await _strategy(stt_mask=True)
+
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+
+    assert events == ["start:True"]
