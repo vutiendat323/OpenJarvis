@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import importlib.util
+import sys
 import wave
 from pathlib import Path
 
@@ -351,3 +352,39 @@ async def test_replay_reports_effective_bypass(tmp_path, monkeypatch):
     report = await replay_module.replay(source, tmp_path / "output.wav")
     assert report["requested"] == "rnnoise"
     assert report["effective"] == "none"
+
+
+@pytest.mark.parametrize("report_target", ["input", "input_symlink", "output"])
+def test_replay_cli_refuses_report_wav_path_collision(
+    tmp_path, monkeypatch, report_target
+):
+    from scripts.voice_enhancement_replay import main
+
+    source = tmp_path / "source.wav"
+    output = tmp_path / "output.wav"
+    _write_wav(source, b"\x01\x00" * 320)
+    _write_wav(output, b"\x02\x00" * 320)
+    original_source = source.read_bytes()
+    original_output = output.read_bytes()
+    alias = tmp_path / "source-link.wav"
+    alias.symlink_to(source)
+    report = {
+        "input": source,
+        "input_symlink": alias,
+        "output": output,
+    }[report_target]
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "voice_enhancement_replay.py",
+            str(source),
+            str(output),
+            "--report",
+            str(report),
+        ],
+    )
+    with pytest.raises(ValueError, match="report"):
+        main()
+    assert source.read_bytes() == original_source
+    assert output.read_bytes() == original_output

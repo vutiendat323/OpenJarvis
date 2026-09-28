@@ -106,6 +106,8 @@ def main() -> None:
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--chunk-ms", type=int, default=20)
     args = parser.parse_args()
+    if args.report.resolve() in (args.input.resolve(), args.output.resolve()):
+        raise ValueError("report must differ from input and output WAV paths")
     report = asyncio.run(replay(args.input, args.output, chunk_ms=args.chunk_ms))
     args.report.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
