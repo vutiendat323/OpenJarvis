@@ -28,11 +28,12 @@ from openjarvis.server.voice.speaker import SpeakerTracker, Verdict
 # After a turn closes, the Agent takes seconds before the bot speaks. Until it
 # does, unconfirmed speech must not open a turn: that interruption cancels
 # the reply being prepared (live trial 2026-09-28: 1.7-4 s gaps, 3 of 4 replies
-# lost). The start strategy never sees the Agent finish silently, so the
+# lost; with a 6 s window the Agent still took 6.1-7.8 s on 4 of 26 turns and
+# lost them). The start strategy never sees the Agent finish silently, so the
 # window also ends on its own.
 # ponytail: fixed window; end it on an explicit "reply done" signal if one
 # reaches the user aggregator.
-REPLY_PENDING_SECS = 6.0
+REPLY_PENDING_SECS = 12.0
 
 
 @dataclass
