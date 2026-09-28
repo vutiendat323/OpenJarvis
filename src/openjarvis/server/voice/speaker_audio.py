@@ -387,7 +387,6 @@ class SpeakerAudioProcessor(FrameProcessor):
                 self._gate._asd_snapshot = self._gate._faces.snapshot(
                     include_asd=not wait_timed_out
                 )
-                self._gate._asd_now = time.time()
             try:
                 for i, row in enumerate(probs):
                     target = self._gate.target
@@ -431,7 +430,6 @@ class SpeakerAudioProcessor(FrameProcessor):
             finally:
                 if self._asd_enabled:
                     self._gate._asd_snapshot = None
-                    self._gate._asd_now = None
 
     def _remember_verdict(
         self, start: float, verdict: Verdict | None, overlap: bool = False

@@ -288,7 +288,6 @@ class AudioOnlyGate:
         self.last_evidence: tuple[int | None, float | None] | None = None
         self.last_evidence_detail: dict[str, object] | None = None
         self._asd_snapshot: FaceTrackBuffer | None = None
-        self._asd_now: float | None = None
         self._floor_slot: int | None = None
         self._floor_run = 0
 
@@ -379,7 +378,7 @@ class AudioOnlyGate:
                         t - 0.08,
                         t,
                         stream_id=asd_stream_id,
-                        now=self._asd_now if self._asd_now is not None else time.time(),
+                        now=time.time(),
                     )
                     if self._faces.asd_stream_matches(asd_stream_id)
                     else None

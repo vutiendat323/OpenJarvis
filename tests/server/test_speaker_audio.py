@@ -574,6 +574,80 @@ async def test_asd_arriving_between_row_deliveries_cannot_change_this_chunk():
 
 
 @pytest.mark.anyio
+async def test_later_row_rechecks_asd_age_after_slow_downstream_delivery():
+    import time
+
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("current")
+
+    class TwoRows(_FakeDiarizer):
+        def push(self, pcm):
+            self.pushed += 1
+            return np.array([(0, 0.9, 0, 0), (0, 0.9, 0, 0)])
+
+    class Bridge:
+        stream_id = "current"
+
+        async def start(self):
+            pass
+
+        def offer(self, audio, sample_rate, num_channels):
+            end = time.time() - 0.2
+            faces.add(
+                {
+                    "event": "faces",
+                    "ts": end,
+                    "tracks": [
+                        {
+                            "track_id": 2,
+                            "distance_m": 0.7,
+                            "mouth_activity": 0.05,
+                            "asd": {
+                                "stream_id": "current",
+                                "t0": end - 0.8,
+                                "frame_secs": 0.04,
+                                "probabilities": [0.9] * 25,
+                            },
+                        }
+                    ],
+                }
+            )
+            return AudioSpan(end - 0.02, end, self.stream_id)
+
+        async def wait_for_evidence(self, faces, t0, t1, *, timeout):
+            pass
+
+        async def close(self):
+            pass
+
+    class SlowProcessor(SpeakerAudioProcessor):
+        delayed = False
+
+        async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+            await super().push_frame(frame, direction)
+            if isinstance(frame, SpeakerVerdictFrame) and not self.delayed:
+                self.delayed = True
+                await asyncio.sleep(1.15)
+
+    processor = SlowProcessor(
+        diarizer=TwoRows([]),
+        gate=AudioOnlyGate(
+            SpeakerSettings(enabled=True, vision_faces=True, vision_asd=True), faces
+        ),
+        executor=ThreadPoolExecutor(max_workers=1),
+        vision_audio=Bridge(),
+    )
+    collector = _Collector()
+    await _run(
+        processor,
+        [_audio()],
+        collector=collector,
+        until=lambda: len(collector.verdicts) == 2,
+    )
+    assert collector.verdicts == [Verdict.ACCEPT, Verdict.REJECT]
+
+
+@pytest.mark.anyio
 async def test_asd_gap_reanchors_partial_diarizer_pcm_with_same_stream_tag():
     rows = []
     chunks = []
