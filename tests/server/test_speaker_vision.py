@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import time
 from contextlib import asynccontextmanager
 
 import pytest
@@ -43,6 +44,84 @@ async def eventually(check):
             return
         await asyncio.sleep(0.01)
     assert check()
+
+
+@pytest.mark.anyio
+async def test_wait_for_asd_evidence_uses_current_chunk_deadline():
+    now = time.time()
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("current")
+    event = {
+        "event": "faces",
+        "ts": now,
+        "tracks": [
+            {
+                "track_id": 2,
+                "distance_m": 0.7,
+                "mouth_activity": 0.05,
+                "active_speaker_probability": None,
+            }
+        ],
+    }
+    faces.add(event)
+    bridge = VisionAudioBridge("ws://vision", "voice-1", faces)
+    bridge._ready = True
+    bridge._stream_id = "current"
+    bridge._start, bridge._end = now - 1.2, now
+
+    async def publish():
+        await asyncio.sleep(0.02)
+        result = {"event": "faces", "ts": now, "tracks": [dict(event["tracks"][0])]}
+        result["tracks"][0]["asd"] = {
+            "stream_id": "current",
+            "t0": now - 0.8,
+            "frame_secs": 0.04,
+            "probabilities": [0.8] * 25,
+        }
+        faces.add(result)
+
+    task = asyncio.create_task(publish())
+    await bridge.wait_for_evidence(faces, now - 0.08, now, timeout=0.12)
+    await task
+    assert faces.active_speaker(
+        2, now - 0.08, now, stream_id="current", now=now
+    ) == pytest.approx(0.8)
+
+    old = len(faces._events)
+    start = time.monotonic()
+    await bridge.wait_for_evidence(faces, now - 0.9, now - 0.82, timeout=0.02)
+    assert time.monotonic() - start < 0.07
+    assert len(faces._events) == old
+    assert bridge.asd_late == 1
+
+
+@pytest.mark.anyio
+async def test_wait_skips_before_ready_or_one_second_warmup():
+    now = time.time()
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("current")
+    faces.add(
+        {
+            "event": "faces",
+            "ts": now,
+            "tracks": [
+                {
+                    "track_id": 2,
+                    "distance_m": 0.7,
+                    "mouth_activity": 0.05,
+                }
+            ],
+        }
+    )
+    bridge = VisionAudioBridge("ws://vision", "voice-1", faces)
+    start = time.monotonic()
+    await bridge.wait_for_evidence(faces, now - 0.08, now, timeout=0.12)
+    bridge._ready = True
+    bridge._stream_id = "current"
+    bridge._start, bridge._end = now - 0.9, now
+    await bridge.wait_for_evidence(faces, now - 0.08, now, timeout=0.12)
+    assert time.monotonic() - start < 0.05
+    assert bridge.asd_late == 0
 
 
 @pytest.mark.anyio

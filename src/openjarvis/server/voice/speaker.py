@@ -270,6 +270,11 @@ class AudioOnlyGate:
         self._mouth_active = settings.mouth_active
         self._anchor_max_m = settings.anchor_max_m
         self._threshold = settings.speaker_active_prob
+        self.vision_asd = settings.vision_asd
+        self.asd_wait_secs = settings.asd_wait_secs if settings.vision_asd else 0.0
+        self._asd_accept = settings.asd_accept_prob
+        self._asd_reject = settings.asd_reject_prob
+        self.asd_counts: Counter[str] = Counter()
         self._overlap = OverlapDetector(
             on_frames=settings.overlap_on_frames,
             off_frames=settings.overlap_off_frames,
@@ -279,6 +284,7 @@ class AudioOnlyGate:
         self.target: int | None = None
         # (anchor track, mouth activity) behind the last vision verdict, for logs.
         self.last_evidence: tuple[int | None, float | None] | None = None
+        self.last_evidence_detail: dict[str, object] | None = None
         self._floor_slot: int | None = None
         self._floor_run = 0
 
@@ -293,8 +299,22 @@ class AudioOnlyGate:
             and self._bot_frames[slot] / heard >= ECHO_BOT_FRACTION
         )
 
+    def asd_wait_candidate(self, t: float, rows: Sequence[Sequence[float]]) -> bool:
+        return bool(
+            self.vision_asd
+            and self._faces is not None
+            and any(p >= self._threshold for row in rows for p in row)
+            and self._faces.fresh(t)
+            and self._faces.anchor(t, self._anchor_max_m) is not None
+        )
+
     def frame(
-        self, probs: Sequence[float], *, bot_speaking: bool, t: float | None = None
+        self,
+        probs: Sequence[float],
+        *,
+        bot_speaking: bool,
+        t: float | None = None,
+        asd_stream_id: str | None = None,
     ) -> Verdict | None:
         active = [slot for slot, p in enumerate(probs) if p >= self._threshold]
         for slot in active:
@@ -308,6 +328,7 @@ class AudioOnlyGate:
             self.target = None
         overlap = self._overlap.update(len(voices))
         self.last_evidence = None
+        self.last_evidence_detail = None
         if not active:
             return None
         if not voices:
@@ -331,11 +352,56 @@ class AudioOnlyGate:
                 else None
             )
             self.last_evidence = (anchor, mouth)
+            self.last_evidence_detail = {
+                "source": "mar",
+                "t0": t - 0.08,
+                "t1": t,
+                "stream_id": asd_stream_id,
+                "track_id": anchor,
+                "probability": None,
+                "fallback_reason": "asd_disabled"
+                if not self.vision_asd
+                else "asd_unavailable",
+            }
             if overlap or anchor is None:
+                self.last_evidence_detail["fallback_reason"] = (
+                    "overlap" if overlap else "no_anchor"
+                )
                 return Verdict.UNCERTAIN
+            if self.vision_asd and asd_stream_id is not None:
+                probability = self._faces.active_speaker(
+                    anchor, t - 0.08, t, stream_id=asd_stream_id, now=t
+                )
+                if probability is not None:
+                    self.last_evidence_detail["probability"] = probability
+                    if probability >= self._asd_accept:
+                        self.last_evidence_detail.update(
+                            source="asd", fallback_reason=None
+                        )
+                        self.asd_counts["used"] += 1
+                        return Verdict.ACCEPT
+                    if probability <= self._asd_reject:
+                        self.last_evidence_detail.update(
+                            source="asd", fallback_reason=None
+                        )
+                        self.asd_counts["used"] += 1
+                        return Verdict.REJECT
+                    self.last_evidence_detail["fallback_reason"] = "asd_middle"
+                else:
+                    self.last_evidence_detail["fallback_reason"] = "asd_gap"
+                    self.asd_counts["gap"] += 1
             if mouth is not None and mouth >= self._mouth_active:
                 return Verdict.ACCEPT
             return Verdict.REJECT
+        self.last_evidence_detail = {
+            "source": "audio",
+            "t0": t - 0.08 if t is not None else None,
+            "t1": t,
+            "stream_id": asd_stream_id,
+            "track_id": None,
+            "probability": None,
+            "fallback_reason": "stale_or_absent_vision",
+        }
         if self.target not in voices:
             return Verdict.UNCERTAIN
         if overlap:
@@ -397,6 +463,62 @@ class FaceTrackBuffer:
         # Mean, not max: one noisy sample (a glance, a nod) must not read as
         # the customer talking for the whole window.
         return sum(values) / len(values) if values else None
+
+    def active_speaker(
+        self, track_id: int, t0: float, t1: float, *, stream_id: str, now: float
+    ) -> float | None:
+        """Mean of the current stream's newest complete 25-bin ASD window."""
+        if not stream_id or not all(map(math.isfinite, (t0, t1, now))) or t1 <= t0:
+            return None
+        with self._lock:
+            if stream_id != self._asd_stream:
+                return None
+            windows = [
+                dict(f["asd"])
+                for event in self._events
+                for f in event.get("tracks", ())
+                if f.get("track_id") == track_id and isinstance(f.get("asd"), dict)
+            ]
+        valid: list[tuple[float, Sequence[float]]] = []
+        for window in windows:
+            if not isinstance(window, dict) or window.get("stream_id") != stream_id:
+                continue
+            start, frame_secs, values = (
+                window.get("t0"),
+                window.get("frame_secs"),
+                window.get("probabilities"),
+            )
+            if (
+                isinstance(start, bool)
+                or not isinstance(start, (int, float))
+                or not math.isfinite(start)
+                or isinstance(frame_secs, bool)
+                or not isinstance(frame_secs, (int, float))
+                or not math.isfinite(frame_secs)
+                or abs(frame_secs - 0.04) > 1e-6
+                or not isinstance(values, (list, tuple))
+                or len(values) != 25
+                or any(
+                    isinstance(p, bool)
+                    or not isinstance(p, (int, float))
+                    or not math.isfinite(p)
+                    or not 0 <= p <= 1
+                    for p in values
+                )
+            ):
+                continue
+            end = start + 1.0
+            if start <= t0 and t1 <= end and now - end <= 1.0:
+                valid.append((start, values))
+        if not valid:
+            return None
+        start, values = max(valid, key=lambda item: item[0])
+        weighted = sum(
+            p * max(0.0, min(t1, start + (i + 1) * 0.04) - max(t0, start + i * 0.04))
+            for i, p in enumerate(values)
+        )
+        with self._lock:
+            return weighted / (t1 - t0) if stream_id == self._asd_stream else None
 
 
 class SpeakerTracker:

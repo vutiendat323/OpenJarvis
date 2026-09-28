@@ -369,6 +369,109 @@ def test_face_buffer_freshness_and_history_limit():
     assert buffer.mouth(2, 9.0, 11.0) is None  # older than 3 s, dropped
 
 
+def _asd_faces(probabilities, *, stream="current", ts=101.0, start=100.0, mouth=0.05):
+    event = _faces(ts, (2, 0.7, mouth))
+    event["tracks"][0]["asd"] = {
+        "stream_id": stream,
+        "t0": start,
+        "frame_secs": 0.04,
+        "probabilities": probabilities,
+    }
+    return event
+
+
+def test_asd_lookup_requires_current_stream_complete_support_and_fresh_window():
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("current")
+    faces.add(_asd_faces([0.8] * 25))
+    assert faces.active_speaker(
+        2, 100.16, 100.24, stream_id="current", now=101
+    ) == pytest.approx(0.8)
+    assert faces.active_speaker(2, 100.16, 100.24, stream_id="old", now=101) is None
+    assert faces.active_speaker(2, 100.96, 101.04, stream_id="current", now=101) is None
+    faces.add(_asd_faces([0.8] * 25, ts=102.01))  # fresh event, expired window
+    assert (
+        faces.active_speaker(2, 100.16, 100.24, stream_id="current", now=102.01) is None
+    )
+
+
+def test_asd_lookup_weights_partial_bins_and_rejects_malformed_results():
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("current")
+    faces.add(_asd_faces([0.2, 0.8] + [0.5] * 23))
+    assert faces.active_speaker(
+        2, 100.02, 100.06, stream_id="current", now=101
+    ) == pytest.approx(0.5)
+    for values in ([0.8] * 24, [float("nan")] + [0.8] * 24, [1.1] + [0.8] * 24):
+        faces.add(_asd_faces(values, ts=101.01))
+        assert faces.active_speaker(
+            2, 100.02, 100.06, stream_id="current", now=101.01
+        ) == pytest.approx(0.5)
+    faces.set_asd_stream(None)
+    assert faces.active_speaker(2, 100.02, 100.06, stream_id="current", now=101) is None
+    assert faces.mouth(2, 100.9, 101.1) == pytest.approx(0.05)
+
+
+def test_asd_lookup_selects_newest_valid_window():
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("current")
+    faces.add(_asd_faces([0.2] * 25, ts=101.0))
+    faces.add(_asd_faces([0.8] * 25, ts=101.04, start=100.04))
+    assert faces.active_speaker(
+        2, 100.16, 100.24, stream_id="current", now=101.04
+    ) == pytest.approx(0.8)
+    assert faces.active_speaker(
+        2, 100.02, 100.06, stream_id="current", now=101.04
+    ) == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize(
+    ("probability", "mouth", "expected"),
+    [(0.7, 0.05, A), (0.3, 0.9, R), (0.5, 0.9, A), (0.5, 0.05, R)],
+)
+def test_asd_policy_uses_thresholds_then_mouth_fallback(probability, mouth, expected):
+    gate, faces = _vision_gate(vision_asd=True)
+    faces.set_asd_stream("current")
+    faces.add(_asd_faces([probability] * 25, ts=100.24, mouth=mouth))
+    assert (
+        gate.frame(SLOT1, bot_speaking=False, t=100.24, asd_stream_id="current")
+        is expected
+    )
+
+
+def test_asd_never_resolves_overlap_or_missing_anchor():
+    gate, faces = _vision_gate(vision_asd=True, overlap_on_frames=1)
+    faces.set_asd_stream("current")
+    faces.add(_asd_faces([0.9] * 25, ts=100.24))
+    assert gate.frame(BOTH, bot_speaking=False, t=100.24, asd_stream_id="current") is U
+    gate, faces = _vision_gate(vision_asd=True)
+    faces.set_asd_stream("current")
+    faces.add(_asd_faces([0.9] * 25, ts=100.24))
+    assert gate.frame(SLOT1, bot_speaking=False, t=100.24, asd_stream_id="old") is R
+    faces.add(_asd_faces([0.9] * 25, ts=102.0))
+    assert gate.frame(SLOT1, bot_speaking=False, t=102.0, asd_stream_id="current") is R
+    gate, faces = _vision_gate(vision_asd=True)
+    faces.set_asd_stream("current")
+    faces.add(_asd_faces([0.9] * 25, ts=100.24))
+    faces.add(_faces(100.3, (2, 2.0, 0.9)))
+    assert gate.frame(SLOT1, bot_speaking=False, t=100.3, asd_stream_id="current") is U
+
+
+def test_stale_vision_and_echo_keep_their_authority_with_asd():
+    gate, faces = _vision_gate(vision_asd=True)
+    faces.set_asd_stream("current")
+    faces.add(_asd_faces([0.1] * 25, ts=100.24))
+    assert gate.frame(SLOT1, bot_speaking=False, t=102.0, asd_stream_id="current") is A
+
+    gate, faces = _vision_gate(vision_asd=True)
+    faces.set_asd_stream("current")
+    for i in range(26):
+        t = 100.0 + i * 0.08
+        faces.add(_asd_faces([0.9] * 25, ts=t))
+        verdict = gate.frame(SLOT0, bot_speaking=True, t=t, asd_stream_id="current")
+    assert verdict is R
+
+
 def _vision_gate(**overrides):
     faces = FaceTrackBuffer()
     settings = SpeakerSettings(enabled=True, vision_faces=True, **overrides)

@@ -263,6 +263,8 @@ class SpeakerAudioProcessor(FrameProcessor):
         self._diarizer = diarizer
         self._vision_audio = vision_audio
         self._gate = gate
+        self._asd_enabled = isinstance(gate, AudioOnlyGate) and gate.vision_asd
+        self._asd_reported = False
         self._executor = executor or DIARIZER_EXECUTOR
         self._pending = bytearray()
         self._pending_start: float | None = None
@@ -364,12 +366,32 @@ class SpeakerAudioProcessor(FrameProcessor):
             probs = await loop.run_in_executor(self._executor, self._diarizer.push, pcm)
             step = self._diarizer.frame_secs
             row_samples = len(pcm) // max(len(probs), 1)
+            if (
+                self._asd_enabled
+                and self._vision_audio is not None
+                and stream_id is not None
+                and stream_id == self._vision_audio.stream_id
+                and self._gate.asd_wait_candidate(ended, probs)
+            ):
+                await self._vision_audio.wait_for_evidence(
+                    self._gate._faces,
+                    ended - len(probs) * step,
+                    ended,
+                    timeout=self._gate.asd_wait_secs,
+                )
             for i, row in enumerate(probs):
                 target = self._gate.target
                 # Wall-clock time of this frame, to line it up with Vision.
                 t = ended - (len(probs) - 1 - i) * step
-                verdict = self._gate.frame(row, bot_speaking=bot_speaking, t=t)
-                # Task 5 will pass this queued stream ID to the ASD gate.
+                if self._asd_enabled:
+                    verdict = self._gate.frame(
+                        row,
+                        bot_speaking=bot_speaking,
+                        t=t,
+                        asd_stream_id=stream_id,
+                    )
+                else:
+                    verdict = self._gate.frame(row, bot_speaking=bot_speaking, t=t)
                 if self._stt_delay:
                     self._remember_verdict(t - step, verdict, self._gate.overlap)
                 if (
@@ -379,10 +401,14 @@ class SpeakerAudioProcessor(FrameProcessor):
                 ):
                     self._add_enrollment(pcm[i * row_samples : (i + 1) * row_samples])
                 if verdict is not None:
+                    evidence = (
+                        getattr(self._gate, "last_evidence_detail", None)
+                        or self._gate.last_evidence
+                    )
                     logger.debug(
                         f"{self}: speaker frame t={t:.2f} verdict={verdict.value} "
                         f"bot={bot_speaking} overlap={self._gate.overlap} "
-                        f"evidence={self._gate.last_evidence}"
+                        f"evidence={evidence}"
                     )
                 if self._gate.target != target:
                     logger.info(
@@ -532,6 +558,13 @@ class SpeakerAudioProcessor(FrameProcessor):
             await self._flush_held()
 
     async def _stop(self) -> None:
+        if self._asd_enabled and not self._asd_reported:
+            self._asd_reported = True
+            logger.info(
+                f"{self}: ASD session used={self._gate.asd_counts['used']} "
+                f"gap={self._gate.asd_counts['gap']} "
+                f"late={getattr(self._vision_audio, 'asd_late', 0)}"
+            )
         if self._vision_audio is not None:
             await self._vision_audio.close()
         if self._releaser is not None:

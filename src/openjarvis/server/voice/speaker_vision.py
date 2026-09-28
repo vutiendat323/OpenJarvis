@@ -47,6 +47,7 @@ class VisionAudioBridge:
         self._queue: deque[tuple[int, float, bytes]] = deque(maxlen=_MAX_PACKETS)
         self._queued = asyncio.Event()
         self._seq = 0
+        self.asd_late = 0
 
     @property
     def ready(self) -> bool:
@@ -61,6 +62,34 @@ class VisionAudioBridge:
         if not self._ready or self._start is None or self._end is None:
             return 0.0
         return self._end - self._start
+
+    async def wait_for_evidence(
+        self, faces: FaceTrackBuffer, t0: float, t1: float, *, timeout: float
+    ) -> None:
+        """Give a current ASD window one bounded chance to reach this chunk."""
+        stream_id = self.stream_id
+        if (
+            timeout <= 0
+            or stream_id is None
+            or self.audio_seconds < 1.0
+            or not faces.fresh(t1)
+        ):
+            return
+        track_id = faces.anchor(t1, float("inf"))
+        if track_id is None:
+            return
+        deadline = time.monotonic() + min(timeout, 0.12)
+        while self.stream_id == stream_id:
+            if (
+                faces.active_speaker(track_id, t0, t1, stream_id=stream_id, now=t1)
+                is not None
+            ):
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.asd_late += 1
+                return
+            await asyncio.sleep(min(0.01, remaining))
 
     async def start(self) -> None:
         if self._task is None and not self._closed and not self._terminal:

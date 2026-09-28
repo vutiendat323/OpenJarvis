@@ -21,7 +21,12 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
-from openjarvis.server.voice.speaker import AudioOnlyGate, SpeakerSettings, Verdict
+from openjarvis.server.voice.speaker import (
+    AudioOnlyGate,
+    FaceTrackBuffer,
+    SpeakerSettings,
+    Verdict,
+)
 from openjarvis.server.voice.speaker_audio import SpeakerAudioProcessor
 from openjarvis.server.voice.speaker_vision import AudioSpan
 from openjarvis.server.voice.transcription import SttAudioFrame
@@ -332,6 +337,173 @@ async def test_asd_diarizer_uses_sample_timeline():
 
 
 @pytest.mark.anyio
+async def test_delayed_asd_result_changes_the_current_chunk():
+    import time
+
+    now = time.time()
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("current")
+    base_track = {
+        "track_id": 2,
+        "distance_m": 0.7,
+        "mouth_activity": 0.05,
+        "active_speaker_probability": None,
+    }
+    faces.add({"event": "faces", "ts": now, "tracks": [base_track]})
+
+    class Bridge:
+        stream_id = "current"
+
+        async def start(self):
+            pass
+
+        def offer(self, audio, sample_rate, num_channels):
+            return AudioSpan(now - 0.02, now, self.stream_id)
+
+        async def wait_for_evidence(self, faces, t0, t1, *, timeout):
+            await asyncio.sleep(0.02)
+            track = dict(base_track)
+            track["asd"] = {
+                "stream_id": "current",
+                "t0": now - 0.8,
+                "frame_secs": 0.04,
+                "probabilities": [0.8] * 25,
+            }
+            faces.add({"event": "faces", "ts": now, "tracks": [track]})
+
+        async def close(self):
+            pass
+
+    processor = SpeakerAudioProcessor(
+        diarizer=_FakeDiarizer([(0, 0.9, 0, 0)]),
+        gate=AudioOnlyGate(
+            SpeakerSettings(enabled=True, vision_faces=True, vision_asd=True), faces
+        ),
+        executor=ThreadPoolExecutor(max_workers=1),
+        vision_audio=Bridge(),
+    )
+    collector = _Collector()
+    await _run(
+        processor,
+        [_audio()],
+        collector=collector,
+        until=lambda: bool(collector.verdicts),
+    )
+    assert collector.audio == 1
+    assert collector.verdicts == [Verdict.ACCEPT]
+
+
+@pytest.mark.anyio
+async def test_asd_wait_is_skipped_without_eligible_anchor():
+    import time
+
+    now = time.time()
+    faces = FaceTrackBuffer()
+    faces.add(
+        {
+            "event": "faces",
+            "ts": now,
+            "tracks": [
+                {
+                    "track_id": 2,
+                    "distance_m": 2.0,
+                    "mouth_activity": 0.9,
+                }
+            ],
+        }
+    )
+
+    class Bridge:
+        stream_id = "current"
+        waits = 0
+
+        async def start(self):
+            pass
+
+        def offer(self, audio, sample_rate, num_channels):
+            return AudioSpan(now - 0.02, now, self.stream_id)
+
+        async def wait_for_evidence(self, faces, t0, t1, *, timeout):
+            self.waits += 1
+
+        async def close(self):
+            pass
+
+    bridge = Bridge()
+    processor = SpeakerAudioProcessor(
+        diarizer=_FakeDiarizer([(0, 0.9, 0, 0)]),
+        gate=AudioOnlyGate(
+            SpeakerSettings(enabled=True, vision_faces=True, vision_asd=True), faces
+        ),
+        executor=ThreadPoolExecutor(max_workers=1),
+        vision_audio=bridge,
+    )
+    collector = await _run(processor, [_audio()])
+    assert collector.verdicts == [Verdict.UNCERTAIN]
+    assert bridge.waits == 0
+
+
+@pytest.mark.anyio
+async def test_late_asd_keeps_mar_verdict_and_does_not_hold_live_audio():
+    import time
+
+    now = time.time()
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("current")
+    track = {"track_id": 2, "distance_m": 0.7, "mouth_activity": 0.05}
+    faces.add({"event": "faces", "ts": now, "tracks": [track]})
+    collector = _Collector()
+
+    class Bridge:
+        stream_id = "current"
+
+        async def start(self):
+            pass
+
+        def offer(self, audio, sample_rate, num_channels):
+            return AudioSpan(now - 0.02, now, self.stream_id)
+
+        async def wait_for_evidence(self, faces, t0, t1, *, timeout):
+            assert collector.audio == 1
+            await asyncio.sleep(timeout)
+
+            async def publish_late():
+                await asyncio.sleep(0.02)
+                scored = dict(track)
+                scored["asd"] = {
+                    "stream_id": "current",
+                    "t0": now - 0.8,
+                    "frame_secs": 0.04,
+                    "probabilities": [0.9] * 25,
+                }
+                faces.add({"event": "faces", "ts": now, "tracks": [scored]})
+
+            asyncio.create_task(publish_late())
+
+        async def close(self):
+            pass
+
+    processor = SpeakerAudioProcessor(
+        diarizer=_FakeDiarizer([(0, 0.9, 0, 0)]),
+        gate=AudioOnlyGate(
+            SpeakerSettings(enabled=True, vision_faces=True, vision_asd=True), faces
+        ),
+        executor=ThreadPoolExecutor(max_workers=1),
+        vision_audio=Bridge(),
+    )
+    await _run(
+        processor,
+        [_audio()],
+        collector=collector,
+        until=lambda: bool(collector.verdicts),
+    )
+    assert faces.active_speaker(
+        2, now - 0.08, now, stream_id="current", now=now
+    ) == pytest.approx(0.9)
+    assert collector.verdicts == [Verdict.REJECT]
+
+
+@pytest.mark.anyio
 async def test_asd_gap_reanchors_partial_diarizer_pcm_with_same_stream_tag():
     rows = []
     chunks = []
@@ -474,6 +646,7 @@ async def test_overlap_is_held_and_replaced_by_the_customers_voice():
     await processor._release_stt(200.0)
 
     assert [int(p[0]) for p in pushed] == [1000, 1000, 16383, 16383, 1000]
+    assert processor._verdict_values[2:4] == [Verdict.UNCERTAIN] * 2
     ((mix, enroll),) = separator.calls
     # The separator sees the clean lead-in as context, then the held overlap.
     assert len(mix) == FRAME * 4 and mix[-1] == pytest.approx(2000 / 32768)
