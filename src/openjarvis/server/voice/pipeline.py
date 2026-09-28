@@ -50,6 +50,7 @@ def build_voice_pipeline(
     diarizer: Any | None = None,
     faces: Any | None = None,
     separator: Any | None = None,
+    vision_audio: Any | None = None,
 ) -> Any:
     """Wire transport, VAD, STT, Agent, and voice into one runnable worker.
 
@@ -134,6 +135,7 @@ def build_voice_pipeline(
             stt_delay_secs=stt_delay,
             gate=AudioOnlyGate(speaker, faces=faces if speaker.vision_faces else None),
             separator=separator,
+            **({"vision_audio": vision_audio} if vision_audio is not None else {}),
         )
         if stt_delay:
             stt.enable_masked_feed(

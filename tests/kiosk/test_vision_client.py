@@ -25,6 +25,7 @@ async def test_faces_events_go_to_the_buffer_not_the_kiosk_queue():
         port = srv.sockets[0].getsockname()[1]
         faces = FaceTrackBuffer()
         client = VisionClient(f"ws://127.0.0.1:{port}", faces=faces)
+        assert client.url == f"ws://127.0.0.1:{port}"
         task = asyncio.create_task(client.run())
         event = await asyncio.wait_for(client.events.get(), 2)
         await asyncio.sleep(0.1)

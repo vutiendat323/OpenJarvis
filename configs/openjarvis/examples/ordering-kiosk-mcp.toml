@@ -214,6 +214,11 @@ enhancer = "none"
 # Accept speech only while the nearest face within 1.5 m moves its mouth
 # (Vision `faces` stream); speech with that mouth still is rejected.
 vision_faces = false
+# Mirror post-enhancer mic PCM to Vision's optional Light-ASD model.
+vision_asd = false
+asd_accept_prob = 0.7
+asd_reject_prob = 0.3
+asd_wait_secs = 0.12
 # Send Gemini a copy of the mic delayed 0.5 s with rejected speech silenced,
 # so a phone video or bystander never lands in the customer's transcript.
 stt_mask = false

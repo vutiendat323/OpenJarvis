@@ -36,6 +36,10 @@ class VisionClient:
         """The event queue consumed by the kiosk main loop."""
         return self._queue
 
+    @property
+    def url(self) -> str:
+        return self._url
+
     async def run(self) -> None:
         """Connect and stream events into the queue. Reconnects forever."""
         import websockets

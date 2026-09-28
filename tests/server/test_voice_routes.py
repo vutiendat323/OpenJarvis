@@ -17,6 +17,7 @@ from starlette.requests import Request
 from openjarvis.core.conversation import current_conversation_id
 from openjarvis.server.voice import routes
 from openjarvis.server.voice.session import VoiceSessionService
+from openjarvis.server.voice.speaker import FaceTrackBuffer, SpeakerSettings
 
 
 def test_voice_offer_patch_forwards_trickle_ice_candidates(monkeypatch):
@@ -48,6 +49,72 @@ def test_voice_offer_patch_forwards_trickle_ice_candidates(monkeypatch):
     assert response.json() == {"status": "success"}
     assert captured[0].pc_id == "peer-1"
     assert captured[0].candidates[0].sdp_mid == "0"
+
+
+@pytest.mark.anyio
+async def test_asd_bridge_closes_if_pipeline_build_fails(monkeypatch):
+    app = FastAPI()
+    sessions = VoiceSessionService()
+    app.state.voice_session_service = sessions
+    app.state.native_agent_runtime = SimpleNamespace(bind=lambda model: object())
+    app.state.model = "test"
+    app.state.face_tracks = FaceTrackBuffer()
+    app.state.vision_client = SimpleNamespace(url="ws://vision:9876")
+
+    class Bridge:
+        instances = []
+
+        def __init__(self, url, session_id, faces):
+            self.url, self.session_id, self.faces = url, session_id, faces
+            self.closed = False
+            self.instances.append(self)
+
+        async def close(self):
+            self.closed = True
+
+    class Handler:
+        async def handle_web_request(self, request, webrtc_connection_callback):
+            await webrtc_connection_callback(object())
+
+    async def renderer():
+        return object()
+
+    async def diarizer():
+        return object()
+
+    async def separator():
+        return None
+
+    def fail_build(**kwargs):
+        assert kwargs["vision_audio"] is Bridge.instances[0]
+        raise RuntimeError("pipeline failed")
+
+    monkeypatch.setattr(routes, "VisionAudioBridge", Bridge, raising=False)
+    monkeypatch.setattr(
+        routes,
+        "load_speaker_settings",
+        lambda: SpeakerSettings(
+            enabled=True, diarizer="sortformer", vision_faces=True, vision_asd=True
+        ),
+    )
+    monkeypatch.setattr(routes, "_handler", lambda request: Handler())
+    monkeypatch.setattr(routes, "_renderer", renderer)
+    monkeypatch.setattr(routes, "_transcriber", lambda: object())
+    monkeypatch.setattr(routes, "_diarizer", diarizer)
+    monkeypatch.setattr(routes, "_separator", separator)
+    monkeypatch.setattr(routes, "build_voice_pipeline", fail_build)
+    request = Request({"type": "http", "app": app, "headers": []})
+
+    with pytest.raises(RuntimeError, match="pipeline failed"):
+        await routes.voice_webrtc_offer(
+            routes.WebRTCOfferRequest(sdp="offer", type="offer"), request
+        )
+    bridge = Bridge.instances[0]
+    assert bridge.url == "ws://vision:9876"
+    assert bridge.session_id in sessions._sessions
+    assert bridge.faces is app.state.face_tracks
+    assert bridge.closed
+    assert sessions._sessions[bridge.session_id].status != "active"
 
 
 @pytest.mark.anyio

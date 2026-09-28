@@ -29,6 +29,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from openjarvis.server.voice.speaker import AudioOnlyGate, Verdict
+from openjarvis.server.voice.speaker_vision import AudioSpan, VisionAudioBridge
 from openjarvis.server.voice.transcription import SttAudioFrame
 from openjarvis.server.voice.turn_detection import SpeakerVerdictFrame
 
@@ -240,6 +241,7 @@ class SpeakerAudioProcessor(FrameProcessor):
         stt_delay_secs: float = 0.0,
         separator: Separator | None = None,
         separator_executor: Executor | None = None,
+        vision_audio: VisionAudioBridge | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -259,11 +261,14 @@ class SpeakerAudioProcessor(FrameProcessor):
         self._overlap_values: list[bool] = []
         self._releaser: asyncio.Task | None = None
         self._diarizer = diarizer
+        self._vision_audio = vision_audio
         self._gate = gate
         self._executor = executor or DIARIZER_EXECUTOR
         self._pending = bytearray()
-        self._queue: asyncio.Queue[tuple[bytes, bool, float]] = asyncio.Queue(
-            maxsize=_MAX_QUEUED_CHUNKS
+        self._pending_start: float | None = None
+        self._pending_stream: str | None = None
+        self._queue: asyncio.Queue[tuple[bytes, bool, float, str | None]] = (
+            asyncio.Queue(maxsize=_MAX_QUEUED_CHUNKS)
         )
         self._worker: asyncio.Task | None = None
         self._bot_audible_until = 0.0
@@ -276,6 +281,8 @@ class SpeakerAudioProcessor(FrameProcessor):
             await self._release_stt(math.inf, separate=False)
         await self.push_frame(frame, direction)
         if isinstance(frame, StartFrame):
+            if self._vision_audio is not None:
+                await self._vision_audio.start()
             self._executor.submit(self._diarizer.reset)
             self._worker = self.create_task(self._diarize(), "diarize")
             if self._stt_delay:
@@ -290,11 +297,19 @@ class SpeakerAudioProcessor(FrameProcessor):
             isinstance(frame, InputAudioRawFrame)
             and direction is FrameDirection.DOWNSTREAM
         ):
+            span = None
+            if self._vision_audio is not None:
+                span = self._vision_audio.offer(
+                    frame.audio, frame.sample_rate, frame.num_channels
+                )
             if self._stt_delay:
-                self._stt_line.append((time.time(), frame))
-            self._enqueue(frame)
+                arrival = span.end if span is not None else time.time()
+                self._stt_line.append((arrival, frame))
+            self._enqueue(frame, span)
 
-    def _enqueue(self, frame: InputAudioRawFrame) -> None:
+    def _enqueue(
+        self, frame: InputAudioRawFrame, span: AudioSpan | None = None
+    ) -> None:
         if frame.sample_rate != SAMPLE_RATE or frame.num_channels != 1:
             if not self._warned_format:
                 logger.warning(
@@ -303,6 +318,12 @@ class SpeakerAudioProcessor(FrameProcessor):
                 )
                 self._warned_format = True
             return
+        if span is not None and span.stream_id != self._pending_stream:
+            self._pending.clear()
+            self._pending_start = None
+            self._pending_stream = span.stream_id
+        if span is not None and self._pending_start is None:
+            self._pending_start = span.start
         self._pending.extend(frame.audio)
         size = self._diarizer.chunk_samples * 2
         while len(self._pending) >= size:
@@ -311,14 +332,26 @@ class SpeakerAudioProcessor(FrameProcessor):
             if self._queue.full():
                 self._queue.get_nowait()
                 logger.warning(f"{self}: diarizer behind realtime; dropped a chunk")
-            self._queue.put_nowait(
-                (chunk, time.monotonic() < self._bot_audible_until, time.time())
+            ended = (
+                time.time()
+                if span is None
+                else self._pending_start + size / (SAMPLE_RATE * 2)
             )
+            self._queue.put_nowait(
+                (
+                    chunk,
+                    time.monotonic() < self._bot_audible_until,
+                    ended,
+                    self._pending_stream,
+                )
+            )
+            if span is not None:
+                self._pending_start = ended
 
     async def _diarize(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
-            chunk, bot_speaking, ended = await self._queue.get()
+            chunk, bot_speaking, ended, stream_id = await self._queue.get()
             pcm = np.frombuffer(chunk, dtype=np.int16)
             probs = await loop.run_in_executor(self._executor, self._diarizer.push, pcm)
             step = self._diarizer.frame_secs
@@ -328,6 +361,7 @@ class SpeakerAudioProcessor(FrameProcessor):
                 # Wall-clock time of this frame, to line it up with Vision.
                 t = ended - (len(probs) - 1 - i) * step
                 verdict = self._gate.frame(row, bot_speaking=bot_speaking, t=t)
+                # Task 5 will pass this queued stream ID to the ASD gate.
                 if self._stt_delay:
                     self._remember_verdict(t - step, verdict, self._gate.overlap)
                 if (
@@ -490,6 +524,8 @@ class SpeakerAudioProcessor(FrameProcessor):
             await self._flush_held()
 
     async def _stop(self) -> None:
+        if self._vision_audio is not None:
+            await self._vision_audio.close()
         if self._releaser is not None:
             await self.cancel_task(self._releaser)
             self._releaser = None

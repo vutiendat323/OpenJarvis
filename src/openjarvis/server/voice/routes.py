@@ -26,6 +26,7 @@ from openjarvis.server.voice.pipeline import (
     claim_voice_lease,
 )
 from openjarvis.server.voice.speaker import load_speaker_settings
+from openjarvis.server.voice.speaker_vision import VisionAudioBridge
 
 logger = logging.getLogger(__name__)
 
@@ -437,6 +438,8 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
             if not run_task.done():
                 run_task.cancel()
                 await asyncio.gather(run_task, return_exceptions=True)
+            if vision_audio is not None:
+                await vision_audio.close()
             save_voice_conversation(
                 sessions,
                 voice_session_id=session.voice_session_id,
@@ -458,22 +461,40 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
             # a cancel landing between the two awaits above would otherwise
             # skip an inline end_session() call and leak the lease.
 
+    vision_audio: VisionAudioBridge | None = None
+
     async def start_pipeline(connection: Any) -> None:
         # pipecat runs this callback inside its own try/except: a failure here
         # is logged, but the handshake still answers with a valid SDP. Without
         # this, run_until_disconnected — the only place that releases the
         # lease — is never scheduled, and the lease sits held until
         # expire_stale_sessions reclaims it 300 s later.
+        nonlocal vision_audio
         try:
+            speaker = load_speaker_settings()
+            diarizer = await _diarizer()
+            faces = getattr(request.app.state, "face_tracks", None)
+            client = getattr(request.app.state, "vision_client", None)
+            if speaker.vision_asd:
+                if diarizer is not None and faces is not None and client is not None:
+                    vision_audio = VisionAudioBridge(
+                        client.url, session.voice_session_id, faces
+                    )
+                else:
+                    logger.warning(
+                        "Vision ASD requested but diarizer or Vision is unavailable"
+                    )
+            extra = {"vision_audio": vision_audio} if vision_audio is not None else {}
             worker, context = build_voice_pipeline(
                 connection=connection,
                 binding=session.execution_binding,
                 renderer=await _renderer(),
                 stt=_transcriber(),
                 recall=recall,
-                diarizer=await _diarizer(),
-                faces=getattr(request.app.state, "face_tracks", None),
+                diarizer=diarizer,
+                faces=faces,
                 separator=await _separator(),
+                **extra,
             )
             request.app.state.pipecat_voice_context = context
             # Not awaited: the handshake must answer now, and the pipeline
@@ -496,6 +517,7 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
                 task = asyncio.create_task(
                     run_until_disconnected(worker, context, connection)
                 )
+
             # Guarantees the lease is freed exactly once, however this task
             # ends. Two independent paths can end it: the natural teardown
             # above, and kiosk's presentation-reset endpoint, which cancels
@@ -508,14 +530,17 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
             # any) actually completed, closing that race. end_session() is a
             # sync, idempotent status check, so double-firing alongside the
             # natural path's own call is harmless.
-            task.add_done_callback(
-                lambda _t: sessions.end_session(
-                    session.voice_session_id, reason="task_done"
-                )
-            )
+            def finished(_t):
+                sessions.end_session(session.voice_session_id, reason="task_done")
+                if vision_audio is not None:
+                    asyncio.create_task(vision_audio.close())
+
+            task.add_done_callback(finished)
             request.app.state.pipecat_voice_generation = generation
             request.app.state.pipecat_voice_task = task
-        except Exception:
+        except BaseException:
+            if vision_audio is not None:
+                await vision_audio.close()
             sessions.end_session(session.voice_session_id, reason="pipeline_failed")
             raise
 

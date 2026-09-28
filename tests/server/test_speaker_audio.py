@@ -23,6 +23,7 @@ from pipecat.workers.runner import WorkerRunner
 
 from openjarvis.server.voice.speaker import AudioOnlyGate, SpeakerSettings, Verdict
 from openjarvis.server.voice.speaker_audio import SpeakerAudioProcessor
+from openjarvis.server.voice.speaker_vision import AudioSpan
 from openjarvis.server.voice.transcription import SttAudioFrame
 from openjarvis.server.voice.turn_detection import SpeakerVerdictFrame
 
@@ -51,6 +52,7 @@ class _Collector(FrameProcessor):
     def __init__(self):
         super().__init__()
         self.audio = 0
+        self.audio_bytes = []
         self.verdicts = []
         self.stt = []
 
@@ -58,6 +60,7 @@ class _Collector(FrameProcessor):
         await super().process_frame(frame, direction)
         if isinstance(frame, InputAudioRawFrame):
             self.audio += 1
+            self.audio_bytes.append(frame.audio)
         if isinstance(frame, SpeakerVerdictFrame):
             self.verdicts.append(frame.verdict)
         if isinstance(frame, SttAudioFrame):
@@ -254,6 +257,78 @@ async def test_accepted_speech_reaches_gemini_unchanged():
     )
 
     assert [frame.audio for frame in collector.stt] == [_loud().audio] * 2
+
+
+@pytest.mark.anyio
+async def test_asd_bridge_receives_original_audio_before_stt_masking():
+    import time
+
+    class FakeBridge:
+        def __init__(self):
+            self.offered = []
+            self.started = self.closed = 0
+            self.stream_id = "stream-1"
+
+        async def start(self):
+            self.started += 1
+
+        def offer(self, audio, sample_rate, num_channels):
+            self.offered.append((audio, sample_rate, num_channels))
+            end = time.time()
+            return AudioSpan(end - len(audio) / 32000, end, self.stream_id)
+
+        async def close(self):
+            self.closed += 1
+
+    bridge = FakeBridge()
+    diarizer = _FakeDiarizer([(0.9, 0, 0, 0)] * 2)
+    processor = SpeakerAudioProcessor(
+        diarizer=diarizer,
+        gate=_FixedGate(Verdict.REJECT),
+        executor=ThreadPoolExecutor(max_workers=1),
+        stt_delay_secs=0.05,
+        vision_audio=bridge,
+    )
+    collector = await _run(
+        processor, [_loud(), _loud()], until=lambda: diarizer.pushed == 2
+    )
+    assert bridge.started == 1
+    assert [item[0] for item in bridge.offered] == [_loud().audio] * 2
+    assert all(item[1:] == (16000, 1) for item in bridge.offered)
+    assert collector.audio_bytes == [_loud().audio] * 2
+    assert all(not any(frame.audio) for frame in collector.stt)
+    assert bridge.closed >= 1
+
+
+@pytest.mark.anyio
+async def test_asd_diarizer_uses_sample_timeline():
+    seen = []
+
+    class Gate(_FixedGate):
+        def frame(self, probs, *, bot_speaking, t=None):
+            seen.append(t)
+            return super().frame(probs, bot_speaking=bot_speaking, t=t)
+
+    class Bridge:
+        stream_id = "stream-1"
+
+        async def start(self):
+            pass
+
+        def offer(self, audio, sample_rate, num_channels):
+            return AudioSpan(100.0, 100.02, self.stream_id)
+
+        async def close(self):
+            pass
+
+    processor = SpeakerAudioProcessor(
+        diarizer=_FakeDiarizer([(0.9, 0, 0, 0)]),
+        gate=Gate(Verdict.ACCEPT),
+        executor=ThreadPoolExecutor(max_workers=1),
+        vision_audio=Bridge(),
+    )
+    await _run(processor, [_audio()], until=lambda: bool(seen))
+    assert seen == [pytest.approx(100.02)]
 
 
 @pytest.mark.anyio

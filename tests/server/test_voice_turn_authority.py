@@ -226,7 +226,7 @@ async def test_opening_a_turn_clears_an_untaken_verdict():
     assert tracker.take_turn_verdict() is Verdict.ACCEPT
 
 
-def _built_processors(speaker, diarizer):
+def _built_processors(speaker, diarizer, vision_audio=None):
     from pipecat.processors.frame_processor import FrameProcessor
 
     from openjarvis.server.voice.pipeline import build_voice_pipeline
@@ -239,6 +239,7 @@ def _built_processors(speaker, diarizer):
         stt=stt,
         speaker=speaker,
         diarizer=diarizer,
+        vision_audio=vision_audio,
     )
     return stt._prev
 
@@ -253,6 +254,21 @@ def test_enabled_gate_with_a_diarizer_feeds_it_before_stt():
 
     assert isinstance(before_stt, SpeakerAudioProcessor)
     assert before_stt._diarizer is diarizer
+
+
+def test_asd_bridge_is_owned_by_speaker_audio_processor():
+    from openjarvis.server.voice.speaker_audio import SpeakerAudioProcessor
+
+    bridge = object()
+    processor = _built_processors(
+        SpeakerSettings(
+            enabled=True, diarizer="sortformer", vision_faces=True, vision_asd=True
+        ),
+        MagicMock(chunk_samples=3840, frame_secs=0.08),
+        bridge,
+    )
+    assert isinstance(processor, SpeakerAudioProcessor)
+    assert processor._vision_audio is bridge
 
 
 def test_no_diarizer_keeps_milestone_one_wiring():

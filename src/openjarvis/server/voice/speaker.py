@@ -6,6 +6,7 @@ verdicts in; the turn strategies and the LLM service read turn verdicts out.
 
 from __future__ import annotations
 
+import math
 import os
 import threading
 from collections import Counter, deque
@@ -42,6 +43,10 @@ class SpeakerSettings:
     overlap_on_frames: int = 3
     overlap_off_frames: int = 4
     vision_faces: bool = False
+    vision_asd: bool = False
+    asd_accept_prob: float = 0.7
+    asd_reject_prob: float = 0.3
+    asd_wait_secs: float = 0.12
     mouth_active: float = 0.5
     anchor_max_m: float = 1.5
     stt_mask: bool = False
@@ -70,6 +75,17 @@ def _positive_float(section: Mapping[str, Any], key: str, default: float) -> flo
     value = section.get(key, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         raise ValueError(f"voice_speaker_{key}_must_be_a_positive_number")
+    return float(value)
+
+
+def _finite_float(section: Mapping[str, Any], key: str, default: float) -> float:
+    value = section.get(key, default)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+    ):
+        raise ValueError(f"voice_speaker_{key}_must_be_finite")
     return float(value)
 
 
@@ -121,6 +137,23 @@ def load_speaker_settings() -> SpeakerSettings:
     )
 
     stt_mask = _boolean(section, "stt_mask", defaults.stt_mask)
+    vision_asd = _boolean(section, "vision_asd", defaults.vision_asd)
+    diarizer = _choice(section, "diarizer", defaults.diarizer, ("none", "sortformer"))
+    vision_faces = _boolean(section, "vision_faces", defaults.vision_faces)
+    if vision_asd and (not enabled or diarizer != "sortformer" or not vision_faces):
+        raise ValueError("voice_speaker_vision_asd_needs_enabled_diarizer_and_faces")
+    asd_accept = _finite_float(section, "asd_accept_prob", defaults.asd_accept_prob)
+    asd_reject = _finite_float(section, "asd_reject_prob", defaults.asd_reject_prob)
+    asd_wait = _finite_float(section, "asd_wait_secs", defaults.asd_wait_secs)
+    if not 0 <= asd_reject < asd_accept <= 1:
+        raise ValueError("voice_speaker_asd_thresholds_invalid")
+    if not 0 <= asd_wait <= 0.12:
+        raise ValueError("voice_speaker_asd_wait_secs_invalid")
+    stt_delay = _positive_float(
+        section, "stt_mask_delay_secs", defaults.stt_mask_delay_secs
+    )
+    if vision_asd and stt_mask and stt_delay < 0.7:
+        raise ValueError("voice_speaker_vision_asd_stt_mask_delay_too_short")
     separator = _choice(section, "separator", defaults.separator, ("none", "tse"))
     if separator != "none" and not stt_mask:
         # Separation holds overlapped audio in the delayed STT copy.
@@ -141,9 +174,7 @@ def load_speaker_settings() -> SpeakerSettings:
         reject_turn_fraction=_fraction(
             section, "reject_turn_fraction", defaults.reject_turn_fraction
         ),
-        diarizer=_choice(
-            section, "diarizer", defaults.diarizer, ("none", "sortformer")
-        ),
+        diarizer=diarizer,
         enhancer=_choice(section, "enhancer", defaults.enhancer, ("none", "rnnoise")),
         diarizer_latency=_choice(
             section, "diarizer_latency", defaults.diarizer_latency, ("ultra_low", "low")
@@ -157,13 +188,15 @@ def load_speaker_settings() -> SpeakerSettings:
         overlap_off_frames=_positive_int(
             section, "overlap_off_frames", defaults.overlap_off_frames
         ),
-        vision_faces=_boolean(section, "vision_faces", defaults.vision_faces),
+        vision_faces=vision_faces,
+        vision_asd=vision_asd,
+        asd_accept_prob=asd_accept,
+        asd_reject_prob=asd_reject,
+        asd_wait_secs=asd_wait,
         mouth_active=_fraction(section, "mouth_active", defaults.mouth_active),
         anchor_max_m=_positive_float(section, "anchor_max_m", defaults.anchor_max_m),
         stt_mask=stt_mask,
-        stt_mask_delay_secs=_positive_float(
-            section, "stt_mask_delay_secs", defaults.stt_mask_delay_secs
-        ),
+        stt_mask_delay_secs=stt_delay,
         separator=separator,
         separator_model=separator_model,
     )
@@ -317,6 +350,15 @@ class FaceTrackBuffer:
         self._history = history_s
         self._events: deque[dict] = deque()
         self._lock = threading.Lock()
+        self._asd_stream: str | None = None
+
+    def set_asd_stream(self, stream_id: str | None) -> None:
+        """Invalidate ASD scores while retaining face and mouth history."""
+        with self._lock:
+            self._asd_stream = stream_id
+            for event in self._events:
+                for track in event.get("tracks", ()):
+                    track.pop("asd", None)
 
     def add(self, event: dict) -> None:
         with self._lock:
