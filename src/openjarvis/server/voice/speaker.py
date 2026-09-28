@@ -276,7 +276,11 @@ class AudioOnlyGate:
         self.asd_wait_secs = settings.asd_wait_secs if settings.vision_asd else 0.0
         self._asd_accept = settings.asd_accept_prob
         self._asd_reject = settings.asd_reject_prob
+        # Per ASD-eligible row: used_accept, used_reject, middle, late, warmup
+        # or gap -- enough to derive spec §9's effective-use fraction.
         self.asd_counts: Counter[str] = Counter()
+        # Set by the processor per chunk: why ASD may be missing (late/warmup).
+        self.asd_row_reason: str | None = None
         self._overlap = OverlapDetector(
             on_frames=settings.overlap_on_frames,
             off_frames=settings.overlap_off_frames,
@@ -389,18 +393,20 @@ class AudioOnlyGate:
                         self.last_evidence_detail.update(
                             source="asd", fallback_reason=None
                         )
-                        self.asd_counts["used"] += 1
+                        self.asd_counts["used_accept"] += 1
                         return Verdict.ACCEPT
                     if probability <= self._asd_reject:
                         self.last_evidence_detail.update(
                             source="asd", fallback_reason=None
                         )
-                        self.asd_counts["used"] += 1
+                        self.asd_counts["used_reject"] += 1
                         return Verdict.REJECT
                     self.last_evidence_detail["fallback_reason"] = "asd_middle"
+                    self.asd_counts["middle"] += 1
                 else:
-                    self.last_evidence_detail["fallback_reason"] = "asd_gap"
-                    self.asd_counts["gap"] += 1
+                    reason = self.asd_row_reason or "gap"
+                    self.last_evidence_detail["fallback_reason"] = f"asd_{reason}"
+                    self.asd_counts[reason] += 1
             if mouth is not None and mouth >= self._mouth_active:
                 return Verdict.ACCEPT
             return Verdict.REJECT
@@ -535,7 +541,9 @@ class FaceTrackBuffer:
             ):
                 continue
             end = start + 1.0
-            if start <= t0 and t1 <= end and now - end <= 1.0:
+            # 1 ms slack: Vision's window end and this chunk end are separate
+            # float sums of the same samples at Unix-second magnitudes.
+            if start <= t0 + 1e-3 and t1 <= end + 1e-3 and now - end <= 1.0:
                 valid.append((start, values))
         if not valid:
             return None

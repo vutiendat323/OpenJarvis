@@ -267,7 +267,10 @@ class SpeakerAudioProcessor(FrameProcessor):
         self._asd_reported = False
         self._executor = executor or DIARIZER_EXECUTOR
         self._pending = bytearray()
-        self._pending_start: float | None = None
+        # Chunk times: one origin plus bytes consumed since it, so chunk ends
+        # stay on the bridge's sample clock instead of drifting.
+        self._pending_origin: float | None = None
+        self._pending_offset = 0
         self._pending_stream: str | None = None
         self._queue: asyncio.Queue[tuple[bytes, bool, float, str | None]] = (
             asyncio.Queue(maxsize=_MAX_QUEUED_CHUNKS)
@@ -322,18 +325,23 @@ class SpeakerAudioProcessor(FrameProcessor):
             return
         if span is not None:
             expected = (
-                self._pending_start + len(self._pending) / (SAMPLE_RATE * 2)
-                if self._pending_start is not None
+                self._pending_origin
+                + (self._pending_offset + len(self._pending)) / (SAMPLE_RATE * 2)
+                if self._pending_origin is not None
                 else None
             )
+            # A bridge stream's sample clock is exact, so 20 ms off is a gap.
+            # Spans without a stream are arrival-timed and jitter by nature;
+            # only a real pause (the bridge's 250 ms divergence) re-anchors.
+            tolerance = 0.02 if span.stream_id is not None else 0.25
             if span.stream_id != self._pending_stream or (
-                expected is not None and abs(span.start - expected) > 0.02
+                expected is not None and abs(span.start - expected) > tolerance
             ):
                 self._pending.clear()
-                self._pending_start = None
+                self._pending_origin = None
                 self._pending_stream = span.stream_id
-            if self._pending_start is None:
-                self._pending_start = span.start
+            if self._pending_origin is None:
+                self._pending_origin, self._pending_offset = span.start, 0
         self._pending.extend(frame.audio)
         size = self._diarizer.chunk_samples * 2
         while len(self._pending) >= size:
@@ -342,10 +350,12 @@ class SpeakerAudioProcessor(FrameProcessor):
             if self._queue.full():
                 self._queue.get_nowait()
                 logger.warning(f"{self}: diarizer behind realtime; dropped a chunk")
+            if span is not None:
+                self._pending_offset += size
             ended = (
                 time.time()
                 if span is None
-                else self._pending_start + size / (SAMPLE_RATE * 2)
+                else self._pending_origin + self._pending_offset / (SAMPLE_RATE * 2)
             )
             self._queue.put_nowait(
                 (
@@ -355,8 +365,6 @@ class SpeakerAudioProcessor(FrameProcessor):
                     self._pending_stream,
                 )
             )
-            if span is not None:
-                self._pending_start = ended
 
     async def _diarize(self) -> None:
         loop = asyncio.get_running_loop()
@@ -367,6 +375,14 @@ class SpeakerAudioProcessor(FrameProcessor):
             step = self._diarizer.frame_secs
             row_samples = len(pcm) // max(len(probs), 1)
             wait_timed_out = False
+            asd_reason = None
+            if (
+                self._asd_enabled
+                and self._vision_audio is not None
+                and stream_id is not None
+                and getattr(self._vision_audio, "audio_seconds", 1.0) < 1.0
+            ):
+                asd_reason = "warmup"
             if (
                 self._asd_enabled
                 and self._vision_audio is not None
@@ -383,10 +399,13 @@ class SpeakerAudioProcessor(FrameProcessor):
                 wait_timed_out = getattr(
                     self._vision_audio, "last_wait_timed_out", False
                 )
+                if wait_timed_out:
+                    asd_reason = "late"
             if self._asd_enabled and self._gate._faces is not None:
                 self._gate._asd_snapshot = self._gate._faces.snapshot(
                     include_asd=not wait_timed_out
                 )
+                self._gate.asd_row_reason = asd_reason
             try:
                 for i, row in enumerate(probs):
                     target = self._gate.target
@@ -430,6 +449,7 @@ class SpeakerAudioProcessor(FrameProcessor):
             finally:
                 if self._asd_enabled:
                     self._gate._asd_snapshot = None
+                    self._gate.asd_row_reason = None
 
     def _remember_verdict(
         self, start: float, verdict: Verdict | None, overlap: bool = False
@@ -574,10 +594,16 @@ class SpeakerAudioProcessor(FrameProcessor):
     async def _stop(self) -> None:
         if self._asd_enabled and not self._asd_reported:
             self._asd_reported = True
+            counts = self._gate.asd_counts
+            used = counts["used_accept"] + counts["used_reject"]
+            eligible = used + counts["middle"] + counts["late"] + counts["gap"]
             logger.info(
-                f"{self}: ASD session used={self._gate.asd_counts['used']} "
-                f"gap={self._gate.asd_counts['gap']} "
-                f"late={getattr(self._vision_audio, 'asd_late', 0)}"
+                f"{self}: ASD session rows used={used} "
+                f"(accept={counts['used_accept']} reject={counts['used_reject']}) "
+                f"middle={counts['middle']} late={counts['late']} "
+                f"gap={counts['gap']} warmup={counts['warmup']} "
+                f"effective_use={used / eligible if eligible else 0:.0%} "
+                f"late_chunks={getattr(self._vision_audio, 'asd_late', 0)}"
             )
         if self._vision_audio is not None:
             await self._vision_audio.close()

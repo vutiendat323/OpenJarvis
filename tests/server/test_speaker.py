@@ -395,6 +395,18 @@ def test_asd_lookup_requires_current_stream_complete_support_and_fresh_window():
     )
 
 
+def test_asd_window_ending_a_float_step_early_still_covers_its_chunk():
+    # At Unix-second magnitudes one float step is ~2.4e-7 s; Vision's window
+    # end and the chunk end come from different sums of the same samples.
+    end = 1790000000.24
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("current")
+    faces.add(_asd_faces([0.8] * 25, ts=end, start=end - 1.0 - 5e-7))
+    assert faces.active_speaker(
+        2, end - 0.24, end, stream_id="current", now=end
+    ) == pytest.approx(0.8, abs=1e-5)
+
+
 def test_asd_lookup_weights_partial_bins_and_rejects_malformed_results():
     faces = FaceTrackBuffer()
     faces.set_asd_stream("current")
@@ -440,6 +452,29 @@ def test_asd_policy_uses_thresholds_then_mouth_fallback(
         gate.frame(SLOT1, bot_speaking=False, t=100.24, asd_stream_id="current")
         is expected
     )
+
+
+def test_asd_rows_are_counted_by_reason_for_effective_use(monkeypatch):
+    # Spec §9 needs "fraction of eligible post-warm-up anchor rows using ASD"
+    # from the logs: every ASD-eligible row gets exactly one reason.
+    monkeypatch.setattr("openjarvis.server.voice.speaker.time.time", lambda: 100.24)
+    gate, faces = _vision_gate(vision_asd=True)
+    faces.set_asd_stream("current")
+    # Newer windows (later start) win the lookup.
+    for start, probability in ((100.0, 0.9), (100.04, 0.1), (100.08, 0.5)):
+        faces.add(_asd_faces([probability] * 25, ts=100.24, start=start))
+        gate.frame(SLOT1, bot_speaking=False, t=100.24, asd_stream_id="current")
+    assert gate.last_evidence_detail["fallback_reason"] == "asd_middle"
+    assert dict(gate.asd_counts) == {"used_accept": 1, "used_reject": 1, "middle": 1}
+
+    gate, faces = _vision_gate(vision_asd=True)
+    faces.set_asd_stream("current")
+    faces.add(_faces(100.24, (2, 0.7, 0.05)))
+    for reason in ("late", "warmup", None):
+        gate.asd_row_reason = reason
+        gate.frame(SLOT1, bot_speaking=False, t=100.24, asd_stream_id="current")
+        assert gate.last_evidence_detail["fallback_reason"] == f"asd_{reason or 'gap'}"
+    assert dict(gate.asd_counts) == {"late": 1, "warmup": 1, "gap": 1}
 
 
 def test_delayed_diarizer_cannot_use_an_expired_supporting_window():

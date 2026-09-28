@@ -67,7 +67,7 @@ async def test_wait_for_asd_evidence_uses_current_chunk_deadline():
     bridge = VisionAudioBridge("ws://vision", "voice-1", faces)
     bridge._ready = True
     bridge._stream_id = "current"
-    bridge._start, bridge._end = now - 1.2, now
+    bridge._start, bridge._samples = now - 1.2, 19200
 
     async def publish():
         await asyncio.sleep(0.02)
@@ -134,7 +134,7 @@ async def test_result_completed_after_deadline_is_late(monkeypatch):
     bridge = VisionAudioBridge("ws://vision", "voice-1", faces)
     bridge._ready = True
     bridge._stream_id = "current"
-    bridge._start, bridge._end = now - 1.2, now
+    bridge._start, bridge._samples = now - 1.2, 19200
     original = faces.active_speaker
 
     def publish_during_lookup(*args, **kwargs):
@@ -206,6 +206,35 @@ async def test_bridge_packetizes_actual_samples_and_stops(monkeypatch):
     assert socket.sent[-1] == {"cmd": "asd_audio_stop", "stream_id": start["stream_id"]}
     await bridge.close()
     assert not bridge.ready
+
+
+@pytest.mark.anyio
+async def test_bridge_sample_clock_does_not_drift_at_unix_time(monkeypatch):
+    import websockets
+
+    socket = FakeSocket()
+
+    @asynccontextmanager
+    async def connect(*args, **kwargs):
+        yield socket
+
+    monkeypatch.setattr(websockets, "connect", connect)
+    base, tick = 1790000000.0, [0]
+    monkeypatch.setattr(
+        "openjarvis.server.voice.speaker_vision._now", lambda: base + tick[0] * 0.02
+    )
+    bridge = VisionAudioBridge("ws://vision", "voice-1", FaceTrackBuffer())
+    await bridge.start()
+    await eventually(lambda: bool(socket.sent))
+    socket.status(socket.sent[0]["stream_id"], "ready")
+    await eventually(lambda: bridge.ready)
+    spans = []
+    for i in range(3000):  # 60 s of 20 ms frames
+        tick[0] = i + 1
+        spans.append(bridge.offer(b"\0" * 640, 16000, 1))
+    anchor = spans[0].start
+    assert max(abs(s.end - (anchor + (i + 1) * 0.02)) for i, s in enumerate(spans)) < 1e-6
+    await bridge.close()
 
 
 @pytest.mark.anyio

@@ -121,6 +121,37 @@ def _processor(rows):
     return processor, diarizer, gate
 
 
+def _queued_chunk_ends(processor, spans):
+    ends = []
+    for span in spans:
+        processor._enqueue(_audio(), span)
+        while not processor._queue.empty():
+            ends.append(processor._queue.get_nowait()[2])
+    return ends
+
+
+def test_chunk_end_times_follow_the_sample_clock_at_unix_time():
+    processor, _, _ = _processor([])
+    base = 1790000000.0
+    spans = [AudioSpan(base + i * 0.02, base + (i + 1) * 0.02, "s1") for i in range(3000)]
+    ends = _queued_chunk_ends(processor, spans)
+    assert len(ends) == 3000
+    assert max(abs(e - (base + (i + 1) * 0.02)) for i, e in enumerate(ends)) < 1e-6
+
+
+def test_arrival_jitter_without_a_bridge_stream_keeps_diarizer_audio():
+    # Spans without a stream are arrival-timed (bridge not ready, Vision busy
+    # or down): network jitter there must not discard pending speech.
+    processor, _, _ = _processor([])
+    starts = [100.0 + i * 0.02 + (0.03 if i >= 3 else 0.0) for i in range(6)]
+    ends = []
+    for s in starts:
+        processor._enqueue(_audio(CHUNK // 2), AudioSpan(s, s + 0.01, None))
+        while not processor._queue.empty():
+            ends.append(processor._queue.get_nowait()[2])
+    assert len(ends) == 3
+
+
 @pytest.mark.anyio
 async def test_audio_passes_through_and_speech_becomes_verdicts():
     processor, diarizer, _ = _processor([(0.9, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0)])

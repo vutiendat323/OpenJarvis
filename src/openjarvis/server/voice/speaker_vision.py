@@ -41,8 +41,10 @@ class VisionAudioBridge:
         self._terminal = False
         self._ready = False
         self._stream_id: str | None = None
+        # Sample clock: one anchor plus an integer sample count, so times do
+        # not drift when many small durations are summed at Unix magnitudes.
         self._start: float | None = None
-        self._end: float | None = None
+        self._samples = 0
         self._pending = bytearray()
         self._queue: deque[tuple[int, float, bytes]] = deque(maxlen=_MAX_PACKETS)
         self._queued = asyncio.Event()
@@ -60,9 +62,9 @@ class VisionAudioBridge:
 
     @property
     def audio_seconds(self) -> float:
-        if not self._ready or self._start is None or self._end is None:
+        if not self._ready or self._start is None:
             return 0.0
-        return self._end - self._start
+        return self._samples / _RATE
 
     async def wait_for_evidence(
         self, faces: FaceTrackBuffer, t0: float, t1: float, *, timeout: float
@@ -110,22 +112,25 @@ class VisionAudioBridge:
         duration = len(audio) / (_RATE * 2)
         if not self._ready or self._closed:
             return AudioSpan(now - duration, now, None)
-        if self._end is not None and abs(now - (self._end + duration)) > 0.25:
+        if self._start is not None and (
+            abs(now - (self._start + self._samples / _RATE + duration)) > 0.25
+        ):
             # Media arrival moved away from the contiguous sample clock.
             self._restart()
             return AudioSpan(now - duration, now, None)
-        start = self._end if self._end is not None else now - duration
-        end = start + duration
         if self._start is None:
-            self._start = start
-        self._end = end
+            self._start, self._samples = now - duration, 0
+        start = self._start + self._samples / _RATE
+        self._samples += len(audio) // 2
+        end = self._start + self._samples / _RATE
         self._pending.extend(audio)
         while len(self._pending) >= _PACKET_BYTES:
             packet = bytes(self._pending[:_PACKET_BYTES])
             del self._pending[:_PACKET_BYTES]
             # This packet starts at the end of all offered samples except
             # those still pending and those in this packet.
-            t0 = end - (len(self._pending) + _PACKET_BYTES) / (_RATE * 2)
+            first = self._samples - (len(self._pending) + _PACKET_BYTES) // 2
+            t0 = self._start + first / _RATE
             self._queue.append((self._seq, t0, packet))
             self._seq += 1
             self._queued.set()
@@ -147,7 +152,7 @@ class VisionAudioBridge:
         self._pending.clear()
         self._queue.clear()
         self._queued.clear()
-        self._start = self._end = None
+        self._start, self._samples = None, 0
         self._seq = 0
 
     async def _send(self, ws, stream_id: str) -> None:
