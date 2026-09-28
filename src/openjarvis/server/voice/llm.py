@@ -208,7 +208,6 @@ class OpenJarvisLLMService(LLMService):
         turn_state: VoiceTurnState | None = None,
         speaker_tracker: Any | None = None,
         uncertain_allowed_tools: tuple[str, ...] = (),
-        confirm_uncertain: bool = True,
         **kwargs: Any,
     ) -> None:
         # None, not unset: every field left NOT_GIVEN makes pipecat log an
@@ -236,7 +235,6 @@ class OpenJarvisLLMService(LLMService):
         self._turn_state = turn_state or VoiceTurnState()
         self._speaker_tracker = speaker_tracker
         self._uncertain_allowed_tools = uncertain_allowed_tools
-        self._confirm_uncertain = confirm_uncertain
 
     async def stream_agent(
         self,
@@ -322,12 +320,10 @@ class OpenJarvisLLMService(LLMService):
             from openjarvis.server.voice.speaker import Verdict
 
             # REJECT should never get here (the stop strategy drops it), but
-            # if it does it is not the customer's word: fail closed. With
-            # confirm_uncertain off, UNCERTAIN turns act without asking.
+            # if it does it is not the customer's word: fail closed.
+            # UNCERTAIN turns act with full authority, without asking.
             verdict = self._speaker_tracker.take_turn_verdict()
-            if verdict is Verdict.REJECT or (
-                verdict is Verdict.UNCERTAIN and self._confirm_uncertain
-            ):
+            if verdict is Verdict.REJECT:
                 prompt = f"{UNCERTAIN_SPEAKER_NOTE}\n\n{prompt}"
                 authority = uncertain_speaker_scope(self._uncertain_allowed_tools)
         turn_id = self._turn_state.begin_turn()

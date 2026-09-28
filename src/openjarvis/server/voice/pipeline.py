@@ -147,7 +147,6 @@ def build_voice_pipeline(
         turn_state=turn_state,
         speaker_tracker=tracker,
         uncertain_allowed_tools=speaker.uncertain_allowed_tools,
-        confirm_uncertain=speaker.confirm_uncertain,
     )
     context = LLMContext()
     # The VAD analyser belongs to the user aggregator, not the transport, and

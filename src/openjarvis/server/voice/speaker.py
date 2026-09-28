@@ -32,9 +32,6 @@ class SpeakerSettings:
 
     enabled: bool = False
     uncertain_allowed_tools: tuple[str, ...] = ("display_menu",)
-    # False: an UNCERTAIN turn runs every tool without asking the customer to
-    # confirm (the kiosk's 2026-09-26 call); REJECT still fails closed.
-    confirm_uncertain: bool = True
     bargein_accept_frames: int = 3
     accept_turn_fraction: float = 0.7
     reject_turn_fraction: float = 0.7
@@ -136,9 +133,6 @@ def load_speaker_settings() -> SpeakerSettings:
         enabled=enabled,
         uncertain_allowed_tools=tuple(
             dict.fromkeys(t.strip() for t in tools if t.strip())
-        ),
-        confirm_uncertain=_boolean(
-            section, "confirm_uncertain", defaults.confirm_uncertain
         ),
         bargein_accept_frames=frames,
         accept_turn_fraction=_fraction(
