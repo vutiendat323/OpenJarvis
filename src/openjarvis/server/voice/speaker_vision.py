@@ -144,64 +144,64 @@ class VisionAudioBridge:
         while not self._closed and not self._terminal:
             stream_id = str(uuid.uuid4())
             sender = None
-            ws = None
             try:
                 async with websockets.connect(
                     self._url, ping_interval=30, close_timeout=2
                 ) as ws:
                     self._stream_id = stream_id
-                    await ws.send(
-                        json.dumps(
-                            {
-                                "cmd": "asd_audio_start",
-                                "version": 1,
-                                "session_id": self._session_id,
-                                "stream_id": stream_id,
-                                "sample_rate": _RATE,
-                                "channels": 1,
-                            }
+                    try:
+                        await ws.send(
+                            json.dumps(
+                                {
+                                    "cmd": "asd_audio_start",
+                                    "version": 1,
+                                    "session_id": self._session_id,
+                                    "stream_id": stream_id,
+                                    "sample_rate": _RATE,
+                                    "channels": 1,
+                                }
+                            )
                         )
-                    )
-                    async for raw in ws:
+                        async for raw in ws:
+                            try:
+                                event = json.loads(raw)
+                            except (TypeError, ValueError):
+                                continue
+                            if (
+                                not isinstance(event, dict)
+                                or event.get("event") != "asd_audio_status"
+                            ):
+                                continue
+                            if event.get("stream_id") != stream_id:
+                                continue
+                            status = event.get("status")
+                            if status == "ready" and not self._ready:
+                                self._ready = True
+                                self._faces.set_asd_stream(stream_id)
+                                delay_idx = 0
+                                sender = asyncio.create_task(self._send(ws, stream_id))
+                            elif status in ("disabled", "unavailable", "invalid"):
+                                self._terminal = True
+                                break
+                            elif status == "busy":
+                                break
+                    finally:
+                        if sender is not None:
+                            sender.cancel()
+                            await asyncio.gather(sender, return_exceptions=True)
                         try:
-                            event = json.loads(raw)
-                        except (TypeError, ValueError):
-                            continue
-                        if (
-                            not isinstance(event, dict)
-                            or event.get("event") != "asd_audio_status"
-                        ):
-                            continue
-                        if event.get("stream_id") != stream_id:
-                            continue
-                        status = event.get("status")
-                        if status == "ready" and not self._ready:
-                            self._ready = True
-                            self._faces.set_asd_stream(stream_id)
-                            delay_idx = 0
-                            sender = asyncio.create_task(self._send(ws, stream_id))
-                        elif status in ("disabled", "unavailable", "invalid"):
-                            self._terminal = True
-                            break
-                        elif status == "busy":
-                            break
+                            await ws.send(
+                                json.dumps(
+                                    {"cmd": "asd_audio_stop", "stream_id": stream_id}
+                                )
+                            )
+                        except Exception:  # noqa: BLE001 - socket may already be gone
+                            pass
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - optional local service
                 logger.warning("Vision ASD audio disconnected: {}", exc)
             finally:
-                if sender is not None:
-                    sender.cancel()
-                    await asyncio.gather(sender, return_exceptions=True)
-                if ws is not None:
-                    try:
-                        await ws.send(
-                            json.dumps(
-                                {"cmd": "asd_audio_stop", "stream_id": stream_id}
-                            )
-                        )
-                    except Exception:  # noqa: BLE001 - socket may already be gone
-                        pass
                 self._finish(stream_id)
             if self._closed or self._terminal:
                 break

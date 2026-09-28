@@ -332,6 +332,61 @@ async def test_asd_diarizer_uses_sample_timeline():
 
 
 @pytest.mark.anyio
+async def test_asd_gap_reanchors_partial_diarizer_pcm_with_same_stream_tag():
+    rows = []
+    chunks = []
+
+    class Gate(_FixedGate):
+        def frame(self, probs, *, bot_speaking, t=None):
+            rows.append(t)
+            return super().frame(probs, bot_speaking=bot_speaking, t=t)
+
+    class Diarizer(_FakeDiarizer):
+        def push(self, pcm):
+            chunks.append(pcm.copy())
+            return super().push(pcm)
+
+    class Bridge:
+        stream_id = None
+
+        def __init__(self):
+            self.spans = iter(
+                (
+                    AudioSpan(100.0, 100.01, None),
+                    AudioSpan(101.0, 101.01, None),
+                    AudioSpan(101.01, 101.02, None),
+                )
+            )
+
+        async def start(self):
+            pass
+
+        def offer(self, audio, sample_rate, num_channels):
+            return next(self.spans)
+
+        async def close(self):
+            pass
+
+    processor = SpeakerAudioProcessor(
+        diarizer=Diarizer([(0.9, 0, 0, 0)]),
+        gate=Gate(Verdict.ACCEPT),
+        executor=ThreadPoolExecutor(max_workers=1),
+        vision_audio=Bridge(),
+    )
+    frames = [
+        InputAudioRawFrame(
+            audio=(np.ones(CHUNK // 2, np.int16) * level).tobytes(),
+            sample_rate=16_000,
+            num_channels=1,
+        )
+        for level in (1, 2, 3)
+    ]
+    await _run(processor, frames, until=lambda: bool(rows))
+    assert rows == [pytest.approx(101.02)]
+    assert chunks[0].tolist() == [2] * (CHUNK // 2) + [3] * (CHUNK // 2)
+
+
+@pytest.mark.anyio
 async def test_gemini_copy_waits_out_the_delay():
     processor, diarizer = _masking_processor(Verdict.ACCEPT, 0.4)
     collector = _Collector()

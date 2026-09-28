@@ -318,12 +318,20 @@ class SpeakerAudioProcessor(FrameProcessor):
                 )
                 self._warned_format = True
             return
-        if span is not None and span.stream_id != self._pending_stream:
-            self._pending.clear()
-            self._pending_start = None
-            self._pending_stream = span.stream_id
-        if span is not None and self._pending_start is None:
-            self._pending_start = span.start
+        if span is not None:
+            expected = (
+                self._pending_start + len(self._pending) / (SAMPLE_RATE * 2)
+                if self._pending_start is not None
+                else None
+            )
+            if span.stream_id != self._pending_stream or (
+                expected is not None and abs(span.start - expected) > 0.02
+            ):
+                self._pending.clear()
+                self._pending_start = None
+                self._pending_stream = span.stream_id
+            if self._pending_start is None:
+                self._pending_start = span.start
         self._pending.extend(frame.audio)
         size = self._diarizer.chunk_samples * 2
         while len(self._pending) >= size:

@@ -152,7 +152,7 @@ def load_speaker_settings() -> SpeakerSettings:
     stt_delay = _positive_float(
         section, "stt_mask_delay_secs", defaults.stt_mask_delay_secs
     )
-    if vision_asd and stt_mask and stt_delay < 0.7:
+    if vision_asd and stt_mask and (not math.isfinite(stt_delay) or stt_delay < 0.7):
         raise ValueError("voice_speaker_vision_asd_stt_mask_delay_too_short")
     separator = _choice(section, "separator", defaults.separator, ("none", "tse"))
     if separator != "none" and not stt_mask:

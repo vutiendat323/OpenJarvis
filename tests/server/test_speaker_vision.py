@@ -15,8 +15,11 @@ class FakeSocket:
     def __init__(self):
         self.sent = []
         self.inbound = asyncio.Queue()
+        self.closed = False
 
     async def send(self, raw):
+        if self.closed:
+            raise RuntimeError("socket already closed")
         self.sent.append(json.loads(raw))
 
     def __aiter__(self):
@@ -50,7 +53,10 @@ async def test_bridge_packetizes_actual_samples_and_stops(monkeypatch):
 
     @asynccontextmanager
     async def connect(*args, **kwargs):
-        yield socket
+        try:
+            yield socket
+        finally:
+            socket.closed = True
 
     monkeypatch.setattr(websockets, "connect", connect)
     clock = iter((1000.04, 1000.12, 1000.20))
@@ -304,6 +310,10 @@ async def test_busy_reconnect_uses_new_id_and_only_new_pcm(monkeypatch):
         (
             "vision_asd = true\nenabled = true\nvision_faces = true\n"
             'diarizer = "sortformer"\nstt_mask = true\nstt_mask_delay_secs = 0.6\n'
+        ),
+        (
+            "vision_asd = true\nenabled = true\nvision_faces = true\n"
+            'diarizer = "sortformer"\nstt_mask = true\nstt_mask_delay_secs = nan\n'
         ),
     ],
 )
