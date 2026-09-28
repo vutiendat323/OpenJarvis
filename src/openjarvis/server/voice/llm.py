@@ -8,6 +8,8 @@ from contextlib import aclosing, nullcontext
 from typing import Any, Literal
 
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     Frame,
     InterruptionFrame,
     LLMContextFrame,
@@ -235,6 +237,7 @@ class OpenJarvisLLMService(LLMService):
         self._turn_state = turn_state or VoiceTurnState()
         self._speaker_tracker = speaker_tracker
         self._uncertain_allowed_tools = uncertain_allowed_tools
+        self._bot_speaking = False
 
     async def stream_agent(
         self,
@@ -298,6 +301,10 @@ class OpenJarvisLLMService(LLMService):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         """Answer an aggregated context, or pass the frame along."""
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
         if isinstance(frame, InterruptionFrame):
             # Invalidate the generation before Pipecat cancels the process task.
             # Any custom iterator cleanup that races with cancellation can then
@@ -326,6 +333,12 @@ class OpenJarvisLLMService(LLMService):
             if verdict is Verdict.REJECT:
                 prompt = f"{UNCERTAIN_SPEAKER_NOTE}\n\n{prompt}"
                 authority = uncertain_speaker_scope(self._uncertain_allowed_tools)
+        if self._bot_speaking:
+            # A newer customer request is being answered: the reply still
+            # being spoken is stale (live crowd retest 2026-09-28: the bot
+            # read an old answer for 40 s while new results showed). Stop it
+            # downstream only; the user aggregator and this turn continue.
+            await self.push_frame(InterruptionFrame())
         turn_id = self._turn_state.begin_turn()
 
         completed = False

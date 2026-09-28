@@ -556,3 +556,67 @@ async def test_service_without_a_tracker_keeps_full_authority():
 
     assert binding.cart_blocked is False
     assert binding.prompt == "xin chào"
+
+
+async def _frames_after_reply(bot_speaking_before):
+    """Downstream frames when a reply starts, with or without old speech playing."""
+    from pipecat.frames.frames import (
+        BotStartedSpeakingFrame,
+        BotStoppedSpeakingFrame,
+        InterruptionFrame,
+        LLMFullResponseStartFrame,
+    )
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    seen = []
+
+    class _Sink(FrameProcessor):
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            if isinstance(frame, (InterruptionFrame, LLMFullResponseStartFrame)):
+                seen.append(type(frame).__name__)
+            await self.push_frame(frame, direction)
+
+    binding = _AuthorityProbeBinding()
+    service = OpenJarvisLLMService(binding)
+    worker = PipelineWorker(
+        Pipeline([service, _Sink()]),
+        cancel_on_idle_timeout=False,
+        enable_rtvi=False,
+        enable_turn_tracking=False,
+    )
+    runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
+
+    async def drive():
+        await asyncio.sleep(0.01)
+        await worker.queue_frame(BotStartedSpeakingFrame())
+        if not bot_speaking_before:
+            await worker.queue_frame(BotStoppedSpeakingFrame())
+        await worker.queue_frame(
+            LLMContextFrame(LLMContext(messages=[{"role": "user", "content": "trà"}]))
+        )
+        await asyncio.wait_for(binding.done.wait(), timeout=_STEP_TIMEOUT_S)
+        await asyncio.sleep(0.05)
+        await worker.queue_frame(EndFrame())
+
+    await runner.add_workers(worker)
+    await asyncio.wait_for(asyncio.gather(runner.run(), drive()), timeout=_TURN_TIMEOUT_S)
+    return seen
+
+
+@pytest.mark.anyio
+async def test_a_new_reply_cuts_off_the_old_one_still_being_spoken():
+    # Live crowd retest 2026-09-28: new results showed on screen while the
+    # bot kept reading an older reply for 40 s; the customer heard stale
+    # answers. The newest reply supersedes speech still playing.
+    assert await _frames_after_reply(bot_speaking_before=True) == [
+        "InterruptionFrame",
+        "LLMFullResponseStartFrame",
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_reply_after_the_bot_finished_interrupts_nothing():
+    assert await _frames_after_reply(bot_speaking_before=False) == [
+        "LLMFullResponseStartFrame"
+    ]
