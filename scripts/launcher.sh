@@ -266,7 +266,7 @@ status_stack() {
     [ -n "$v_pid" ] || v_pid="$(pgrep -f '^python3 main\.py$' 2>/dev/null | tr '\n' ' ' | sed 's/ *$//' || true)"
     b_pid="$(port_pid 8000)"
     f_pid="$(port_pid 5173)"
-    mcp_count="$(pgrep -f '@playwright/mcp' 2>/dev/null | wc -l)"
+    mcp_count="$(pgrep -fc '@playwright/mcp' 2>/dev/null || true)"
 
     printf '%-9s %-8s %-7s %-5s %-11s %s\n' SERVICE STATE PID PORT UPTIME HEALTH
     if [ "$WITH_VISION" = 1 ]; then
