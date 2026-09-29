@@ -44,8 +44,9 @@ log_warn()  { _log_msg "WARN"  "\033[33m" 1 "$@"; }   # Yellow
 log_error() { _log_msg "ERROR" "\033[31m" 2 "$@"; }   # Red
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="${OPENJARVIS_ENV_FILE:-/home/robber/Work/jarvis/OpenJarvis/.env}"
-VISION_DIR="${OPENJARVIS_VISION_DIR:-/home/robber/Work/jarvis/vision}"
+ENV_FILE="${OPENJARVIS_ENV_FILE:-$ROOT_DIR/.env}"
+VISION_DIR="${OPENJARVIS_VISION_DIR:-$ROOT_DIR/../vision}"
+VISION_CONFIG="${JARVIS_CONFIG:-$ROOT_DIR/configs/vision/ordering-kiosk.yml}"
 ARTIFACT_DIR="${OPENJARVIS_LOCAL_TTS_ARTIFACT_DIR:-$HOME/.cache/openjarvis/vieneu-3.2.3-onnx}"
 # The kiosk config is the default because it is what this stack is run for:
 # it gives the Agent the http_request + display_* tools the /kiosk route
@@ -177,15 +178,6 @@ stop_stack() {
         sleep 0.5
     done
 
-    # Anything the backend failed to reap.
-    local mcp_pids
-    mcp_pids="$(pgrep -f '@playwright/mcp|playwright-mcp' 2>/dev/null || true)"
-    if [ -n "$mcp_pids" ]; then
-        log_info "stop: reaping orphaned Playwright MCP"
-        pkill -9 -f "@playwright/mcp" 2>/dev/null || true
-        pkill -9 -f "playwright-mcp" 2>/dev/null || true
-    fi
-
     # A SIGTERM-exited backend can leave its separately launched Chrome alive.
     # Only stop the process named by this kiosk profile's Chromium lock.
     local browser_profile="$ROOT_DIR/.openjarvis/ordering-kiosk/shared-browser-profile"
@@ -286,7 +278,7 @@ status_stack() {
         "$(health_of http://127.0.0.1:8000/health http://127.0.0.1:8000/api/kiosk/state)"
     status_row frontend "$f_pid" 5173 \
         "$(health_of http://127.0.0.1:5173/kiosk http://127.0.0.1:5173/customer-display)"
-    printf '%-9s %s active Playwright process(es)\n' mcp "$mcp_count"
+    printf '%-9s %s Playwright process(es) on host\n' mcp "$mcp_count"
 }
 
 logs_stack() {
@@ -323,6 +315,10 @@ case "$MCP_CONFIG" in
     *)  MCP_CONFIG_PATH="$ROOT_DIR/$MCP_CONFIG" ;;
 esac
 [ -f "$MCP_CONFIG_PATH" ]           || { log_error "preflight: missing config $MCP_CONFIG"; exit 1; }
+if [ "$WITH_VISION" = 1 ]; then
+    [ -d "$VISION_DIR" ] || { log_error "preflight: missing vision directory $VISION_DIR"; exit 1; }
+    [ -f "$VISION_CONFIG" ] || { log_error "preflight: missing vision config $VISION_CONFIG"; exit 1; }
+fi
 
 set -a
 . "$ENV_FILE"
@@ -335,19 +331,29 @@ mkdir -p "$LOG_DIR"
 stop_stack
 
 # ---------- Vision (GPU) ----------
-if [ "$WITH_VISION" = 1 ] && [ -d "$VISION_DIR" ]; then
+if [ "$WITH_VISION" = 1 ]; then
+    VISION_PATH="$PATH"
+    [ ! -x "$VISION_DIR/.venv/bin/python3" ] || VISION_PATH="$VISION_DIR/.venv/bin:$PATH"
+    VISION_PYTHONPATH="${PYTHONPATH:-}"
+    for deps in "$ROOT_DIR/../.asd-deps" "$ROOT_DIR/../.superpowers/light-asd-pr9/asd-deps"; do
+        if [ -d "$deps/python_speech_features" ]; then
+            VISION_PYTHONPATH="$deps${VISION_PYTHONPATH:+:$VISION_PYTHONPATH}"
+            break
+        fi
+    done
     # onnxruntime-gpu ships no CUDA libs; the nvidia-* wheels do. Without these
     # on the path it prints a load error and quietly runs on CPU.
-    NV_ROOT="$(python3 -c 'import nvidia,os;print(os.path.dirname(nvidia.__file__))' 2>/dev/null || true)"
+    NV_ROOT="$(PATH="$VISION_PATH" python3 -c 'import nvidia,os;print(os.path.dirname(nvidia.__file__))' 2>/dev/null || true)"
     VISION_LD=""
     [ -n "$NV_ROOT" ] && VISION_LD="$NV_ROOT/cu13/lib:$NV_ROOT/cudnn/lib"
     # setsid, not `& disown`: disown is a no-op in a non-interactive subshell,
     # which then blocks in wait() and the launcher never returns.
-    fresh_log "$VISION_LOG" "vision: python3 main.py (cwd $VISION_DIR)"
+    fresh_log "$VISION_LOG" "vision: python3 main.py (cwd $VISION_DIR, config $VISION_CONFIG)"
     # cd first, then a bare `setsid ... &`: that child execs straight through
     # setsid and env into python, so $! is the vision PID itself.
     (cd "$VISION_DIR" || exit 1
-     setsid env LD_LIBRARY_PATH="$VISION_LD:${LD_LIBRARY_PATH:-}" \
+     setsid env PATH="$VISION_PATH" PYTHONPATH="$VISION_PYTHONPATH" \
+        JARVIS_CONFIG="$VISION_CONFIG" LD_LIBRARY_PATH="$VISION_LD:${LD_LIBRARY_PATH:-}" \
         python3 main.py >>"$VISION_LOG" 2>&1 </dev/null &
      echo $! >"$VISION_PID_FILE")
 fi

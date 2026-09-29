@@ -1,0 +1,7 @@
+ws_enabled: true
+ws_port: 9876
+metric3d_input_size: [308, 532]
+asd_provider: light_asd
+asd_model_path: ~/.cache/openjarvis/light_asd/light_asd.onnx
+asd_audio_offset_secs: 0.0
+person_model: /nonexistent/yolo-disabled.pt
