@@ -229,7 +229,7 @@ class SpeakerAudioProcessor(FrameProcessor):
 
     With a ``separator``, overlapped speech is held back from Gemini and
     replaced by the customer's voice extracted from it, enrolled from their
-    clean ACCEPTed speech. Verdicts do not change: overlap stays UNCERTAIN.
+    clean ACCEPTed speech. Held frames the gate REJECTed still go out silent.
     """
 
     def __init__(
@@ -551,9 +551,13 @@ class SpeakerAudioProcessor(FrameProcessor):
         held, self._held = self._held, []
         target = await self._separate(held) if separate else None
         start = 0
-        for _, frame in held:
+        for arrived, frame in held:
             end = start + frame.num_frames
             audio = frame.audio if target is None else target[start:end].tobytes()
+            # The separator saw the whole mix, but a REJECTed frame is the
+            # other voice alone: TSE output of it still carried a video live.
+            if self._silenced(arrived - frame.num_frames / frame.sample_rate / 2):
+                audio = bytes(len(frame.audio))
             await self._push_stt(frame, audio)
             start = end
 

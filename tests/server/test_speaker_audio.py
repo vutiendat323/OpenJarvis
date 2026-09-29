@@ -829,6 +829,19 @@ async def test_overlap_is_held_and_replaced_by_the_customers_voice():
 
 
 @pytest.mark.anyio
+async def test_rejected_overlap_reaches_gemini_as_silence_not_separated():
+    processor, separator, pushed = _separating_processor()
+    _enroll(processor)
+    both, video = (2000, Verdict.UNCERTAIN, True), (2000, Verdict.REJECT, True)
+    _line(processor, [both, video, video, (1000, Verdict.ACCEPT, False)])
+
+    await processor._release_stt(200.0)
+
+    # TSE output still carried the video live; a REJECTed frame must not.
+    assert [int(p[0]) for p in pushed] == [16383, 0, 0, 1000]
+
+
+@pytest.mark.anyio
 async def test_overlap_before_enrollment_goes_to_gemini_as_the_mix():
     processor, separator, pushed = _separating_processor()
     _line(processor, [(2000, Verdict.UNCERTAIN, True)] * 2)

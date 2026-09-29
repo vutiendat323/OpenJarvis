@@ -491,7 +491,9 @@ def test_delayed_diarizer_cannot_use_an_expired_supporting_window():
     assert gate.last_evidence_detail["fallback_reason"] == "asd_gap"
 
 
-def test_asd_never_resolves_overlap_or_missing_anchor():
+def test_asd_never_resolves_overlap_or_missing_anchor(monkeypatch):
+    # Fresh ASD: a high score over a still mouth keeps overlap UNCERTAIN.
+    monkeypatch.setattr("openjarvis.server.voice.speaker.time.time", lambda: 100.24)
     gate, faces = _vision_gate(vision_asd=True, overlap_on_frames=1)
     faces.set_asd_stream("current")
     faces.add(_asd_faces([0.9] * 25, ts=100.24))
@@ -567,6 +569,16 @@ def test_overlap_frames_still_log_the_customers_mouth():
     assert gate.overlap and gate.last_evidence == (2, 0.9)
     assert gate.frame(SILENT, bot_speaking=False, t=100.2) is None
     assert gate.last_evidence is None
+
+
+def test_overlap_while_the_customers_mouth_is_still_is_rejected():
+    gate, faces = _vision_gate(overlap_on_frames=1)
+    faces.add(_faces(100.0, (2, 0.7, 0.05)))
+
+    # 2026-09-28 live leak: the customer stopped, the video kept talking,
+    # and overlap hysteresis kept those words UNCERTAIN, so they were acted on.
+    assert gate.frame(BOTH, bot_speaking=False, t=100.1) is Verdict.REJECT
+    assert gate.overlap
 
 
 def _mouth_stream(faces, start, values, track=2, dist=0.7):
