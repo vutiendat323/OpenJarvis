@@ -204,16 +204,16 @@ custom_vocabulary = [
 # UNCERTAIN turn acts without asking; only a REJECTed turn that still
 # reaches the Agent is limited to these tools. Allow read-only skills only:
 # an allowed skill runs its own fixed steps.
-enabled = false
+enabled = true
 uncertain_allowed_tools = ["display_menu", "skill_trendcoffee-menu", "skill_trendcoffee-tables"]
 # "sortformer" needs the voice-speaker extra and a CUDA GPU (~1 GB VRAM).
-diarizer = "none"
+diarizer = "sortformer"
 diarizer_latency = "ultra_low"
 # "rnnoise" needs the voice-enhancement extra; off by default.
 enhancer = "none"
 # Accept speech only while the nearest face within 1.5 m moves its mouth
 # (Vision `faces` stream); speech with that mouth still is rejected.
-vision_faces = false
+vision_faces = true
 # Mirror post-enhancer mic PCM to Vision's optional Light-ASD model.
 vision_asd = false
 asd_accept_prob = 0.7
@@ -221,7 +221,7 @@ asd_reject_prob = 0.3
 asd_wait_secs = 0.12
 # Send Gemini a copy of the mic delayed 0.5 s with rejected speech silenced,
 # so a phone video or bystander never lands in the customer's transcript.
-stt_mask = false
+stt_mask = true
 # "tse" (needs stt_mask): hold overlapped speech back from Gemini and send
 # the customer's voice extracted from it. Export the model first with
 # scripts/voice_tse_export.py (~0.7 GB VRAM). Experimental: overlap stays
