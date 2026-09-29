@@ -215,18 +215,23 @@ enhancer = "none"
 # (Vision `faces` stream); speech with that mouth still is rejected.
 vision_faces = true
 # Mirror post-enhancer mic PCM to Vision's optional Light-ASD model.
-vision_asd = false
+vision_asd = true
 asd_accept_prob = 0.7
-asd_reject_prob = 0.3
+# 0.0: ASD is positive evidence only. Held-out 2026-09-29: it misreads 88% of
+# silent head motion as speech, and as a veto (0.3) it cut the customer's own
+# replies in trial A. A low score never REJECTs; MAR decides.
+asd_reject_prob = 0.0
 asd_wait_secs = 0.12
 # Send Gemini a copy of the mic delayed 0.5 s with rejected speech silenced,
 # so a phone video or bystander never lands in the customer's transcript.
 stt_mask = true
+# With vision_asd the verdict can wait up to asd_wait_secs: keep >= 0.7.
+stt_mask_delay_secs = 0.7
 # "tse" (needs stt_mask): hold overlapped speech back from Gemini and send
 # the customer's voice extracted from it. Export the model first with
 # scripts/voice_tse_export.py (~0.7 GB VRAM). Experimental: overlap stays
 # UNCERTAIN either way.
-separator = "none"
+separator = "tse"
 
 [tools.mcp]
 enabled = true
