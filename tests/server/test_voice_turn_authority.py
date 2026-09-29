@@ -626,6 +626,22 @@ async def test_sustained_accept_still_interrupts_a_pending_reply():
 
 
 @pytest.mark.anyio
+async def test_the_previous_reply_ending_keeps_the_new_reply_pending():
+    # Live 2026-09-29 13:22:50: the customer spoke over the previous reply;
+    # it ended 50 ms after their turn closed, which cleared the pending
+    # window, and a REJECTed video onset 1.5 s later cancelled the answer.
+    strategy, tracker, events = await _strategy(frames=3)
+    await strategy.process_frame(BotStartedSpeakingFrame())
+    await _answered_turn(strategy, tracker, events)
+    await strategy.process_frame(BotStoppedSpeakingFrame())
+
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+    await strategy.process_frame(SpeakerVerdictFrame(verdict=Verdict.REJECT))
+
+    assert events == []
+
+
+@pytest.mark.anyio
 async def test_pending_reply_window_ends_when_no_reply_comes(monkeypatch):
     import openjarvis.server.voice.turn_detection as td
 

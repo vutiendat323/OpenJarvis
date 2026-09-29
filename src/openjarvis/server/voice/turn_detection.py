@@ -82,9 +82,12 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
         if isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
+            # The reply is being spoken. Not on BotStopped: the previous reply
+            # can end just after a turn closes (live 2026-09-29), and that
+            # cleared the window before the new reply was spoken.
+            self._reply_pending_until = 0.0
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
-            self._reply_pending_until = 0.0
         elif isinstance(frame, VADUserStartedSpeakingFrame):
             self._user_speaking = True
             self._accept_run = 0
