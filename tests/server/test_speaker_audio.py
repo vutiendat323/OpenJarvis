@@ -877,6 +877,36 @@ async def test_teardown_sends_held_overlap_without_separating():
     assert [int(p[0]) for p in pushed] == [2000, 2000] and separator.calls == []
 
 
+class _AsdEvidenceGate(_FixedGate):
+    vision_asd = True
+
+    def __init__(self, source):
+        super().__init__(Verdict.ACCEPT)
+        self.last_evidence_detail = {"source": source}
+
+
+async def _enrolled_after_accept(source):
+    diarizer = _FakeDiarizer([(0.9, 0.0, 0.0, 0.0)] * 2)
+    processor = SpeakerAudioProcessor(
+        diarizer=diarizer,
+        gate=_AsdEvidenceGate(source),
+        executor=ThreadPoolExecutor(max_workers=1),
+        stt_delay_secs=0.05,
+        separator=_FakeSeparator(),
+        separator_executor=ThreadPoolExecutor(max_workers=1),
+    )
+    await _run(processor, [_loud(), _loud()], until=lambda: diarizer.pushed == 2)
+    return processor._enrolled
+
+
+@pytest.mark.anyio
+async def test_with_asd_only_asd_confirmed_speech_enrolls_the_customer():
+    # Live 2026-09-29: with ASD late, MAR-only ACCEPTs during a playing video
+    # filled up to 34 of 37 enrollment frames, so TSE extracted the video.
+    assert await _enrolled_after_accept("mar") == 0
+    assert await _enrolled_after_accept("asd") > 0
+
+
 def test_enrollment_keeps_the_latest_clean_speech():
     processor, _, _ = _separating_processor()
     for level in (1, 2, 3):

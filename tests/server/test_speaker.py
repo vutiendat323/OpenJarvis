@@ -498,6 +498,7 @@ def test_asd_never_resolves_overlap_or_missing_anchor(monkeypatch):
     faces.set_asd_stream("current")
     faces.add(_asd_faces([0.9] * 25, ts=100.24))
     assert gate.frame(BOTH, bot_speaking=False, t=100.24, asd_stream_id="current") is U
+    assert gate.last_evidence_detail["probability"] == pytest.approx(0.9)
     gate, faces = _vision_gate(vision_asd=True)
     faces.set_asd_stream("current")
     faces.add(_asd_faces([0.9] * 25, ts=100.24))
@@ -578,7 +579,7 @@ def test_overlap_while_the_customers_mouth_is_still_is_rejected():
     # 2026-09-28 live leak: the customer stopped, the video kept talking,
     # and overlap hysteresis kept those words UNCERTAIN, so they were acted on.
     assert gate.frame(BOTH, bot_speaking=False, t=100.1) is Verdict.REJECT
-    assert gate.overlap
+    assert gate.overlap and gate.last_evidence_detail["mouth"] == 0.05
 
 
 def _mouth_stream(faces, start, values, track=2, dist=0.7):

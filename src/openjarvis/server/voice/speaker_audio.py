@@ -217,6 +217,12 @@ BOT_TAIL_SECS = 0.3
 _MAX_QUEUED_CHUNKS = 2
 
 
+def _dbfs(audio: np.ndarray) -> float:
+    """RMS level, to tell in logs whether TSE kept or dropped the voice."""
+    rms = float(np.sqrt(np.mean(np.square(audio)))) if len(audio) else 0.0
+    return 20 * math.log10(max(rms, 1e-6))
+
+
 class SpeakerAudioProcessor(FrameProcessor):
     """Diarize the customer mic off the event loop; emit per-frame verdicts.
 
@@ -426,6 +432,7 @@ class SpeakerAudioProcessor(FrameProcessor):
                         self._separator is not None
                         and verdict is Verdict.ACCEPT
                         and not self._gate.overlap
+                        and self._confirmed_customer()
                     ):
                         enrollment = pcm[i * row_samples : (i + 1) * row_samples]
                         self._add_enrollment(enrollment)
@@ -450,6 +457,14 @@ class SpeakerAudioProcessor(FrameProcessor):
                 if self._asd_enabled:
                     self._gate._asd_snapshot = None
                     self._gate.asd_row_reason = None
+
+    def _confirmed_customer(self) -> bool:
+        """Only ASD-confirmed speech enrolls when ASD runs: live 2026-09-29,
+        MAR-only ACCEPTs during a playing video enrolled the video's voice."""
+        if not getattr(self._gate, "vision_asd", False):
+            return True
+        detail = getattr(self._gate, "last_evidence_detail", None) or {}
+        return detail.get("source") == "asd"
 
     def _remember_verdict(
         self, start: float, verdict: Verdict | None, overlap: bool = False
@@ -578,11 +593,12 @@ class SpeakerAudioProcessor(FrameProcessor):
         except Exception:  # noqa: BLE001 - never lose the customer's audio
             logger.exception(f"{self}: separation failed; sending the mix")
             return None
+        target = np.asarray(out[len(context) :], np.float32)
         logger.info(
             f"{self}: separated {len(mixed) / SAMPLE_RATE:.2f} s of overlap "
-            f"in {time.monotonic() - started:.2f} s"
+            f"in {time.monotonic() - started:.2f} s "
+            f"(mix {_dbfs(mixed / 32768.0):.0f} dBFS -> {_dbfs(target):.0f} dBFS)"
         )
-        target = np.asarray(out[len(context) :], np.float32)
         return (np.clip(target, -1.0, 1.0) * 32767).astype(np.int16)
 
     async def drain(self) -> None:

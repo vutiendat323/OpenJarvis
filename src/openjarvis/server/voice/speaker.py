@@ -366,6 +366,7 @@ class AudioOnlyGate:
                 "stream_id": asd_stream_id,
                 "track_id": anchor,
                 "probability": None,
+                "mouth": mouth,
                 "fallback_reason": "asd_disabled"
                 if not self.vision_asd
                 else "asd_unavailable",
@@ -378,14 +379,17 @@ class AudioOnlyGate:
                 # still the other voice is all there is: live 2026-09-28,
                 # hysteresis kept a video's words UNCERTAIN and they were
                 # acted on.
-                if (
-                    anchor is not None
-                    and mouth is not None
-                    and mouth < self._mouth_active
-                    and not self._asd_high(anchor, t, asd_stream_id)
-                ):
-                    return Verdict.REJECT
-                return Verdict.UNCERTAIN
+                if anchor is None or mouth is None or mouth >= self._mouth_active:
+                    return Verdict.UNCERTAIN
+                probability = (
+                    self._asd_probability(anchor, t, asd_stream_id)
+                    if self.vision_asd and asd_stream_id is not None
+                    else None
+                )
+                self.last_evidence_detail["probability"] = probability
+                if probability is not None and probability >= self._asd_accept:
+                    return Verdict.UNCERTAIN
+                return Verdict.REJECT
             if self.vision_asd and asd_stream_id is not None:
                 probability = self._asd_probability(anchor, t, asd_stream_id)
                 if probability is not None:
@@ -432,12 +436,6 @@ class AudioOnlyGate:
         return (self._asd_snapshot or self._faces).active_speaker(
             anchor, t - 0.08, t, stream_id=stream_id, now=time.time()
         )
-
-    def _asd_high(self, anchor: int, t: float, stream_id: str | None) -> bool:
-        if not self.vision_asd or stream_id is None:
-            return False
-        probability = self._asd_probability(anchor, t, stream_id)
-        return probability is not None and probability >= self._asd_accept
 
 
 class FaceTrackBuffer:
