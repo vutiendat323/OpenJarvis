@@ -232,6 +232,11 @@ stt_mask_delay_secs = 0.7
 # scripts/voice_tse_export.py (~0.7 GB VRAM). Experimental: overlap stays
 # UNCERTAIN either way.
 separator = "tse"
+# Lock one customer per kiosk session (spec 2026-09-30): Light-ASD confirms a
+# face and a diarizer slot together, a TitaNet voiceprint follows them when
+# they look away, and nobody else's speech reaches STT, opens a turn or
+# barges in. Thresholds are starting values, tuned from live-trial logs.
+identity = "fusion"
 
 [tools.mcp]
 enabled = true

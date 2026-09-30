@@ -787,3 +787,70 @@ async def test_after_the_lock_three_accepts_barge_in():
         await strategy.process_frame(_locked_frame(Verdict.ACCEPT))
     assert events[-1] == "start:True"
     assert tracker.source_counts() == {"asd": 3}
+
+
+_FUSION_SPEAKER = SpeakerSettings(
+    enabled=True, diarizer="sortformer", vision_faces=True, vision_asd=True,
+    identity="fusion",
+)
+
+
+def _built_speaker_processor(speaker, **extra):
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    from openjarvis.server.voice.pipeline import build_voice_pipeline
+    from openjarvis.server.voice.speaker import FaceTrackBuffer
+
+    stt = FrameProcessor()
+    build_voice_pipeline(
+        connection=MagicMock(), binding=MagicMock(), renderer=MagicMock(), stt=stt,
+        speaker=speaker, diarizer=MagicMock(chunk_samples=3840, frame_secs=0.08),
+        faces=FaceTrackBuffer(), **extra,
+    )
+    return stt._prev
+
+
+def test_fusion_identity_builds_a_fusion_gate_on_the_kiosk_fsm(monkeypatch):
+    import openjarvis.kiosk.runtime as runtime
+    from openjarvis.server.voice.speaker_embedding import BotVoiceprint
+    from openjarvis.server.voice.speaker_identity import FusionGate
+
+    embedder = MagicMock(disabled=False)  # a bare MagicMock's .disabled is truthy
+    processor = _built_speaker_processor(
+        _FUSION_SPEAKER, embedder=embedder, bot_voiceprint=BotVoiceprint()
+    )
+    gate = processor._gate
+    assert isinstance(gate, FusionGate)
+    monkeypatch.setattr(runtime, "_current_state", "active")
+    assert gate._fsm_state() == "active"
+    assert processor._embeddings is not None
+    assert processor._tracker is not None
+
+
+def test_identity_none_keeps_the_audio_only_gate():
+    from openjarvis.server.voice.speaker import AudioOnlyGate
+    from openjarvis.server.voice.speaker_identity import FusionGate
+
+    speaker = SpeakerSettings(enabled=True, diarizer="sortformer", vision_faces=True,
+                              vision_asd=True)
+    gate = _built_speaker_processor(speaker, embedder=MagicMock())._gate
+    assert isinstance(gate, AudioOnlyGate) and not isinstance(gate, FusionGate)
+
+
+@pytest.mark.anyio
+async def test_embedder_load_failure_leaves_fusion_without_voiceprints(monkeypatch):
+    import openjarvis.server.voice.routes as routes
+
+    monkeypatch.setattr(routes, "load_speaker_settings", lambda: _FUSION_SPEAKER)
+    monkeypatch.setattr(routes, "_EMBEDDER", None)
+    monkeypatch.setattr(routes, "_EMBEDDER_FAILED", False)
+    calls = []
+
+    def boom(model_name):
+        calls.append(model_name)
+        raise RuntimeError("no NGC access")
+
+    monkeypatch.setattr(routes, "TitaNetEmbedder", boom)
+    assert await routes._embedder() is None
+    assert await routes._embedder() is None
+    assert calls == ["titanet_small"]

@@ -51,6 +51,8 @@ def build_voice_pipeline(
     faces: Any | None = None,
     separator: Any | None = None,
     vision_audio: Any | None = None,
+    embedder: Any | None = None,
+    bot_voiceprint: Any | None = None,
 ) -> Any:
     """Wire transport, VAD, STT, Agent, and voice into one runnable worker.
 
@@ -58,6 +60,8 @@ def build_voice_pipeline(
     ``diarizer`` is a loaded speaker diarizer, used only while the gate is on.
     ``faces`` is Vision's face-track buffer, used when ``vision_faces`` is on.
     ``separator`` is a loaded target-speaker extractor, used with ``stt_mask``.
+    ``embedder`` is the speaker embedder for ``identity = "fusion"``;
+    ``bot_voiceprint`` is the process's ``BotVoiceprint``.
     Returns the worker and the shared context, which the caller reads on
     teardown to write the conversation to the Chat thread.
     """
@@ -130,11 +134,30 @@ def build_voice_pipeline(
         stt_delay = 0.0
         if speaker.stt_mask and hasattr(stt, "enable_masked_feed"):
             stt_delay = speaker.stt_mask_delay_secs
+        fusion = speaker.identity == "fusion" and faces is not None
+        if fusion:
+            from openjarvis.kiosk.runtime import current_state
+            from openjarvis.server.voice.speaker_identity import FusionGate
+
+            gate = FusionGate(
+                speaker,
+                faces,
+                fsm_state=current_state,
+                bot_voiceprint=(
+                    (lambda: bot_voiceprint.embedding)
+                    if bot_voiceprint is not None
+                    else (lambda: None)
+                ),
+            )
+        else:
+            gate = AudioOnlyGate(speaker, faces=faces if speaker.vision_faces else None)
         speaker_audio = SpeakerAudioProcessor(
             diarizer=diarizer,
             stt_delay_secs=stt_delay,
-            gate=AudioOnlyGate(speaker, faces=faces if speaker.vision_faces else None),
+            gate=gate,
             separator=separator,
+            embedder=embedder if fusion else None,
+            tracker=tracker,
             **({"vision_audio": vision_audio} if vision_audio is not None else {}),
         )
         if stt_delay:
@@ -192,6 +215,16 @@ def build_voice_pipeline(
         ),
         realtime_service_mode=False,
     )
+    on_bot_audio = None
+    if (
+        speaker.identity == "fusion"
+        and embedder is not None
+        and bot_voiceprint is not None
+        and bot_voiceprint.embedding is None
+    ):
+        from openjarvis.server.voice.speaker_embedding import bot_audio_sink
+
+        on_bot_audio = bot_audio_sink(embedder, bot_voiceprint)
     pipeline = Pipeline(
         [
             transport.input(),
@@ -200,7 +233,9 @@ def build_voice_pipeline(
             stt,
             user_aggregator,
             llm,
-            VieNeuTTSService(renderer, sample_rate=VIENEU_SAMPLE_RATE_HZ),
+            VieNeuTTSService(
+                renderer, sample_rate=VIENEU_SAMPLE_RATE_HZ, on_audio=on_bot_audio
+            ),
             transport.output(),
             assistant_aggregator,
         ]

@@ -26,6 +26,7 @@ from openjarvis.server.voice.pipeline import (
     claim_voice_lease,
 )
 from openjarvis.server.voice.speaker import load_speaker_settings
+from openjarvis.server.voice.speaker_embedding import BotVoiceprint, TitaNetEmbedder
 from openjarvis.server.voice.speaker_vision import VisionAudioBridge
 
 logger = logging.getLogger(__name__)
@@ -283,10 +284,39 @@ async def _separator() -> Any | None:
     return _SEPARATOR
 
 
+_EMBEDDER: Any | None = None
+_EMBEDDER_FAILED = False
+_EMBEDDER_LOCK = asyncio.Lock()
+# The bot's own voice: one per process, filled from VieNeu's first 3 s.
+_BOT_VOICEPRINT = BotVoiceprint()
+
+
+async def _embedder() -> Any | None:
+    """The process's speaker embedder for fusion, or None to run without
+    voiceprints. Loaded once; a failure is logged once and remembered."""
+    global _EMBEDDER, _EMBEDDER_FAILED
+    settings = load_speaker_settings()
+    if settings.identity != "fusion":
+        return None
+    async with _EMBEDDER_LOCK:
+        if _EMBEDDER is None and not _EMBEDDER_FAILED:
+            try:
+                _EMBEDDER = await asyncio.to_thread(
+                    TitaNetEmbedder, settings.embedder_model
+                )
+            except Exception:  # noqa: BLE001 - optional capability
+                _EMBEDDER_FAILED = True
+                logger.exception(
+                    "speaker embedder unavailable; fusion runs without voiceprints"
+                )
+    return _EMBEDDER
+
+
 async def warm_speaker_models() -> None:
     """Load the speaker models at startup so the first customer does not wait."""
     await _diarizer()
     await _separator()
+    await _embedder()
 
 
 async def _renderer() -> Any:
@@ -494,6 +524,8 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
                 diarizer=diarizer,
                 faces=faces,
                 separator=await _separator(),
+                embedder=await _embedder(),
+                bot_voiceprint=_BOT_VOICEPRINT,
                 **extra,
             )
             request.app.state.pipecat_voice_context = context

@@ -620,3 +620,28 @@ async def test_a_reply_after_the_bot_finished_interrupts_nothing():
     assert await _frames_after_reply(bot_speaking_before=False) == [
         "LLMFullResponseStartFrame"
     ]
+
+
+@pytest.mark.anyio
+async def test_vieneu_hands_each_rendered_chunk_to_on_audio():
+    class _Chunk:
+        audio = b"\x01\x00" * 480
+        sample_rate_hz = 48_000
+        channels = 1
+
+    class _Renderer:
+        async def stream_tts(self, text):
+            yield _Chunk()
+            yield _Chunk()
+
+    seen = []
+    service = VieNeuTTSService(
+        _Renderer(),
+        sample_rate=48_000,
+        on_audio=lambda audio, rate, channels: seen.append(
+            (len(audio), rate, channels)
+        ),
+    )
+    frames = [frame async for frame in service.run_tts("xin chào", "ctx-1")]
+    assert len(frames) == 2
+    assert seen == [(960, 48_000, 1), (960, 48_000, 1)]

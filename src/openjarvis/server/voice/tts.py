@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
 from pipecat.frames.frames import Frame, TTSAudioRawFrame
@@ -18,7 +18,14 @@ class VieNeuTTSService(TTSService):
     language argument.
     """
 
-    def __init__(self, renderer: Any, *, sample_rate: int, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        renderer: Any,
+        *,
+        sample_rate: int,
+        on_audio: Callable[[bytes, int, int], None] | None = None,
+        **kwargs: Any,
+    ) -> None:
         # None, not unset: the artifact fixes the model, and one voice serves
         # both languages, so there is nothing to choose. Left NOT_GIVEN, the
         # base class logs an ERROR for each field on every session.
@@ -36,6 +43,7 @@ class VieNeuTTSService(TTSService):
             **kwargs,
         )
         self._renderer = renderer
+        self._on_audio = on_audio
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         is_current = frame.metadata.pop("openjarvis_is_current", None)
@@ -46,6 +54,9 @@ class VieNeuTTSService(TTSService):
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
         """Yield each rendered chunk as soon as it exists."""
         async for chunk in self._renderer.stream_tts(text):
+            if self._on_audio is not None:
+                # The bot's clean voice, for its voiceprint (fusion echo check).
+                self._on_audio(chunk.audio, chunk.sample_rate_hz, chunk.channels)
             # The chunk's own rate, not self.sample_rate: that one is resolved
             # from the pipeline at StartFrame and may differ from what VieNeu
             # actually rendered. Declaring the true rate is what lets the
