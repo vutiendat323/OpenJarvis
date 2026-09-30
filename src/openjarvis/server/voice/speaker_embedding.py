@@ -115,19 +115,33 @@ class EmbeddingWorker:
     async def _run(self, job: EmbeddingJob) -> None:
         try:
             started = time.monotonic()
-            embedding = await asyncio.get_running_loop().run_in_executor(
-                self._executor, self._embedder.embed, job.pcm
-            )
+            try:
+                embedding = await asyncio.get_running_loop().run_in_executor(
+                    self._executor, self._embedder.embed, job.pcm
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - fusion runs on without voiceprints
+                self.failed = True
+                self._embedder.disabled = True
+                self.clear()
+                logger.exception(
+                    "speaker embedder failed; fusion runs without voiceprints"
+                )
+                return
             elapsed = (time.monotonic() - started) * 1000.0
             self.elapsed_ms.append(elapsed)
-            self._on_result(job, embedding, elapsed)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - fusion runs on without voiceprints
-            self.failed = True
-            self._embedder.disabled = True
-            self.clear()
-            logger.exception("speaker embedder failed; fusion runs without voiceprints")
+            vector = np.asarray(embedding, dtype=np.float32)
+            norm = float(np.linalg.norm(vector))
+            if not np.isfinite(vector).all() or norm == 0.0:
+                logger.warning(
+                    f"speaker embedding for slot {job.slot} is not usable; dropped"
+                )
+                return
+            try:
+                self._on_result(job, embedding, elapsed)
+            except Exception:  # noqa: BLE001 - a consumer bug is not the embedder's
+                logger.exception("speaker embedding consumer failed; result dropped")
         finally:
             self._task = None
             if not self.failed:

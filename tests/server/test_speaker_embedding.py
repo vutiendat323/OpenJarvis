@@ -126,3 +126,50 @@ def test_bot_audio_sink_embeds_the_bot_once():
     assert embedder.calls == [48000]
     assert bot.embedding is not None
     assert np.linalg.norm(bot.embedding) == pytest.approx(1.0)
+
+
+@pytest.mark.anyio
+async def test_a_consumer_error_drops_the_result_but_keeps_the_worker():
+    embedder = _Embedder()
+    delivered = []
+
+    def on_result(job, emb, ms):
+        if not delivered and job.slot == 0:
+            delivered.append(None)
+            raise ValueError("consumer bug")
+        delivered.append(job)
+
+    worker = EmbeddingWorker(embedder, on_result,
+                             executor=ThreadPoolExecutor(max_workers=1))
+    worker.submit(_job(0, 1.0))
+    await _eventually(lambda: len(embedder.calls) == 1 and worker._task is None)
+    assert worker.failed is False
+    assert getattr(embedder, "disabled", False) is False
+    worker.submit(_job(1, 1.1))
+    await _eventually(lambda: len(delivered) == 2)
+    assert delivered[1].slot == 1
+    assert worker.failed is False
+    await worker.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("bad", [np.array([np.nan, 0, 0, 0], np.float32),
+                                 np.zeros(4, np.float32)])
+async def test_a_non_finite_embedding_is_dropped_not_a_failure(bad):
+    class _Flaky(_Embedder):
+        def embed(self, pcm):
+            super().embed(pcm)
+            return bad if len(self.calls) == 1 else np.ones(4, np.float32)
+
+    embedder = _Flaky()
+    results = []
+    worker = EmbeddingWorker(embedder, lambda job, emb, ms: results.append(job),
+                             executor=ThreadPoolExecutor(max_workers=1))
+    worker.submit(_job(0, 1.0))
+    await _eventually(lambda: len(embedder.calls) == 1 and worker._task is None)
+    assert results == [] and worker.failed is False
+    assert getattr(embedder, "disabled", False) is False
+    worker.submit(_job(1, 1.1))
+    await _eventually(lambda: len(results) == 1)
+    assert results[0].slot == 1 and worker.failed is False
+    await worker.close()
