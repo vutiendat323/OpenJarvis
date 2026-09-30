@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time as _time
+
 import pytest
 
 from openjarvis.server.voice.speaker import (
@@ -770,3 +772,77 @@ def test_kiosk_state_accessor_reads_the_fsm(monkeypatch):
 
     monkeypatch.setattr(runtime, "_current_state", "active")
     assert runtime.current_state() == "active"
+
+
+def _window(stream="s", track=7, t0=None, p=0.9):
+    t0 = _time.time() - 0.9 if t0 is None else t0
+    return {
+        "stream_id": stream,
+        "track_id": track,
+        "t0": t0,
+        "frame_secs": 0.04,
+        "probabilities": [p] * 25,
+    }
+
+
+def _faces_event(ts, *tracks, asd=None):
+    rows = []
+    for track in tracks:
+        row = {"track_id": track, "distance_m": 0.8, "mouth_activity": 0.2}
+        if asd is not None and track == asd["track_id"]:
+            row["asd"] = asd
+        rows.append(row)
+    return {"event": "faces", "ts": ts, "tracks": rows}
+
+
+def test_pushed_asd_is_read_and_faces_asd_ignored():
+    now = _time.time()
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("s")
+    faces.use_pushed_asd(True)
+    faces.add(_faces_event(now, 7, asd=_window(p=0.1)))  # a v1 field: ignored
+    assert faces.active_speaker(7, now - 0.08, now, stream_id="s", now=now) is None
+    faces.add_asd(_window(p=0.9))
+    assert faces.active_speaker(
+        7, now - 0.08, now, stream_id="s", now=now
+    ) == pytest.approx(0.9)
+
+
+def test_pushed_asd_for_another_stream_is_dropped():
+    now = _time.time()
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("s")
+    faces.use_pushed_asd(True)
+    faces.add_asd(_window(stream="old"))
+    assert faces.active_speaker(7, now - 0.08, now, stream_id="s", now=now) is None
+
+
+def test_v1_mode_still_reads_asd_from_faces_events():
+    now = _time.time()
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("s")
+    faces.add(_faces_event(now, 7, asd=_window(p=0.8)))
+    assert faces.active_speaker(
+        7, now - 0.08, now, stream_id="s", now=now
+    ) == pytest.approx(0.8)
+
+
+def test_snapshot_without_asd_drops_pushed_windows():
+    now = _time.time()
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("s")
+    faces.use_pushed_asd(True)
+    faces.add_asd(_window())
+    frozen = faces.snapshot(include_asd=False)
+    assert frozen.active_speaker(7, now - 0.08, now, stream_id="s", now=now) is None
+    assert faces.snapshot().active_speaker(7, now - 0.08, now, stream_id="s", now=now)
+
+
+def test_tracks_at_and_present():
+    faces = FaceTrackBuffer()
+    faces.add(_faces_event(100.0, 7, 9))
+    faces.add(_faces_event(100.5, 9))
+    assert [t["track_id"] for t in faces.tracks_at(100.1)] == [7, 9]
+    assert faces.present(7, 99.8, 100.2)
+    assert not faces.present(7, 100.3, 100.7)
+    assert FaceTrackBuffer().tracks_at(1.0) == []

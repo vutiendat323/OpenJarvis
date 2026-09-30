@@ -482,11 +482,15 @@ class FaceTrackBuffer:
         self._events: deque[dict] = deque()
         self._lock = threading.Lock()
         self._asd_stream: str | None = None
+        # Protocol v2: ASD windows pushed by Vision as their own events.
+        self._asd_windows: deque[dict] = deque()
+        self._asd_pushed = False
 
     def set_asd_stream(self, stream_id: str | None) -> None:
         """Invalidate ASD scores while retaining face and mouth history."""
         with self._lock:
             self._asd_stream = stream_id
+            self._asd_windows.clear()
             for event in self._events:
                 for track in event.get("tracks", ()):
                     track.pop("asd", None)
@@ -495,13 +499,55 @@ class FaceTrackBuffer:
         with self._lock:
             return stream_id == self._asd_stream
 
+    def use_pushed_asd(self, pushed: bool) -> None:
+        """v2: read ASD from pushed windows and ignore the faces-event field."""
+        with self._lock:
+            self._asd_pushed = pushed
+            self._asd_windows.clear()
+
+    def add_asd(self, window: dict) -> None:
+        """One pushed ASD window for the current stream (older ones pruned)."""
+        t0 = window.get("t0")
+        if (
+            isinstance(t0, bool)
+            or not isinstance(t0, (int, float))
+            or not math.isfinite(t0)
+        ):
+            return
+        with self._lock:
+            if window.get("stream_id") != self._asd_stream:
+                return
+            self._asd_windows.append(dict(window))
+            while self._asd_windows and self._asd_windows[0]["t0"] < t0 - self._history:
+                self._asd_windows.popleft()
+
+    def tracks_at(self, t: float) -> list[dict]:
+        """The tracks of the faces event nearest to *t*."""
+        with self._lock:
+            if not self._events:
+                return []
+            event = min(self._events, key=lambda e: abs(e["ts"] - t))
+            return [dict(f) for f in event.get("tracks", ())]
+
+    def present(self, track_id: int, t0: float, t1: float) -> bool:
+        with self._lock:
+            return any(
+                f.get("track_id") == track_id
+                for e in self._events
+                if t0 <= e["ts"] <= t1
+                for f in e.get("tracks", ())
+            )
+
     def snapshot(self, *, include_asd: bool = True) -> FaceTrackBuffer:
         """Freeze current evidence before yielding row verdicts downstream."""
         snapshot = FaceTrackBuffer(self._history)
         with self._lock:
             snapshot._events = copy.deepcopy(self._events)
             snapshot._asd_stream = self._asd_stream
+            snapshot._asd_windows = copy.deepcopy(self._asd_windows)
+            snapshot._asd_pushed = self._asd_pushed
         if not include_asd:
+            snapshot._asd_windows.clear()
             for event in snapshot._events:
                 for track in event.get("tracks", ()):
                     track.pop("asd", None)
@@ -554,12 +600,17 @@ class FaceTrackBuffer:
         with self._lock:
             if stream_id != self._asd_stream:
                 return None
-            windows = [
-                dict(f["asd"])
-                for event in self._events
-                for f in event.get("tracks", ())
-                if f.get("track_id") == track_id and isinstance(f.get("asd"), dict)
-            ]
+            if self._asd_pushed:
+                windows = [
+                    dict(w) for w in self._asd_windows if w.get("track_id") == track_id
+                ]
+            else:
+                windows = [
+                    dict(f["asd"])
+                    for event in self._events
+                    for f in event.get("tracks", ())
+                    if f.get("track_id") == track_id and isinstance(f.get("asd"), dict)
+                ]
         valid: list[tuple[float, Sequence[float]]] = []
         for window in windows:
             if not isinstance(window, dict) or window.get("stream_id") != stream_id:
