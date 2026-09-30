@@ -174,6 +174,7 @@ def test_fsm_flap_releases_then_relocks_on_fresh_evidence():
 
 def test_a_closer_person_never_steals_the_lock():
     lock = _locked()
+    lock.voiceprint.enroll(E0, 2.0)  # ready, so only the absence gate can block
     for i in range(12):
         lock.observe_row(
             100.5 + i * 0.08, [0], anchor=9, anchor_asd_accept=True, target_visible=True
@@ -186,13 +187,13 @@ def test_slot_rebind_by_asd_needs_solo_rows():
     for i in range(6):
         lock.observe_row(
             100.5 + i * 0.08,
-            [0, 3],
+            [3, 4],
             anchor=7,
             anchor_asd_accept=True,
             target_visible=True,
             target_asd_accept=True,
         )
-    assert 3 not in lock.target_slots
+    assert not {3, 4} & lock.target_slots
     for i in range(6):
         lock.observe_row(
             101.0 + i * 0.08,
@@ -283,3 +284,23 @@ def test_voice_ok_needs_a_ready_voiceprint_and_a_match():
     assert lock.voice_ok(0)
     lock.slots[0] = SlotIdentity(voice_sim=0.5)
     assert not lock.voice_ok(0)
+
+
+def test_asd_never_promotes_a_voice_rejected_slot():
+    lock = _locked()
+    lock.observe_embedding(_job(lock, seconds=2.0), E0)
+    lock.observe_embedding(
+        _job(lock, slot=3, end=102.0, confirmed=False),
+        np.array([0.0, 0.0, 1.0, 0.0], np.float32),
+    )
+    for i in range(8):
+        lock.observe_row(
+            101.0 + i * 0.08,
+            [3],
+            anchor=7,
+            anchor_asd_accept=True,
+            target_visible=True,
+            target_asd_accept=True,
+        )
+    assert 3 not in lock.target_slots
+    assert lock.label(3) is Label.OTHER

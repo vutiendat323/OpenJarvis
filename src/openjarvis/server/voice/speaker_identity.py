@@ -269,6 +269,7 @@ class TargetLock:
             target_asd_accept
             and len(voices) == 1
             and voices[0] not in self.target_slots
+            and not self._voice_rejected(voices[0])
         ):
             slot = voices[0]
             if _within(self._slot_asd.setdefault(slot, deque()), t) >= need:
@@ -375,17 +376,21 @@ class TargetLock:
             return Label.BOT
         if slot in self.target_slots:
             return Label.TARGET
-        if (
-            self.voice_ready
-            and ident is not None
-            and ident.voice_sim is not None
-            and ident.voice_sim < self._s.voice_reject
-        ):
+        if self._voice_rejected(slot):
             return Label.OTHER
         track = self.binder.track_of(slot)
         if self.locked and track is not None and track != self.target_track:
             return Label.OTHER
         return Label.UNKNOWN
+
+    def _voice_rejected(self, slot: int) -> bool:
+        ident = self.slots.get(slot)
+        return (
+            self.voice_ready
+            and ident is not None
+            and ident.voice_sim is not None
+            and ident.voice_sim < self._s.voice_reject
+        )
 
     def voice_ok(self, slot: int) -> bool:
         ident = self.slots.get(slot)
