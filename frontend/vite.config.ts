@@ -74,7 +74,8 @@ export default defineConfig({
       // ws: true on /api forwards the Local Voice Stream WebSocket upgrade.
       '/api': {
         target: resolveApiProxyTarget(),
-        changeOrigin: true,
+        // Keep Host aligned with the browser Origin for kiosk WebSocket checks.
+        changeOrigin: false,
         ws: true,
       },
     },
