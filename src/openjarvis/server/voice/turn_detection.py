@@ -41,6 +41,9 @@ class SpeakerVerdictFrame(SystemFrame):
     """The gate's verdict for one diarizer frame (80 ms) of speech."""
 
     verdict: Verdict = Verdict.UNCERTAIN
+    locked: bool = False  # a customer is locked (fusion)
+    overlap_target: bool = False  # the customer talks over another voice
+    source: str | None = None  # asd | mar | voice | audio
 
 
 class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):

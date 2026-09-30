@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time as _time
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -28,6 +29,11 @@ from openjarvis.server.voice.speaker import (
     Verdict,
 )
 from openjarvis.server.voice.speaker_audio import SpeakerAudioProcessor
+from openjarvis.server.voice.speaker_identity import (
+    EmbeddingJob,
+    FusionGate,
+    SlotIdentity,
+)
 from openjarvis.server.voice.speaker_vision import AudioSpan
 from openjarvis.server.voice.transcription import SttAudioFrame
 from openjarvis.server.voice.turn_detection import SpeakerVerdictFrame
@@ -914,3 +920,334 @@ def test_enrollment_keeps_the_latest_clean_speech():
 
     enroll = np.concatenate(processor._enroll)
     assert len(enroll) == FRAME * 2 and enroll[0] == pytest.approx(2000 / 32768)
+
+
+# ---------------------------------------------------------------------------
+# Fusion: locked-customer masking, segments for embeddings, ASD pin sync.
+# ---------------------------------------------------------------------------
+
+_FUSION = SpeakerSettings(enabled=True, diarizer="sortformer", vision_faces=True,
+                          vision_asd=True, identity="fusion")
+_ROW = 1280  # one 80 ms diarizer row
+
+
+def _fusion_gate(locked=True, faces=None, now=100.0):
+    gate = FusionGate(_FUSION, faces or FaceTrackBuffer(), fsm_state=lambda: "active")
+    if locked:
+        gate.lock.observe_fsm("active", now - 1.0)
+        for i in range(6):
+            gate.lock.observe_row(now - 0.45 + i * 0.08, [0], anchor=7,
+                                  anchor_asd_accept=True)
+    return gate
+
+
+def _fusion_processor(gate, **kwargs):
+    processor = SpeakerAudioProcessor(
+        diarizer=_FakeDiarizer([]), gate=gate,
+        executor=ThreadPoolExecutor(max_workers=1), stt_delay_secs=0.5, **kwargs,
+    )
+    pushed = []
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        if isinstance(frame, SttAudioFrame):
+            pushed.append(np.frombuffer(frame.audio, np.int16))
+
+    processor.push_frame = push
+    return processor, pushed
+
+
+def _unverdicted(processor, arrival, level=1000):
+    processor._stt_line.append((arrival, InputAudioRawFrame(
+        audio=(np.ones(FRAME, np.int16) * level).tobytes(),
+        sample_rate=16_000, num_channels=1)))
+
+
+@pytest.mark.anyio
+async def test_after_the_lock_audio_without_a_verdict_is_silenced():
+    processor, pushed = _fusion_processor(_fusion_gate())
+    _line(processor, [(1000, Verdict.ACCEPT, False)])
+    _unverdicted(processor, 100.5)
+    await processor._release_stt(200.0)
+    assert [int(p[0]) for p in pushed] == [1000, 0]
+    assert processor.stt_masked_no_verdict == 1
+
+
+@pytest.mark.anyio
+async def test_before_the_lock_audio_without_a_verdict_still_passes():
+    processor, pushed = _fusion_processor(_fusion_gate(locked=False))
+    _line(processor, [(1000, Verdict.ACCEPT, False)])
+    _unverdicted(processor, 100.5)
+    await processor._release_stt(200.0)
+    assert [int(p[0]) for p in pushed] == [1000, 1000]
+
+
+@pytest.mark.anyio
+async def test_masked_rows_reach_stt_as_silence():
+    processor, pushed = _fusion_processor(_fusion_gate())
+    processor._remember_verdict(100.0, Verdict.UNCERTAIN, False, mask=True)
+    _unverdicted(processor, 100.08)
+    await processor._release_stt(200.0)
+    assert [int(p[0]) for p in pushed] == [0]
+
+
+@pytest.mark.parametrize("locked, overlap, visible, separator, masked", [
+    (True, False, False, False, True),    # unconfirmed after the lock
+    (True, True, True, False, False),     # target overlap, visibly speaking: the mix
+    (True, True, False, True, False),     # target overlap, TSE enrolled
+    (True, True, False, False, True),     # target overlap, no TSE, face still
+    (False, False, False, False, False),  # before the lock: unchanged
+])
+def test_mask_row_policy(locked, overlap, visible, separator, masked):
+    gate = _fusion_gate(locked=locked)
+    kwargs = {}
+    if separator:
+        kwargs = {"separator": _FakeSeparator(),
+                  "separator_executor": ThreadPoolExecutor(max_workers=1)}
+    processor, _ = _fusion_processor(gate, **kwargs)
+    if separator:
+        processor._add_enrollment(np.ones(3 * 16000, np.int16))
+    gate.target_overlap, gate.target_speaking_visibly = overlap, visible
+    assert processor._mask_row(Verdict.UNCERTAIN) is masked
+    assert processor._mask_row(Verdict.ACCEPT) is False
+
+
+def test_after_the_lock_only_asd_confirmed_target_rows_enroll_tse():
+    gate = _fusion_gate()
+    processor, _ = _fusion_processor(
+        gate, separator=_FakeSeparator(),
+        separator_executor=ThreadPoolExecutor(max_workers=1),
+    )
+    gate.last_source, gate.row_is_target = "asd", True
+    assert processor._confirmed_customer()
+    gate.last_source = "mar"
+    assert not processor._confirmed_customer()
+    gate.last_source, gate.row_is_target = "asd", False
+    assert not processor._confirmed_customer()
+
+
+class _Recorder:
+    def __init__(self):
+        self.jobs = []
+        self.cleared = 0
+
+    def submit(self, job):
+        self.jobs.append(job)
+
+    def clear(self):
+        self.cleared += 1
+
+
+def _row_pcm():
+    return np.ones(_ROW, np.int16)
+
+
+def test_solo_rows_become_one_target_confirmed_segment():
+    gate = _fusion_gate()
+    processor, _ = _fusion_processor(gate)
+    processor._embeddings = recorder = _Recorder()
+    for i in range(13):
+        gate.row_voices, gate.row_asd_track = [0], 7
+        processor._after_fusion_row(_row_pcm(), 101.0 + i * 0.08, False)
+    (job,) = recorder.jobs
+    assert job.slot == 0 and job.target_confirmed and job.seconds >= 1.0
+    assert job.epoch == gate.lock.epoch and job.segment_end == pytest.approx(101.96)
+
+
+def test_bot_audio_and_overlap_rows_are_never_collected():
+    gate = _fusion_gate()
+    processor, _ = _fusion_processor(gate)
+    processor._embeddings = recorder = _Recorder()
+    for i in range(20):
+        gate.row_voices = [0]
+        processor._after_fusion_row(_row_pcm(), 101.0 + i * 0.08, True)
+        gate.row_voices = [0, 1]
+        processor._after_fusion_row(_row_pcm(), 101.0 + i * 0.08, False)
+    assert recorder.jobs == []
+
+
+def test_mostly_unconfirmed_rows_do_not_enroll():
+    gate = _fusion_gate()
+    processor, _ = _fusion_processor(gate)
+    processor._embeddings = recorder = _Recorder()
+    for i in range(13):
+        gate.row_voices, gate.row_asd_track = [0], (7 if i < 5 else None)
+        processor._after_fusion_row(_row_pcm(), 101.0 + i * 0.08, False)
+    assert recorder.jobs[0].target_confirmed is False
+
+
+def test_a_new_epoch_drops_collected_audio():
+    gate = _fusion_gate()
+    processor, _ = _fusion_processor(gate)
+    processor._embeddings = recorder = _Recorder()
+    gate.row_voices = [0]
+    processor._after_fusion_row(_row_pcm(), 101.0, False)
+    gate.lock.observe_fsm("cleanup", 101.1)
+    processor._after_fusion_row(_row_pcm(), 101.2, False)
+    assert recorder.cleared == 1
+    assert processor._segments[0].seconds == pytest.approx(0.08)
+
+
+def test_pin_follows_the_lock_once_per_change():
+    class Bridge:
+        def __init__(self):
+            self.pins = []
+
+        def pin(self, track):
+            self.pins.append(track)
+
+    gate = _fusion_gate()
+    bridge = Bridge()
+    processor, _ = _fusion_processor(gate, vision_audio=bridge)
+    processor._after_fusion_row(_row_pcm(), 100.0, False)
+    processor._after_fusion_row(_row_pcm(), 100.1, False)
+    processor._after_fusion_row(_row_pcm(), 101.5, False)  # target unseen > 0.5 s
+    assert bridge.pins == [7, None]
+
+
+def test_embedding_results_update_the_lock_and_stale_ones_do_not():
+    gate = _fusion_gate()
+    processor, _ = _fusion_processor(gate)
+    job = EmbeddingJob(epoch=gate.lock.epoch, slot=0, segment_end=101.0, seconds=2.0,
+                       pcm=np.zeros(16000, np.int16), target_confirmed=True)
+    processor._on_embedding(job, np.ones(4, np.float32), 12.0)
+    assert gate.lock.voice_ready
+    gate.lock.observe_fsm("cleanup", 102.0)
+    processor._on_embedding(job, np.ones(4, np.float32), 12.0)
+    assert gate.lock.voiceprint.seconds == 0.0
+
+
+@pytest.mark.anyio
+async def test_without_an_embedder_rows_still_flow_and_nothing_is_submitted():
+    gate = _fusion_gate()
+    processor, _ = _fusion_processor(gate)
+    assert processor._embeddings is None
+    gate.row_voices = [0]
+    for i in range(20):
+        processor._after_fusion_row(_row_pcm(), 101.0 + i * 0.08, False)
+    assert processor._segments == {}
+
+
+class _OneChunkDiarizer:
+    """Returns all its rows for one chunk of that many 80 ms frames' audio."""
+
+    frame_secs = 0.08
+
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.chunk_samples = CHUNK * len(self.rows)
+        self.pushed = 0
+        self.resets = 0
+
+    def reset(self):
+        self.resets += 1
+
+    def push(self, pcm):
+        assert pcm.dtype == np.int16 and len(pcm) == self.chunk_samples
+        self.pushed += 1
+        return np.array(self.rows)
+
+
+@pytest.mark.anyio
+async def test_locked_customer_marks_an_unknown_voice_for_masking():
+    # All 12 rows arrive as one diarizer chunk, so the bounded chunk queue
+    # (_MAX_QUEUED_CHUNKS) never drops any of them. Per-frame audio levels
+    # cannot be matched to rows here; the mask decision per row is what this
+    # pins. The explicit-time tests above cover mask -> silent STT audio.
+    now = _time.time()
+    faces = FaceTrackBuffer()
+    for k in range(-2, 25):
+        faces.add({"event": "faces", "ts": now + k * 0.1, "tracks": [
+            {"track_id": 7, "distance_m": 0.8, "mouth_activity": 0.0}]})
+    gate = _fusion_gate(faces=faces, now=now)
+    gate.lock.voiceprint.enroll(np.ones(4, np.float32), 2.0)
+    gate.lock.slots[0] = SlotIdentity(voice_sim=0.9)
+    rows = [(0.9, 0.0, 0.0, 0.0)] * 6 + [(0.0, 0.0, 0.0, 0.9)] * 6
+    diarizer = _OneChunkDiarizer(rows)
+    assert diarizer.chunk_samples == CHUNK * 12
+    processor = SpeakerAudioProcessor(diarizer=diarizer, gate=gate,
+                                      executor=ThreadPoolExecutor(max_workers=1),
+                                      stt_delay_secs=0.05)
+    collector = await _run(processor, [_loud() for _ in range(12)],
+                           until=lambda: diarizer.pushed == 1)
+    assert collector.verdicts == [Verdict.ACCEPT] * 6 + [Verdict.UNCERTAIN] * 6
+    assert processor._masked_values == [False] * 6 + [True] * 6
+
+
+class _FrameCollector(_Collector):
+    def __init__(self):
+        super().__init__()
+        self.frames = []
+
+    async def process_frame(self, frame, direction):
+        if isinstance(frame, SpeakerVerdictFrame):
+            self.frames.append(frame)
+        await super().process_frame(frame, direction)
+
+
+def _voice_locked_gate():
+    """Locked on track 7 / slot 0, whose voice already matches the customer."""
+    now = _time.time()
+    faces = FaceTrackBuffer()
+    for k in range(-2, 25):
+        faces.add({"event": "faces", "ts": now + k * 0.1, "tracks": [
+            {"track_id": 7, "distance_m": 0.8, "mouth_activity": 0.0}]})
+    gate = _fusion_gate(faces=faces, now=now)
+    gate.lock.voiceprint.enroll(np.ones(4, np.float32), 2.0)
+    gate.lock.slots[0] = SlotIdentity(voice_sim=0.9)
+    return gate
+
+
+@pytest.mark.anyio
+async def test_verdict_frames_carry_the_lock_and_their_source():
+    gate = _voice_locked_gate()
+    diarizer = _FakeDiarizer([(0.9, 0.0, 0.0, 0.0)] * 2)
+    processor = SpeakerAudioProcessor(diarizer=diarizer, gate=gate,
+                                      executor=ThreadPoolExecutor(max_workers=1))
+    collector = _FrameCollector()
+    await _run(processor, [_loud(), _loud()], collector=collector,
+               until=lambda: len(collector.frames) == 2)
+    assert [(f.verdict, f.locked, f.overlap_target, f.source)
+            for f in collector.frames] == [(Verdict.ACCEPT, True, False, "voice")] * 2
+
+
+@pytest.mark.anyio
+async def test_a_fusion_bookkeeping_bug_does_not_stop_verdicts():
+    gate = _voice_locked_gate()
+
+    def broken():
+        raise RuntimeError("bookkeeping bug")
+
+    gate.lock.drain_events = broken
+    diarizer = _FakeDiarizer([(0.9, 0.0, 0.0, 0.0)] * 2)
+    processor = SpeakerAudioProcessor(diarizer=diarizer, gate=gate,
+                                      executor=ThreadPoolExecutor(max_workers=1))
+    collector = await _run(processor, [_loud(), _loud()],
+                           until=lambda: diarizer.pushed == 2)
+    assert collector.verdicts == [Verdict.ACCEPT] * 2
+    assert processor._fusion_row_errors == 2
+
+
+@pytest.mark.anyio
+async def test_segments_reach_the_embedder_and_enroll_the_voiceprint():
+    class Embedder:
+        def __init__(self):
+            self.calls = []
+
+        def embed(self, pcm):
+            self.calls.append(len(pcm))
+            return np.ones(4, np.float32)
+
+    gate = _fusion_gate()
+    embedder = Embedder()
+    processor, _ = _fusion_processor(gate, embedder=embedder)
+    for i in range(13):
+        gate.row_voices, gate.row_asd_track = [0], 7
+        processor._after_fusion_row(_row_pcm(), 101.0 + i * 0.08, False)
+    for _ in range(200):
+        if gate.lock.voiceprint.seconds:
+            break
+        await asyncio.sleep(0.01)
+    await processor._embeddings.close()
+    assert embedder.calls == [13 * _ROW]
+    assert gate.lock.voiceprint.seconds == pytest.approx(13 * 0.08)
+    assert gate.lock.slots[0].segment_end == pytest.approx(101.96)

@@ -13,7 +13,7 @@ import time
 from collections import deque
 from concurrent.futures import Executor, ThreadPoolExecutor
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 from loguru import logger
@@ -29,6 +29,8 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from openjarvis.server.voice.speaker import AudioOnlyGate, Verdict
+from openjarvis.server.voice.speaker_embedding import EmbeddingWorker, SpeakerEmbedder
+from openjarvis.server.voice.speaker_identity import EmbeddingJob, FusionGate
 from openjarvis.server.voice.speaker_vision import AudioSpan, VisionAudioBridge
 from openjarvis.server.voice.transcription import SttAudioFrame
 from openjarvis.server.voice.turn_detection import SpeakerVerdictFrame
@@ -215,6 +217,54 @@ SEPARATION_CONTEXT_SECS = 2.0
 # Room reverb keeps the bot audible briefly after playback ends.
 BOT_TAIL_SECS = 0.3
 _MAX_QUEUED_CHUNKS = 2
+# Fusion: a slot's solo speech is embedded in segments of embed_segment_secs,
+# keeping at most this much while it accumulates.
+SEGMENT_MAX_SECS = 3.0
+# A segment enrolls the customer's voiceprint only when this share of its rows
+# was ASD-confirmed on the locked face.
+TARGET_CONFIRMED_FRACTION = 0.8
+
+
+def _percentile(values, pct: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return round(ordered[min(len(ordered) - 1, int(len(ordered) * pct / 100))], 1)
+
+
+class _Segment:
+    """One slot's solo speech since its last embedding, bounded to 3 s."""
+
+    def __init__(self) -> None:
+        self.rows: deque[tuple[np.ndarray, int | None]] = deque()
+        self.end = 0.0
+
+    @property
+    def seconds(self) -> float:
+        return sum(len(pcm) for pcm, _ in self.rows) / SAMPLE_RATE
+
+    def add(self, pcm: np.ndarray, asd_track: int | None, t: float) -> None:
+        self.rows.append((pcm.copy(), asd_track))
+        self.end = t
+        while self.seconds > SEGMENT_MAX_SECS:
+            self.rows.popleft()
+
+    def job(self, slot: int, lock) -> EmbeddingJob:
+        tracks = [track for _, track in self.rows]
+        confirmed = (
+            lock.locked
+            and lock.target_track is not None
+            and sum(track == lock.target_track for track in tracks)
+            >= TARGET_CONFIRMED_FRACTION * len(tracks)
+        )
+        return EmbeddingJob(
+            epoch=lock.epoch,
+            slot=slot,
+            segment_end=self.end,
+            seconds=self.seconds,
+            pcm=np.concatenate([pcm for pcm, _ in self.rows]),
+            target_confirmed=confirmed,
+        )
 
 
 def _dbfs(audio: np.ndarray) -> float:
@@ -248,6 +298,8 @@ class SpeakerAudioProcessor(FrameProcessor):
         separator: Separator | None = None,
         separator_executor: Executor | None = None,
         vision_audio: VisionAudioBridge | None = None,
+        embedder: SpeakerEmbedder | None = None,
+        tracker: Any | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -284,6 +336,21 @@ class SpeakerAudioProcessor(FrameProcessor):
         self._worker: asyncio.Task | None = None
         self._bot_audible_until = 0.0
         self._warned_format = False
+        self._fusion = gate if isinstance(gate, FusionGate) else None
+        self._tracker = tracker
+        self._segments: dict[int, _Segment] = {}
+        self._epoch = self._fusion.lock.epoch if self._fusion is not None else 0
+        self._pinned: int | None = None
+        self._masked_values: list[bool] = []
+        self.stt_masked_no_verdict = 0
+        self._fusion_row_errors = 0
+        self._embeddings = (
+            EmbeddingWorker(embedder, self._on_embedding)
+            if self._fusion is not None
+            and embedder is not None
+            and not getattr(embedder, "disabled", False)
+            else None
+        )
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -427,7 +494,12 @@ class SpeakerAudioProcessor(FrameProcessor):
                     else:
                         verdict = self._gate.frame(row, bot_speaking=bot_speaking, t=t)
                     if self._stt_delay:
-                        self._remember_verdict(t - step, verdict, self._gate.overlap)
+                        self._remember_verdict(
+                            t - step,
+                            verdict,
+                            self._gate.overlap,
+                            mask=self._mask_row(verdict),
+                        )
                     if (
                         self._separator is not None
                         and verdict is Verdict.ACCEPT
@@ -436,6 +508,12 @@ class SpeakerAudioProcessor(FrameProcessor):
                     ):
                         enrollment = pcm[i * row_samples : (i + 1) * row_samples]
                         self._add_enrollment(enrollment)
+                    if self._fusion is not None:
+                        self._after_fusion_row(
+                            pcm[i * row_samples : (i + 1) * row_samples],
+                            t,
+                            bot_speaking,
+                        )
                     if verdict is not None:
                         evidence = (
                             getattr(self._gate, "last_evidence_detail", None)
@@ -452,7 +530,16 @@ class SpeakerAudioProcessor(FrameProcessor):
                             f"{self._gate.target}"
                         )
                     if verdict is not None:
-                        await self.push_frame(SpeakerVerdictFrame(verdict=verdict))
+                        fusion = self._fusion
+                        await self.push_frame(
+                            SpeakerVerdictFrame(
+                                verdict=verdict,
+                                locked=fusion is not None and fusion.locked,
+                                overlap_target=fusion is not None
+                                and fusion.target_overlap,
+                                source=fusion.last_source if fusion else None,
+                            )
+                        )
             finally:
                 if self._asd_enabled:
                     self._gate._asd_snapshot = None
@@ -461,20 +548,28 @@ class SpeakerAudioProcessor(FrameProcessor):
     def _confirmed_customer(self) -> bool:
         """Only ASD-confirmed speech enrolls when ASD runs: live 2026-09-29,
         MAR-only ACCEPTs during a playing video enrolled the video's voice."""
+        if self._fusion is not None and self._fusion.locked:
+            # Locked: only the customer's own slot, confirmed by ASD, enrolls TSE.
+            return self._fusion.last_source == "asd" and self._fusion.row_is_target
         if not getattr(self._gate, "vision_asd", False):
             return True
         detail = getattr(self._gate, "last_evidence_detail", None) or {}
         return detail.get("source") == "asd"
 
     def _remember_verdict(
-        self, start: float, verdict: Verdict | None, overlap: bool = False
+        self,
+        start: float,
+        verdict: Verdict | None,
+        overlap: bool = False,
+        mask: bool = False,
     ) -> None:
         self._verdict_starts.append(start)
         self._verdict_values.append(verdict)
         self._overlap_values.append(overlap)
+        self._masked_values.append(mask)
         if len(self._verdict_starts) > 512:  # ~40 s of frames
             del self._verdict_starts[:256], self._verdict_values[:256]
-            del self._overlap_values[:256]
+            del self._overlap_values[:256], self._masked_values[:256]
 
     def _frame_at(self, t: float) -> int | None:
         i = bisect.bisect_right(self._verdict_starts, t) - 1
@@ -483,14 +578,103 @@ class SpeakerAudioProcessor(FrameProcessor):
         return None
 
     def _silenced(self, t: float) -> bool:
-        """Rejected speech, or sound the diarizer heard no voice in.
+        """Rejected speech, sound the diarizer heard no voice in, or -- once a
+        customer is locked -- anything not confirmed as them.
 
         The 2026-09-26 live test: a quiet phone video tripped the VAD but not
         Sortformer, and Gemini transcribed it into turns with no speaker
-        evidence. Audio the diarizer has not reached yet still goes through.
+        evidence. Before a lock, audio the diarizer has not reached yet still
+        goes through; after it, audio with no verdict by release time is a
+        dropped diarizer chunk and stays out (fail closed).
         """
         i = self._frame_at(t)
-        return i is not None and self._verdict_values[i] in (Verdict.REJECT, None)
+        if i is None:
+            if self._fusion is not None and self._fusion.locked:
+                self.stt_masked_no_verdict += 1
+                return True
+            return False
+        return self._masked_values[i] or self._verdict_values[i] in (
+            Verdict.REJECT,
+            None,
+        )
+
+    def _mask_row(self, verdict: Verdict | None) -> bool:
+        """After the lock, UNCERTAIN speech stays out of STT, except the
+        customer talking over another voice when TSE can extract them or their
+        face visibly speaks."""
+        gate = self._fusion
+        if gate is None or not gate.locked or verdict is not Verdict.UNCERTAIN:
+            return False
+        if gate.target_overlap:
+            can_separate = (
+                self._separator is not None
+                and self._enrolled >= self._separator.enroll_samples
+            )
+            return not (can_separate or gate.target_speaking_visibly)
+        return True
+
+    def _after_fusion_row(
+        self, pcm_row: np.ndarray, t: float, bot_speaking: bool
+    ) -> None:
+        """Per row: log lock events, keep Vision's ASD on the customer, and
+        gather solo speech for embeddings.
+
+        Runs inside the ``_diarize`` task: a bug here must cost this
+        bookkeeping, never the verdicts that follow.
+        """
+        try:
+            self._fusion_bookkeeping(pcm_row, t, bot_speaking)
+        except Exception:  # noqa: BLE001 - verdicts keep flowing
+            self._fusion_row_errors += 1
+            if self._fusion_row_errors == 1:
+                logger.exception(f"{self}: speaker fusion bookkeeping failed")
+
+    def _fusion_bookkeeping(
+        self, pcm_row: np.ndarray, t: float, bot_speaking: bool
+    ) -> None:
+        gate = self._fusion
+        lock = gate.lock
+        if lock.epoch != self._epoch:
+            self._epoch = lock.epoch
+            self._segments.clear()
+            if self._embeddings is not None:
+                self._embeddings.clear()
+        for event in lock.drain_events():
+            logger.info(f"{self}: speaker_lock {event.fields()}")
+        if self._vision_audio is not None and hasattr(self._vision_audio, "pin"):
+            want = lock.desired_pin(t)
+            if want != self._pinned:
+                self._pinned = want
+                self._vision_audio.pin(want)
+        if self._embeddings is None:
+            return
+        voices = gate.row_voices
+        if len(voices) != 1 or bot_speaking or gate.target_overlap:
+            return
+        slot = voices[0]
+        segment = self._segments.setdefault(slot, _Segment())
+        segment.add(pcm_row, gate.row_asd_track, t)
+        if segment.seconds >= gate.settings.embed_segment_secs:
+            self._embeddings.submit(segment.job(slot, lock))
+            del self._segments[slot]
+
+    def _on_embedding(
+        self, job: EmbeddingJob, embedding: np.ndarray, elapsed_ms: float
+    ) -> None:
+        # Called by EmbeddingWorker on the event loop; the worker logs and
+        # drops anything this raises.
+        gate = self._fusion
+        if gate is None or not gate.lock.observe_embedding(job, embedding):
+            return
+        ident = gate.lock.slots[job.slot]
+        fmt = lambda v: "none" if v is None else f"{v:.2f}"  # noqa: E731
+        logger.info(
+            f"{self}: speaker_identity slot={job.slot} "
+            f"label={gate.lock.label(job.slot).value} "
+            f"voice_sim={fmt(ident.voice_sim)} bot_sim={fmt(ident.bot_sim)} "
+            f"seg_s={job.seconds:.2f} embed_ms={elapsed_ms:.0f} "
+            f"pending={self._embeddings.pending if self._embeddings else 0}"
+        )
 
     def _overlap_at(self, t: float) -> bool:
         i = self._frame_at(t)
@@ -625,6 +809,27 @@ class SpeakerAudioProcessor(FrameProcessor):
                 f"effective_use={used / eligible if eligible else 0:.0%} "
                 f"late_chunks={getattr(self._vision_audio, 'asd_late', 0)}"
             )
+        if self._fusion is not None and not getattr(self, "_fusion_reported", False):
+            self._fusion_reported = True
+            lock = self._fusion.lock
+            ages = list(getattr(self._vision_audio, "asd_age_ms", ()) or ())
+            embeds = list(self._embeddings.elapsed_ms) if self._embeddings else []
+            protocol = getattr(self._vision_audio, "protocol_version", None)
+            logger.info(
+                f"{self}: speaker_fusion session locks={lock.lock_count} "
+                f"lock_after_s={lock.last_locked_after_s} "
+                f"rebinds={dict(lock.rebinds)} "
+                f"asd_protocol=v{protocol} "
+                f"asd_age_ms_p50={_percentile(ages, 50)} "
+                f"asd_age_ms_p95={_percentile(ages, 95)} "
+                f"embed_ms_p50={_percentile(embeds, 50)} "
+                f"embed_ms_p95={_percentile(embeds, 95)} "
+                f"stt_masked_no_verdict_frames={self.stt_masked_no_verdict} "
+                f"echo_rejects={self._fusion.echo_rejects} "
+                f"bargein_blocked={getattr(self._tracker, 'bargein_blocked', 0)}"
+            )
+        if self._embeddings is not None:
+            await self._embeddings.close()
         if self._vision_audio is not None:
             await self._vision_audio.close()
         if self._releaser is not None:
