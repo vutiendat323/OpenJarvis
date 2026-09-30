@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 
 import numpy as np
 import pytest
 
-from openjarvis.server.voice.speaker import SpeakerSettings
+from openjarvis.server.voice.speaker import (
+    AudioOnlyGate,
+    FaceTrackBuffer,
+    SpeakerSettings,
+    Verdict,
+)
 from openjarvis.server.voice.speaker_identity import (
     EmbeddingJob,
+    FusionGate,
     Label,
     LockState,
     SlotIdentity,
@@ -304,3 +311,152 @@ def test_asd_never_promotes_a_voice_rejected_slot():
         )
     assert 3 not in lock.target_slots
     assert lock.label(3) is Label.OTHER
+
+
+A, R, U = Verdict.ACCEPT, Verdict.REJECT, Verdict.UNCERTAIN
+
+
+def _row(*slots):
+    return tuple(0.9 if s in slots else 0.0 for s in range(4))
+
+
+def _faces(*, mouth=None, asd=None, tracks=(7,)):
+    now = time.time()
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("s")
+    faces.use_pushed_asd(True)
+    for k in range(-2, 25):
+        faces.add(
+            {
+                "event": "faces",
+                "ts": now + k * 0.1,
+                "tracks": [
+                    {"track_id": x, "distance_m": 0.8, "mouth_activity": mouth}
+                    for x in tracks
+                ],
+            }
+        )
+    if asd is not None:
+        faces.add_asd(
+            {
+                "stream_id": "s",
+                "track_id": tracks[0],
+                "t0": now - 0.9,
+                "frame_secs": 0.04,
+                "probabilities": [asd] * 25,
+            }
+        )
+    return faces, now
+
+
+def _locked_gate(faces, now, *, voice=False):
+    gate = FusionGate(FUSION, faces, fsm_state=lambda: "active")
+    gate.lock.observe_fsm("active", now - 1.0)
+    for i in range(6):
+        gate.lock.observe_row(
+            now - 0.45 + i * 0.08, [0], anchor=7, anchor_asd_accept=True
+        )
+    if voice:
+        gate.lock.voiceprint.enroll(E0, 2.0)
+        gate.lock.slots[0] = SlotIdentity(voice_sim=0.9)
+    return gate
+
+
+def _frame(gate, now, *slots, times=1):
+    verdict = None
+    for i in range(times):
+        verdict = gate.frame(
+            _row(*slots), bot_speaking=False, t=now + i * 0.001, asd_stream_id="s"
+        )
+    return verdict
+
+
+@pytest.mark.parametrize(
+    "case, faces_kw, voice, slots, expected, source",
+    [
+        ("silence", {"mouth": 0.0}, False, (), None, None),
+        ("target_asd", {"asd": 0.9}, False, (0,), A, "asd"),
+        ("target_mar", {"mouth": 0.8}, False, (0,), A, "mar"),
+        ("target_still_voice", {"mouth": 0.0}, True, (0,), A, "voice"),
+        ("target_still_no_voice", {"mouth": 0.0}, False, (0,), R, None),
+        ("target_hidden_voice", {"mouth": 0.0, "tracks": (9,)}, True, (0,), A, "voice"),
+        (
+            "target_hidden_no_voice",
+            {"mouth": 0.0, "tracks": (9,)},
+            False,
+            (0,),
+            U,
+            None,
+        ),
+        ("unknown_with_target_asd", {"asd": 0.9}, False, (1,), A, "asd"),
+        ("unknown_without_evidence", {"mouth": 0.0}, False, (1,), U, None),
+    ],
+)
+def test_locked_verdict_table(case, faces_kw, voice, slots, expected, source):
+    faces, now = _faces(**faces_kw)
+    gate = _locked_gate(faces, now, voice=voice)
+    assert _frame(gate, now, *slots) is expected
+    assert gate.last_source == source
+    if source == "asd":
+        assert gate.row_asd_track == 7
+
+
+def test_bot_only_rows_are_rejected_and_counted():
+    faces, now = _faces(mouth=0.9)
+    gate = _locked_gate(faces, now)
+    gate.lock.slots[2] = SlotIdentity(bot_sim=0.9)
+    assert _frame(gate, now, 2) is R
+    assert gate.echo_rejects == 1
+
+
+def test_other_slot_is_rejected_even_while_the_target_mouth_moves():
+    faces, now = _faces(mouth=0.9)  # the customer chews; the TV talks
+    gate = _locked_gate(faces, now, voice=True)
+    gate.lock.slots[3] = SlotIdentity(voice_sim=0.1)
+    assert _frame(gate, now, 3) is R
+
+
+def test_target_overlap_is_uncertain_and_flags_visible_speech():
+    faces, now = _faces(mouth=0.8)
+    gate = _locked_gate(faces, now, voice=True)
+    gate.lock.slots[3] = SlotIdentity(voice_sim=0.1)
+    assert _frame(gate, now, 0, 3, times=3) is U
+    assert gate.target_overlap and gate.target_speaking_visibly
+
+
+def test_overlap_without_the_target_is_rejected():
+    faces, now = _faces(mouth=0.8)
+    gate = _locked_gate(faces, now, voice=True)
+    gate.lock.slots[3] = SlotIdentity(voice_sim=0.1)
+    assert _frame(gate, now, 1, 3, times=3) is R
+    assert not gate.target_overlap
+
+
+def test_before_the_lock_it_is_the_audio_only_gate_and_asd_rows_lock_it():
+    faces, now = _faces(mouth=0.9, asd=0.9)
+    fusion = FusionGate(FUSION, faces, fsm_state=lambda: "active")
+    plain = AudioOnlyGate(FUSION, faces=faces)
+    for i in range(6):
+        t = now + i * 0.01
+        expected = plain.frame(_row(0), bot_speaking=False, t=t, asd_stream_id="s")
+        assert (
+            fusion.frame(_row(0), bot_speaking=False, t=t, asd_stream_id="s")
+            is expected
+        )
+    assert fusion.locked and fusion.lock.target_track == 7
+
+
+def test_without_asd_evidence_the_lock_never_forms():
+    faces, now = _faces(mouth=0.9)  # MAR only: Vision ASD unavailable
+    gate = FusionGate(FUSION, faces, fsm_state=lambda: "active")
+    for i in range(20):
+        gate.frame(_row(0), bot_speaking=False, t=now + i * 0.01, asd_stream_id="s")
+    assert not gate.locked
+
+
+def test_outside_an_active_session_it_never_locks():
+    faces, now = _faces(mouth=0.9, asd=0.9)
+    gate = FusionGate(FUSION, faces, fsm_state=lambda: "idle")
+    for i in range(10):
+        gate.frame(_row(0), bot_speaking=False, t=now + i * 0.01, asd_stream_id="s")
+    assert not gate.locked
