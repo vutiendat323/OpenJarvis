@@ -239,7 +239,8 @@ versions.
 ← {"event":"asd","stream_id":"…","track_id":17,"t0":1790000000.12,"frame_secs":0.04,"probabilities":[25 floats]}
 ```
 
-- A successful `AVBuffer.publish()` calls a callback injected by `main.py`,
+- A successful `AVBuffer.publish()` calls a listener that `VisionWSServer`
+  registers on its own loop at serve start (presentation may import domain),
   which sets an `asyncio.Event` on the WS loop via `call_soon_threadsafe`.
   `_asd_push_loop` sends `latest_result` to the owner only.
 - Coalescing, not queueing: several publishes during one send produce one
@@ -372,8 +373,8 @@ A row that still has no verdict when its audio is released to STT
 - Vision: `asd_track` owner/stream validation, `null` clears, pin survives
   reconnect; pinned `AVBuffer` never switches track and needs no PnP; push
   goes to the owner only, coalesces, never repeats a `t0`; v1 clients
-  unchanged; `tests/test_architecture.py` still passes (the publish callback is
-  injected by `main.py`).
+  unchanged; `tests/test_architecture.py` still passes (the publish listener is
+  registered by `VisionWSServer`).
 - GPU test (skipped without CUDA/NeMo): TitaNet loads, 192-d output, 1 s
   latency measured.
 - All existing tests pass; with `identity="none"` they are the regression
@@ -383,7 +384,7 @@ A row that still has no verdict when its audio is released to STT
 
 1. `speaker_lock event=lock|rebind_slot|rebind_track|release epoch= track= slots= asd_frames= after_s= reason=`
 2. `speaker_identity slot= label= voice_sim= bot_sim= seg_s= embed_ms= pending=`
-3. Per turn (extends the `close_turn` line): `verdict= frames={A,R,U} sources={asd,mar,voice} masked_s= overlap_s= tse= target_track= target_slots=`
+3. Per turn (extends the `close_turn` line): `verdict= frames={A,R,U} sources={asd,mar,voice} locked=`. Masked audio and TSE are not attributable to one turn: they appear in the session summary and the existing per-separation TSE line.
 4. `bargein allowed=true accept_run=` / `bargein blocked reason=overlap|not_target|uncertain`
 5. Session summary at `_stop`: `lock_after_s`, rebind counts, ASD
    `effective_use`/`late`, `asd_age_ms` and `embed_ms` p50/p95,
