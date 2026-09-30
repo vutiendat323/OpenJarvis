@@ -189,6 +189,11 @@ def _set_state(state: KioskState) -> None:
     _current_state = state
 
 
+def current_state() -> KioskState:
+    """The FSM's current state; Voice's target lock follows it (same process)."""
+    return _current_state
+
+
 async def push_user_response(response: UserResponse) -> None:
     """Called by routes to deliver user consent response to the main loop."""
     if _current_response_queue is not None:

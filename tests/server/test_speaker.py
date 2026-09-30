@@ -704,3 +704,69 @@ def test_stt_mask_settings_load(tmp_path, monkeypatch):
 
     assert (settings.stt_mask, settings.stt_mask_delay_secs) == (True, 0.6)
     assert SpeakerSettings().stt_mask is False
+
+
+FUSION_PRESET = """[voice.speaker]
+enabled = true
+diarizer = "sortformer"
+vision_faces = true
+vision_asd = true
+identity = "fusion"
+"""
+
+
+def _load(tmp_path, monkeypatch, body):
+    path = tmp_path / "preset.toml"
+    path.write_text(body)
+    monkeypatch.setenv("OPENJARVIS_CONFIG", str(path))
+    return load_speaker_settings()
+
+
+def test_fusion_defaults(tmp_path, monkeypatch):
+    s = _load(tmp_path, monkeypatch, FUSION_PRESET)
+    assert s.identity == "fusion"
+    assert (s.lock_asd_frames, s.voiceprint_min_secs, s.embed_segment_secs) == (
+        6,
+        2.0,
+        1.0,
+    )
+    assert (s.voice_match, s.voice_reject, s.bot_match) == (0.65, 0.45, 0.70)
+    assert s.embedder_model == "titanet_small"
+
+
+def test_identity_defaults_to_none():
+    assert SpeakerSettings().identity == "none"
+
+
+@pytest.mark.parametrize("missing", ["enabled", "vision_faces", "vision_asd"])
+def test_fusion_needs_the_whole_speaker_gate(tmp_path, monkeypatch, missing):
+    body = FUSION_PRESET.replace(f"{missing} = true", f"{missing} = false")
+    if missing != "vision_asd":
+        body = body.replace("vision_asd = true", "vision_asd = false")
+    with pytest.raises(ValueError, match="fusion"):
+        _load(tmp_path, monkeypatch, body)
+
+
+@pytest.mark.parametrize(
+    "extra, error",
+    [
+        ('identity = "clusters"', "identity"),
+        ("voice_reject = 0.7", "voice_thresholds"),
+        ("lock_asd_frames = 0", "lock_asd_frames"),
+        ('embedder_model = ""', "embedder_model"),
+    ],
+)
+def test_bad_fusion_values_fail_the_load(tmp_path, monkeypatch, extra, error):
+    if extra.startswith("identity"):
+        body = FUSION_PRESET.replace('identity = "fusion"', extra)
+    else:
+        body = FUSION_PRESET + extra + "\n"
+    with pytest.raises(ValueError, match=error):
+        _load(tmp_path, monkeypatch, body)
+
+
+def test_kiosk_state_accessor_reads_the_fsm(monkeypatch):
+    import openjarvis.kiosk.runtime as runtime
+
+    monkeypatch.setattr(runtime, "_current_state", "active")
+    assert runtime.current_state() == "active"

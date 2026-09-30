@@ -55,6 +55,16 @@ class SpeakerSettings:
     stt_mask_delay_secs: float = 0.5
     separator: str = "none"
     separator_model: str = "~/.cache/openjarvis/tse/bsrnn_spk_emb_100.ts"
+    # Audio-visual fusion (spec 2026-09-30): lock one customer per kiosk
+    # session. "none" keeps the gate exactly as it was.
+    identity: str = "none"
+    lock_asd_frames: int = 6
+    voiceprint_min_secs: float = 2.0
+    voice_match: float = 0.65
+    voice_reject: float = 0.45
+    bot_match: float = 0.70
+    embed_segment_secs: float = 1.0
+    embedder_model: str = "titanet_small"
 
 
 def _fraction(section: Mapping[str, Any], key: str, default: float) -> float:
@@ -163,6 +173,18 @@ def load_speaker_settings() -> SpeakerSettings:
     separator_model = section.get("separator_model", defaults.separator_model)
     if not isinstance(separator_model, str) or not separator_model.strip():
         raise ValueError("voice_speaker_separator_model_must_be_a_path")
+    identity = _choice(section, "identity", defaults.identity, ("none", "fusion"))
+    if identity == "fusion" and not (
+        enabled and diarizer == "sortformer" and vision_faces and vision_asd
+    ):
+        raise ValueError("voice_speaker_fusion_needs_enabled_diarizer_faces_and_asd")
+    voice_match = _fraction(section, "voice_match", defaults.voice_match)
+    voice_reject = _fraction(section, "voice_reject", defaults.voice_reject)
+    if voice_reject >= voice_match:
+        raise ValueError("voice_speaker_voice_thresholds_invalid")
+    embedder_model = section.get("embedder_model", defaults.embedder_model)
+    if not isinstance(embedder_model, str) or not embedder_model.strip():
+        raise ValueError("voice_speaker_embedder_model_must_be_a_name")
 
     return SpeakerSettings(
         enabled=enabled,
@@ -201,6 +223,20 @@ def load_speaker_settings() -> SpeakerSettings:
         stt_mask_delay_secs=stt_delay,
         separator=separator,
         separator_model=separator_model,
+        identity=identity,
+        lock_asd_frames=_positive_int(
+            section, "lock_asd_frames", defaults.lock_asd_frames
+        ),
+        voiceprint_min_secs=_positive_float(
+            section, "voiceprint_min_secs", defaults.voiceprint_min_secs
+        ),
+        voice_match=voice_match,
+        voice_reject=voice_reject,
+        bot_match=_fraction(section, "bot_match", defaults.bot_match),
+        embed_segment_secs=_positive_float(
+            section, "embed_segment_secs", defaults.embed_segment_secs
+        ),
+        embedder_model=embedder_model.strip(),
     )
 
 
