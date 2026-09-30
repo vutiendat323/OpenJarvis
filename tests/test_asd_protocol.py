@@ -28,3 +28,29 @@ def test_shared_asd_protocol():
     assert all(
         isinstance(p, (int, float)) and 0 <= p <= 1 for p in asd["probabilities"]
     )
+
+
+def test_shared_asd_protocol_v2():
+    data = json.loads(
+        (Path(__file__).parent / "fixtures/asd_protocol_v2.json").read_text()
+    )
+    start, track = data["start"], data["track"]
+    status, asd = data["track_status"], data["asd"]
+    assert (
+        start["cmd"],
+        start["version"],
+        start["sample_rate"],
+        start["channels"],
+    ) == ("asd_audio_start", 2, 16000, 1)
+    assert track == {
+        "cmd": "asd_track",
+        "stream_id": start["stream_id"],
+        "track_id": 1,
+    }
+    assert status["event"] == "asd_track_status" and status["status"] == "pinned"
+    assert (status["stream_id"], status["track_id"]) == (start["stream_id"], 1)
+    assert asd["event"] == "asd" and asd["stream_id"] == start["stream_id"]
+    assert asd["frame_secs"] == 0.04 and len(asd["probabilities"]) == 25
+    assert all(
+        isinstance(p, (int, float)) and 0 <= p <= 1 for p in asd["probabilities"]
+    )

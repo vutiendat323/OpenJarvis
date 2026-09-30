@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
 import time
 import uuid
 from collections import deque
@@ -18,6 +19,8 @@ from openjarvis.server.voice.speaker import FaceTrackBuffer
 _RATE = 16_000
 _PACKET_BYTES = 1_280 * 2
 _MAX_PACKETS = 8
+_PROTOCOL_VERSION = 2  # asd_track pins and pushed asd events; 1 is the fallback
+_MAX_AGES = 512
 
 
 def _now() -> float:
@@ -51,6 +54,12 @@ class VisionAudioBridge:
         self._seq = 0
         self.asd_late = 0
         self.last_wait_timed_out = False
+        self._version = _PROTOCOL_VERSION
+        self._pin: int | None = None
+        self._pin_dirty = False
+        # Arrival age of pushed ASD windows (ms past the window's end), for
+        # the session summary.
+        self.asd_age_ms: deque[float] = deque(maxlen=_MAX_AGES)
 
     @property
     def ready(self) -> bool:
@@ -65,6 +74,32 @@ class VisionAudioBridge:
         if not self._ready or self._start is None:
             return 0.0
         return self._samples / _RATE
+
+    @property
+    def protocol_version(self) -> int:
+        return self._version
+
+    def pin(self, track_id: int | None) -> None:
+        """Hold Vision's ASD on the locked customer (v2); None lets it pick
+        the nearest face. Remembered across reconnects."""
+        if track_id == self._pin:
+            return
+        self._pin = track_id
+        if self._ready and self._version == 2:
+            self._pin_dirty = True
+            self._queued.set()
+
+    def _on_asd(self, event: dict, stream_id: str) -> None:
+        if event.get("stream_id") != stream_id or not self._ready:
+            return
+        t0 = event.get("t0")
+        if (
+            not isinstance(t0, bool)
+            and isinstance(t0, (int, float))
+            and math.isfinite(t0)
+        ):
+            self.asd_age_ms.append((_now() - (t0 + 1.0)) * 1000.0)
+        self._faces.add_asd(event)
 
     async def wait_for_evidence(
         self, faces: FaceTrackBuffer, t0: float, t1: float, *, timeout: float
@@ -159,6 +194,18 @@ class VisionAudioBridge:
         try:
             while self._stream_id == stream_id:
                 await self._queued.wait()
+                self._queued.clear()
+                if self._pin_dirty:
+                    self._pin_dirty = False
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "cmd": "asd_track",
+                                "stream_id": stream_id,
+                                "track_id": self._pin,
+                            }
+                        )
+                    )
                 while self._queue and self._stream_id == stream_id:
                     seq, t0, pcm = self._queue.popleft()
                     await ws.send(
@@ -172,7 +219,6 @@ class VisionAudioBridge:
                             }
                         )
                     )
-                self._queued.clear()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - reconnect after send failure
@@ -186,6 +232,7 @@ class VisionAudioBridge:
         while not self._closed and not self._terminal:
             stream_id = str(uuid.uuid4())
             sender = None
+            retry_now = False
             try:
                 async with websockets.connect(
                     self._url, ping_interval=30, close_timeout=2
@@ -196,7 +243,7 @@ class VisionAudioBridge:
                             json.dumps(
                                 {
                                     "cmd": "asd_audio_start",
-                                    "version": 1,
+                                    "version": self._version,
                                     "session_id": self._session_id,
                                     "stream_id": stream_id,
                                     "sample_rate": _RATE,
@@ -209,19 +256,34 @@ class VisionAudioBridge:
                                 event = json.loads(raw)
                             except (TypeError, ValueError):
                                 continue
-                            if (
-                                not isinstance(event, dict)
-                                or event.get("event") != "asd_audio_status"
-                            ):
+                            if not isinstance(event, dict):
                                 continue
-                            if event.get("stream_id") != stream_id:
+                            if event.get("event") == "asd":
+                                self._on_asd(event, stream_id)
+                                continue
+                            if (
+                                event.get("event") != "asd_audio_status"
+                                or event.get("stream_id") != stream_id
+                            ):
                                 continue
                             status = event.get("status")
                             if status == "ready" and not self._ready:
                                 self._ready = True
                                 self._faces.set_asd_stream(stream_id)
+                                self._faces.use_pushed_asd(self._version == 2)
                                 delay_idx = 0
+                                if self._version == 2 and self._pin is not None:
+                                    self._pin_dirty = True
+                                    self._queued.set()
                                 sender = asyncio.create_task(self._send(ws, stream_id))
+                            elif status == "invalid" and self._version == 2:
+                                # A Vision older than v2: no pins, ASD via faces.
+                                self._version = 1
+                                logger.warning(
+                                    "Vision ASD asd_protocol=v1 (Vision predates v2)"
+                                )
+                                retry_now = True
+                                break
                             elif status in ("disabled", "unavailable", "invalid"):
                                 self._terminal = True
                                 break
@@ -247,6 +309,8 @@ class VisionAudioBridge:
                 self._finish(stream_id)
             if self._closed or self._terminal:
                 break
+            if retry_now:
+                continue
             delay = RECONNECT_DELAYS[min(delay_idx, len(RECONNECT_DELAYS) - 1)]
             delay_idx += 1
             await asyncio.sleep(delay)

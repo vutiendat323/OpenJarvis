@@ -180,7 +180,7 @@ async def test_bridge_packetizes_actual_samples_and_stops(monkeypatch):
     start = socket.sent[0]
     assert start == {
         "cmd": "asd_audio_start",
-        "version": 1,
+        "version": 2,
         "session_id": "voice-1",
         "stream_id": start["stream_id"],
         "sample_rate": 16000,
@@ -261,7 +261,7 @@ async def test_disabled_status_ends_attempts_for_session(monkeypatch):
     await bridge.close()
 
 
-@pytest.mark.parametrize("status", ["unavailable", "invalid"])
+@pytest.mark.parametrize("status", ["unavailable"])
 @pytest.mark.anyio
 async def test_other_terminal_statuses_end_attempts(monkeypatch, status):
     import websockets
@@ -490,7 +490,11 @@ async def test_packet_posterior_subscription_gate_and_reconnect(monkeypatch):
             await super().send(raw)
             packet = self.sent[-1]
             if packet["cmd"] == "asd_audio_start":
-                self.status(packet["stream_id"], "ready")
+                # An old Vision: it rejects v2 and serves the v1 fallback.
+                self.status(
+                    packet["stream_id"],
+                    "ready" if packet["version"] == 1 else "invalid",
+                )
             elif packet["cmd"] == "asd_audio":
                 assert len(base64.b64decode(packet["pcm16_b64"])) == 2560
                 if (
@@ -581,3 +585,125 @@ async def test_packet_posterior_subscription_gate_and_reconnect(monkeypatch):
         await client.stop()
         client_task.cancel()
         await asyncio.gather(client_task, return_exceptions=True)
+
+
+def _sequenced_connect(monkeypatch, sockets):
+    import websockets
+
+    opened = []
+
+    @asynccontextmanager
+    async def connect(*args, **kwargs):
+        socket = sockets[len(opened)]
+        opened.append(socket)
+        try:
+            yield socket
+        finally:
+            socket.closed = True
+
+    monkeypatch.setattr(websockets, "connect", connect)
+    monkeypatch.setattr(
+        "openjarvis.server.voice.speaker_vision.RECONNECT_DELAYS", (0.01,)
+    )
+    return opened
+
+
+@pytest.mark.anyio
+async def test_old_vision_answering_invalid_to_v2_gets_v1_at_once(monkeypatch):
+    sockets = [FakeSocket(), FakeSocket()]
+    _sequenced_connect(monkeypatch, sockets)
+    bridge = VisionAudioBridge("ws://vision", "voice-1", FaceTrackBuffer())
+    await bridge.start()
+    await eventually(lambda: bool(sockets[0].sent))
+    first = sockets[0].sent[0]
+    assert first["version"] == 2
+    sockets[0].status(first["stream_id"], "invalid")
+    await eventually(lambda: bool(sockets[1].sent))
+    second = sockets[1].sent[0]
+    assert second["version"] == 1
+    sockets[1].status(second["stream_id"], "ready")
+    await eventually(lambda: bridge.ready)
+    assert bridge.protocol_version == 1
+    bridge.pin(7)
+    await asyncio.sleep(0.05)
+    assert all(m["cmd"] != "asd_track" for m in sockets[1].sent)
+    await bridge.close()
+
+
+@pytest.mark.anyio
+async def test_invalid_after_the_v1_fallback_ends_attempts(monkeypatch):
+    sockets = [FakeSocket(), FakeSocket(), FakeSocket()]
+    opened = _sequenced_connect(monkeypatch, sockets)
+    bridge = VisionAudioBridge("ws://vision", "voice-1", FaceTrackBuffer())
+    await bridge.start()
+    await eventually(lambda: bool(sockets[0].sent))
+    sockets[0].status(sockets[0].sent[0]["stream_id"], "invalid")
+    await eventually(lambda: bool(sockets[1].sent))
+    sockets[1].status(sockets[1].sent[0]["stream_id"], "invalid")
+    await asyncio.sleep(0.05)
+    assert len(opened) == 2
+    await bridge.close()
+
+
+@pytest.mark.anyio
+async def test_pin_is_sent_on_v2_and_resent_after_reconnect(monkeypatch):
+    sockets = [FakeSocket(), FakeSocket()]
+    _sequenced_connect(monkeypatch, sockets)
+    bridge = VisionAudioBridge("ws://vision", "voice-1", FaceTrackBuffer())
+    bridge.pin(7)  # before ready: remembered
+    await bridge.start()
+    await eventually(lambda: bool(sockets[0].sent))
+    sockets[0].status(sockets[0].sent[0]["stream_id"], "ready")
+    await eventually(lambda: any(m["cmd"] == "asd_track" for m in sockets[0].sent))
+    pin = next(m for m in sockets[0].sent if m["cmd"] == "asd_track")
+    assert pin == {
+        "cmd": "asd_track",
+        "stream_id": sockets[0].sent[0]["stream_id"],
+        "track_id": 7,
+    }
+
+    sockets[0].inbound.put_nowait(None)  # Vision restarts
+    await eventually(lambda: bool(sockets[1].sent))
+    sockets[1].status(sockets[1].sent[0]["stream_id"], "ready")
+    await eventually(lambda: any(m["cmd"] == "asd_track" for m in sockets[1].sent))
+
+    bridge.pin(None)
+    await eventually(
+        lambda: [
+            m.get("track_id", 0) for m in sockets[1].sent if m["cmd"] == "asd_track"
+        ][-1]
+        is None
+    )
+    await bridge.close()
+
+
+@pytest.mark.anyio
+async def test_pushed_asd_reaches_the_face_buffer_and_is_aged(monkeypatch):
+    sockets = [FakeSocket()]
+    _sequenced_connect(monkeypatch, sockets)
+    faces = FaceTrackBuffer()
+    bridge = VisionAudioBridge("ws://vision", "voice-1", faces)
+    await bridge.start()
+    await eventually(lambda: bool(sockets[0].sent))
+    stream_id = sockets[0].sent[0]["stream_id"]
+    sockets[0].status(stream_id, "ready")
+    await eventually(lambda: bridge.ready)
+    now = time.time()
+    window = {
+        "event": "asd",
+        "stream_id": stream_id,
+        "track_id": 7,
+        "t0": now - 1.0,
+        "frame_secs": 0.04,
+        "probabilities": [0.9] * 25,
+    }
+    sockets[0].inbound.put_nowait(dict(window, stream_id="stale"))
+    sockets[0].inbound.put_nowait(window)
+    await eventually(
+        lambda: faces.active_speaker(
+            7, now - 0.1, now - 0.02, stream_id=stream_id, now=time.time()
+        )
+        is not None
+    )
+    assert len(bridge.asd_age_ms) == 1 and bridge.asd_age_ms[0] >= 0
+    await bridge.close()
