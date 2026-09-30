@@ -52,9 +52,9 @@ def _rows(binder, n, slot, scores, t0=100.0):
 
 def test_binder_maps_after_one_second_of_evidence():
     binder = SlotTrackBinder()
-    _rows(binder, 12, 0, {5: 1.0})  # 0.96 s
+    _rows(binder, 13, 0, {5: 1.0})  # 13 rows = 0.974: per-row decay keeps it under 1.0
     assert binder.track_of(0) is None
-    _rows(binder, 1, 0, {5: 1.0}, t0=100.96)
+    _rows(binder, 1, 0, {5: 1.0}, t0=101.04)
     assert binder.track_of(0) == 5
 
 
@@ -68,7 +68,7 @@ def test_binder_needs_a_dominant_track():
 
 def test_binder_evidence_decays_and_absent_tracks_are_forgotten():
     binder = SlotTrackBinder()
-    _rows(binder, 13, 0, {5: 1.0})
+    _rows(binder, 14, 0, {5: 1.0})
     assert binder.track_of(0) == 5
     binder.update(110.0, {}, {6: 1.0})  # 9 s later; track 5 unseen for > 5 s
     assert binder.track_of(0) is None

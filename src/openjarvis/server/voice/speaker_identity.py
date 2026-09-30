@@ -15,9 +15,7 @@ import numpy as np
 ROW_SECS = 0.08  # one diarizer frame
 VOICEPRINT_MAX_EMBEDDINGS = 8
 BINDER_HALF_LIFE_SECS = 5.0
-# ≈ 1 s of full slot-and-face evidence. Decay is applied per row, so 13 rows
-# (1.04 s) sum to 0.974, not 1.04; 0.95 keeps "13 rows map, 12 do not".
-BINDER_MIN_EVIDENCE = 0.95
+BINDER_MIN_EVIDENCE = 1.0  # ≈ 1 s of full slot-and-face evidence
 BINDER_DOMINANCE = 2.0
 TRACK_FORGET_SECS = 5.0
 
@@ -64,8 +62,8 @@ class SlotTrackBinder:
     """Decaying evidence that diarizer slot s is the voice of face track x.
 
     Each row adds p(slot) × a(track) × 80 ms, where a is the track's ASD
-    probability or MAR. A slot maps to a track holding ≥ 0.95 (≈ 1 s of full
-    evidence after decay) and ≥ 2× its runner-up.
+    probability or MAR. A slot maps to a track holding ≥ 1.0 (≈ 1 s of full
+    evidence) and ≥ 2× its runner-up.
     """
 
     def __init__(self, half_life: float = BINDER_HALF_LIFE_SECS) -> None:
