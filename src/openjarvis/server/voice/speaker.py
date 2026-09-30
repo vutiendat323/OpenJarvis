@@ -663,14 +663,18 @@ class SpeakerTracker:
         self._settings = settings
         self._diarized = diarized
         self._counts: Counter[Verdict] = Counter()
+        self._sources: Counter[str] = Counter()
+        self.bargein_blocked = 0
         self._closed: Verdict | None = None
         # With a diarizer, every decision waits for its evidence from the
         # first frame of the session; without one, the legacy behaviour.
         self.has_evidence = diarized
 
-    def record(self, verdict: Verdict) -> None:
+    def record(self, verdict: Verdict, source: str | None = None) -> None:
         self.has_evidence = True
         self._counts[verdict] += 1
+        if source is not None:
+            self._sources[source] += 1
 
     @property
     def masks_stt(self) -> bool:
@@ -680,6 +684,11 @@ class SpeakerTracker:
     def begin_span(self) -> None:
         """Speech started outside a turn: its frames start a fresh count."""
         self._counts.clear()
+        self._sources.clear()
+
+    def source_counts(self) -> dict[str, int]:
+        """What confirmed this span's frames (asd, mar, voice, audio), for logs."""
+        return dict(self._sources)
 
     def begin_turn(self) -> None:
         """A turn opened. A closed verdict nobody took is stale: its turn had

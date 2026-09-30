@@ -846,3 +846,14 @@ def test_tracks_at_and_present():
     assert faces.present(7, 99.8, 100.2)
     assert not faces.present(7, 100.3, 100.7)
     assert FaceTrackBuffer().tracks_at(1.0) == []
+
+
+def test_tracker_counts_sources_per_span():
+    tracker = SpeakerTracker(SpeakerSettings(enabled=True))
+    tracker.record(A, "asd")
+    tracker.record(A, "voice")
+    tracker.record(R)
+    assert tracker.source_counts() == {"asd": 1, "voice": 1}
+    tracker.begin_span()
+    assert tracker.source_counts() == {}
+    assert tracker.bargein_blocked == 0

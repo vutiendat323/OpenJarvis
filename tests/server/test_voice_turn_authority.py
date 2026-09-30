@@ -742,3 +742,48 @@ async def test_without_diarizer_evidence_any_speech_keeps_the_turn_open():
     await stop._handle_vad_user_started_speaking(VADUserStartedSpeakingFrame())
 
     stop._cancel_confirmation.assert_awaited()
+
+
+def _locked_frame(verdict, overlap=False):
+    return SpeakerVerdictFrame(
+        verdict=verdict,
+        locked=True,
+        overlap_target=overlap,
+        source="asd" if verdict is Verdict.ACCEPT else None,
+    )
+
+
+@pytest.mark.anyio
+async def test_after_the_lock_a_vad_onset_alone_opens_nothing():
+    strategy, tracker, events = await _strategy()
+    await strategy.process_frame(_locked_frame(Verdict.UNCERTAIN))
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+    assert events == []
+    await strategy.process_frame(_locked_frame(Verdict.UNCERTAIN))
+    assert events == []
+    await strategy.process_frame(_locked_frame(Verdict.ACCEPT))
+    assert events[-1] == "start:True"
+
+
+@pytest.mark.anyio
+async def test_after_the_lock_overlap_never_barges_in_and_is_counted():
+    strategy, tracker, events = await _strategy(frames=3)
+    await strategy.process_frame(_locked_frame(Verdict.UNCERTAIN))
+    await strategy.process_frame(BotStartedSpeakingFrame())
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+    for _ in range(5):
+        await strategy.process_frame(_locked_frame(Verdict.UNCERTAIN, overlap=True))
+    assert events == []
+    assert tracker.bargein_blocked == 1
+
+
+@pytest.mark.anyio
+async def test_after_the_lock_three_accepts_barge_in():
+    strategy, tracker, events = await _strategy(frames=3)
+    await strategy.process_frame(_locked_frame(Verdict.UNCERTAIN))
+    await strategy.process_frame(BotStartedSpeakingFrame())
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+    for _ in range(3):
+        await strategy.process_frame(_locked_frame(Verdict.ACCEPT))
+    assert events[-1] == "start:True"
+    assert tracker.source_counts() == {"asd": 3}

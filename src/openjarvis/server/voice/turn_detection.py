@@ -64,6 +64,10 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
         self._turn_open = False
         self._accept_run = 0
         self._reply_pending_until = 0.0
+        self._locked = False
+        self._last_verdict: Verdict | None = None
+        self._last_overlap = False
+        self._blocked_logged = False
 
     @property
     def turn_open(self) -> bool:
@@ -94,13 +98,16 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
         elif isinstance(frame, VADUserStartedSpeakingFrame):
             self._user_speaking = True
             self._accept_run = 0
+            self._last_verdict, self._blocked_logged = None, False
             if not self._turn_open:
                 self._tracker.begin_span()
             await self._maybe_start()
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             self._user_speaking = False
         elif isinstance(frame, SpeakerVerdictFrame):
-            self._tracker.record(frame.verdict)
+            self._tracker.record(frame.verdict, frame.source)
+            self._locked = frame.locked
+            self._last_verdict, self._last_overlap = frame.verdict, frame.overlap_target
             self._accept_run = (
                 self._accept_run + 1 if frame.verdict is Verdict.ACCEPT else 0
             )
@@ -110,14 +117,24 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
     async def _maybe_start(self) -> None:
         if self._turn_open or not self._user_speaking:
             return
-        if self._bot_speaking or time.monotonic() < self._reply_pending_until:
+        interrupting = (
+            self._bot_speaking or time.monotonic() < self._reply_pending_until
+        )
+        if interrupting:
             if (
                 self._tracker.has_evidence
                 and self._accept_run < self._bargein_accept_frames
             ):
+                self._note_blocked()
+                return
+        elif self._locked:
+            # A customer is locked: only their confirmed voice opens a turn.
+            if self._accept_run < 1:
                 return
         elif self._tracker.span_verdict() is Verdict.REJECT:
             return
+        if interrupting and self._locked:
+            logger.info(f"{self}: bargein allowed=true accept_run={self._accept_run}")
         # Without stt_mask, anything aggregated while no turn was open is
         # speech the gate declined; it must not ride along into this turn.
         # With stt_mask, REJECTed audio reached STT as silence, so what was
@@ -131,12 +148,29 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
         self._tracker.begin_turn()
         await self.trigger_user_turn_started()
 
+    def _note_blocked(self) -> None:
+        """Log once per speech span why a locked session's speech did not barge in."""
+        if not self._locked or self._blocked_logged or self._last_verdict is None:
+            return
+        if self._last_overlap:
+            reason = "overlap"
+        elif self._last_verdict is Verdict.REJECT:
+            reason = "not_target"
+        elif self._last_verdict is Verdict.UNCERTAIN:
+            reason = "uncertain"
+        else:
+            return  # an ACCEPT run still building
+        self._blocked_logged = True
+        self._tracker.bargein_blocked += 1
+        logger.info(f"{self}: bargein blocked reason={reason}")
+
     async def close_turn(self) -> Verdict:
         """Fix the turn's verdict; drop a rejected turn's words."""
         verdict = self._tracker.close_turn()
         logger.info(
             f"{self}: speaker turn verdict={verdict.value} "
-            f"frames={self._tracker.frame_counts()}"
+            f"frames={self._tracker.frame_counts()} "
+            f"sources={self._tracker.source_counts()} locked={self._locked}"
         )
         if verdict is Verdict.REJECT:
             await self.trigger_reset_aggregation()
