@@ -96,6 +96,45 @@ async def test_wait_for_asd_evidence_uses_current_chunk_deadline():
 
 
 @pytest.mark.anyio
+async def test_wait_follows_the_given_track_not_the_nearest_face():
+    # Pinned to the customer, Vision pushes ASD for their track only; a
+    # nearer bystander has none, so waiting on the nearest face times out.
+    now = time.time()
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("current")
+    faces.use_pushed_asd(True)
+    faces.add(
+        {
+            "event": "faces",
+            "ts": now,
+            "tracks": [
+                {"track_id": 7, "distance_m": 1.2, "mouth_activity": 0.6},
+                {"track_id": 9, "distance_m": 0.8, "mouth_activity": 0.1},
+            ],
+        }
+    )
+    faces.add_asd(
+        {
+            "stream_id": "current",
+            "track_id": 7,
+            "t0": now - 0.5,
+            "frame_secs": 0.04,
+            "probabilities": [0.95] * 25,
+        }
+    )
+    bridge = VisionAudioBridge("ws://vision", "voice-1", faces)
+    bridge._ready = True
+    bridge._stream_id = "current"
+    bridge._start, bridge._samples = now - 1.2, 19200
+
+    await bridge.wait_for_evidence(faces, now - 0.08, now, timeout=0.12, track_id=7)
+    assert bridge.last_wait_timed_out is False and bridge.asd_late == 0
+
+    await bridge.wait_for_evidence(faces, now - 0.08, now, timeout=0.02)
+    assert bridge.last_wait_timed_out is True  # the nearest face, 9, has none
+
+
+@pytest.mark.anyio
 async def test_wait_skips_before_ready_or_one_second_warmup():
     now = time.time()
     faces = FaceTrackBuffer()

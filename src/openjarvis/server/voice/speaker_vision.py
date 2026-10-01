@@ -102,9 +102,18 @@ class VisionAudioBridge:
         self._faces.add_asd(event)
 
     async def wait_for_evidence(
-        self, faces: FaceTrackBuffer, t0: float, t1: float, *, timeout: float
+        self,
+        faces: FaceTrackBuffer,
+        t0: float,
+        t1: float,
+        *,
+        timeout: float,
+        track_id: int | None = None,
     ) -> None:
-        """Give a current ASD window one bounded chance to reach this chunk."""
+        """Give a current ASD window one bounded chance to reach this chunk.
+
+        Waits for *track_id*'s window, or the nearest face's when None.
+        """
         self.last_wait_timed_out = False
         stream_id = self.stream_id
         if (
@@ -114,7 +123,8 @@ class VisionAudioBridge:
             or not faces.fresh(t1)
         ):
             return
-        track_id = faces.anchor(t1, float("inf"))
+        if track_id is None:
+            track_id = faces.anchor(t1, float("inf"))
         if track_id is None:
             return
         deadline = time.monotonic() + min(timeout, 0.12)

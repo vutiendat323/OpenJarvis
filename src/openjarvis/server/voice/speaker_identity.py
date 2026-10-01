@@ -272,6 +272,9 @@ class TargetLock:
             return
         if target_visible:
             self._track_seen_at = t
+            # The customer is back: rows gathered while they were away must
+            # not count toward a rebind in a later absence.
+            self._candidates.clear()
         if (
             target_asd_accept
             and len(voices) == 1
@@ -287,7 +290,10 @@ class TargetLock:
             and anchor != self.target_track
             and anchor_asd_accept
             and self.voice_ready
-            and any(s in self.target_slots for s in voices)
+            # Solo rows only: in an overlap the ASD-high face may be the
+            # other voice (a bystander talking over the absent customer).
+            and len(voices) == 1
+            and voices[0] in self.target_slots
         ):
             if _within(self._candidates.setdefault(anchor, deque()), t) >= need:
                 old = self.target_track
@@ -441,6 +447,12 @@ class FusionGate(AudioOnlyGate):
     @property
     def locked(self) -> bool:
         return self.lock.locked
+
+    def asd_wait_track(self, t: float) -> int | None:
+        """The pinned customer once locked: Vision pushes ASD for them only,
+        so waiting on a nearer face would time out every chunk."""
+        pinned = self.lock.desired_pin(t)
+        return pinned if pinned is not None else super().asd_wait_track(t)
 
     def frame(
         self,

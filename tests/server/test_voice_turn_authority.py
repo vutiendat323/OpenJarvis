@@ -789,6 +789,114 @@ async def test_after_the_lock_three_accepts_barge_in():
     assert tracker.source_counts() == {"asd": 3}
 
 
+async def _locked_span_stopped(monkeypatch):
+    """Locked; a short reply's VAD onset and stop, with no verdict yet."""
+    import openjarvis.server.voice.turn_detection as td
+
+    clock = [100.0]
+    monkeypatch.setattr(td.time, "monotonic", lambda: clock[0])
+    strategy, _, events = await _strategy()
+    await strategy.process_frame(_locked_frame(Verdict.UNCERTAIN))
+    await strategy.process_frame(VADUserStartedSpeakingFrame())
+    await strategy.process_frame(VADUserStoppedSpeakingFrame())
+    assert events == []
+    return strategy, events, clock
+
+
+@pytest.mark.anyio
+async def test_after_the_lock_a_late_accept_still_opens_a_short_reply(monkeypatch):
+    # "dạ": the VAD stopped 0.2 s after it, before any of its diarizer rows.
+    import openjarvis.server.voice.turn_detection as td
+
+    strategy, events, clock = await _locked_span_stopped(monkeypatch)
+    clock[0] += td.LOCKED_ACCEPT_GRACE_SECS - 0.1
+    await strategy.process_frame(_locked_frame(Verdict.ACCEPT))
+    assert events == ["reset", "start:True"]
+
+
+@pytest.mark.anyio
+async def test_after_the_lock_an_accept_past_the_grace_opens_nothing(monkeypatch):
+    import openjarvis.server.voice.turn_detection as td
+
+    strategy, events, clock = await _locked_span_stopped(monkeypatch)
+    clock[0] += td.LOCKED_ACCEPT_GRACE_SECS + 0.1
+    await strategy.process_frame(_locked_frame(Verdict.ACCEPT))
+    assert events == []
+
+
+@pytest.mark.anyio
+async def test_after_the_lock_an_accept_before_any_onset_opens_nothing():
+    strategy, _, events = await _strategy()
+    await strategy.process_frame(_locked_frame(Verdict.ACCEPT))
+    assert events == []
+
+
+@pytest.mark.anyio
+async def test_a_turn_opened_after_the_vad_stop_is_closed_by_the_stop_strategy():
+    # The real Pipecat controller, start and stop strategies, no watchdog:
+    # the turn opens on a late ACCEPT and still closes on its transcript.
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
+    from pipecat.frames.frames import TranscriptionFrame
+    from pipecat.turns.user_turn_controller import UserTurnController
+    from pipecat.turns.user_turn_strategies import UserTurnStrategies
+
+    from openjarvis.server.voice.turn_detection import (
+        ConfirmedTurnAnalyzerUserTurnStopStrategy,
+    )
+
+    tracker = SpeakerTracker(SpeakerSettings(enabled=True))
+    gate = TargetSpeakerTurnStartStrategy(tracker=tracker, bargein_accept_frames=3)
+    analyzer = MagicMock()
+    analyzer.analyze_end_of_turn = AsyncMock(
+        return_value=(EndOfTurnState.INCOMPLETE, None)
+    )
+    analyzer.cleanup = AsyncMock()
+    stop = ConfirmedTurnAnalyzerUserTurnStopStrategy(
+        turn_analyzer=analyzer, minimum_silence_secs=0.05, speaker_gate=gate
+    )
+    controller = UserTurnController(
+        user_turn_strategies=UserTurnStrategies(start=[gate], stop=[stop])
+    )
+    await controller.setup(
+        FrameProcessorSetup(
+            clock=SystemClock(),
+            task_manager=TaskManager(),
+            pipeline_worker=MagicMock(),
+        )
+    )
+    events: list[str] = []
+
+    @controller.event_handler("on_user_turn_started")
+    async def _started(_controller, _strategy, _params):
+        events.append("start")
+
+    @controller.event_handler("on_user_turn_stopped")
+    async def _stopped(_controller, _strategy, _params):
+        events.append("stop")
+
+    try:
+        await controller.process_frame(_locked_frame(Verdict.UNCERTAIN))
+        await controller.process_frame(VADUserStartedSpeakingFrame())
+        await controller.process_frame(VADUserStoppedSpeakingFrame(stop_secs=0.2))
+        await controller.process_frame(_locked_frame(Verdict.ACCEPT))
+        assert events == ["start"] and gate.turn_open
+        await controller.process_frame(
+            TranscriptionFrame(text="dạ", user_id="", timestamp="", finalized=True)
+        )
+        for _ in range(100):
+            if "stop" in events:
+                break
+            await asyncio.sleep(0.01)
+        assert events == ["start", "stop"]
+        assert not gate.turn_open
+        assert tracker.take_turn_verdict() is Verdict.ACCEPT
+    finally:
+        await controller.cleanup()
+
+
 _FUSION_SPEAKER = SpeakerSettings(
     enabled=True, diarizer="sortformer", vision_faces=True, vision_asd=True,
     identity="fusion",
@@ -854,3 +962,87 @@ async def test_embedder_load_failure_leaves_fusion_without_voiceprints(monkeypat
     assert await routes._embedder() is None
     assert await routes._embedder() is None
     assert calls == ["titanet_small"]
+
+
+def _built_tts(speaker, **extra):
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    from openjarvis.server.voice.pipeline import build_voice_pipeline
+    from openjarvis.server.voice.speaker import FaceTrackBuffer
+    from openjarvis.server.voice.tts import VieNeuTTSService
+
+    stt = FrameProcessor()
+    build_voice_pipeline(
+        connection=MagicMock(), binding=MagicMock(), renderer=MagicMock(), stt=stt,
+        speaker=speaker, diarizer=MagicMock(chunk_samples=3840, frame_secs=0.08),
+        faces=FaceTrackBuffer(), **extra,
+    )
+    node = stt
+    while not isinstance(node, VieNeuTTSService):
+        node = node._next
+    return node
+
+
+def test_only_fusion_with_an_unfilled_bot_voiceprint_taps_the_tts():
+    import numpy as np
+
+    from openjarvis.server.voice.speaker_embedding import BotVoiceprint
+
+    embedder = MagicMock(disabled=False)
+    none = SpeakerSettings(enabled=True, diarizer="sortformer", vision_faces=True,
+                           vision_asd=True)
+    tts = _built_tts(none, embedder=embedder, bot_voiceprint=BotVoiceprint())
+    assert tts._on_audio is None
+    tts = _built_tts(
+        _FUSION_SPEAKER, embedder=embedder, bot_voiceprint=BotVoiceprint()
+    )
+    assert tts._on_audio is not None
+    filled = BotVoiceprint()
+    filled.embedding = np.ones(4, np.float32)
+    tts = _built_tts(_FUSION_SPEAKER, embedder=embedder, bot_voiceprint=filled)
+    assert tts._on_audio is None
+
+
+def test_fusion_without_vision_faces_warns_and_keeps_the_audio_only_gate():
+    from loguru import logger
+    from pipecat.processors.frame_processor import FrameProcessor
+
+    from openjarvis.server.voice.pipeline import build_voice_pipeline
+    from openjarvis.server.voice.speaker import AudioOnlyGate
+    from openjarvis.server.voice.speaker_identity import FusionGate
+
+    messages = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    stt = FrameProcessor()
+    try:
+        build_voice_pipeline(
+            connection=MagicMock(), binding=MagicMock(), renderer=MagicMock(),
+            stt=stt, speaker=_FUSION_SPEAKER,
+            diarizer=MagicMock(chunk_samples=3840, frame_secs=0.08), faces=None,
+        )
+    finally:
+        logger.remove(sink)
+    gate = stt._prev._gate
+    assert isinstance(gate, AudioOnlyGate) and not isinstance(gate, FusionGate)
+    assert [m for m in messages if "identity=fusion" in m and "faces" in m]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fusion", [False, True])
+async def test_warm_up_imports_the_bot_voice_resampler_only_for_fusion(
+    monkeypatch, fusion
+):
+    import openjarvis.server.voice.routes as routes
+
+    settings = _FUSION_SPEAKER if fusion else SpeakerSettings()
+    monkeypatch.setattr(routes, "load_speaker_settings", lambda: settings)
+
+    async def nothing():
+        return None
+
+    for loader in ("_diarizer", "_separator", "_embedder"):
+        monkeypatch.setattr(routes, loader, nothing)
+    imported = []
+    monkeypatch.setattr(routes.importlib, "import_module", imported.append)
+    await routes.warm_speaker_models()
+    assert imported == (["scipy.signal"] if fusion else [])

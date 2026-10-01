@@ -34,6 +34,12 @@ from openjarvis.server.voice.speaker import SpeakerTracker, Verdict
 # ponytail: fixed window; end it on an explicit "reply done" signal if one
 # reaches the user aggregator.
 REPLY_PENDING_SECS = 12.0
+# After the lock only an ACCEPT opens a turn, but a short reply ("dạ", "yes")
+# can be over before any of its verdicts arrive: the VAD stops 0.2 s after
+# the speech, a diarizer row lands 0.35-0.5 s after its audio. An ACCEPT may
+# still open that span's turn this long after the VAD stop (the kiosk's
+# stt_mask_delay_secs).
+LOCKED_ACCEPT_GRACE_SECS = 0.7
 
 
 @dataclass
@@ -61,6 +67,7 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
         self._bargein_accept_frames = bargein_accept_frames
         self._bot_speaking = False
         self._user_speaking = False
+        self._user_stopped_at: float | None = None
         self._turn_open = False
         self._accept_run = 0
         self._reply_pending_until = 0.0
@@ -84,6 +91,7 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
 
     async def handle_user_turn_stopped(self) -> None:
         self._turn_open = False
+        self._user_stopped_at = None  # a closed turn's span opens nothing more
         await super().handle_user_turn_stopped()
 
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
@@ -97,6 +105,7 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
             self._bot_speaking = False
         elif isinstance(frame, VADUserStartedSpeakingFrame):
             self._user_speaking = True
+            self._user_stopped_at = None
             self._accept_run = 0
             self._last_verdict, self._blocked_logged = None, False
             if not self._turn_open:
@@ -104,6 +113,7 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
             await self._maybe_start()
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             self._user_speaking = False
+            self._user_stopped_at = time.monotonic()
         elif isinstance(frame, SpeakerVerdictFrame):
             self._tracker.record(frame.verdict, frame.source)
             self._locked = frame.locked
@@ -114,8 +124,16 @@ class TargetSpeakerTurnStartStrategy(BaseUserTurnStartStrategy):
             await self._maybe_start()
         return ProcessFrameResult.CONTINUE
 
+    def _in_locked_grace(self) -> bool:
+        """Locked, and this span's VAD stop is under the grace window old."""
+        return (
+            self._locked
+            and self._user_stopped_at is not None
+            and time.monotonic() - self._user_stopped_at <= LOCKED_ACCEPT_GRACE_SECS
+        )
+
     async def _maybe_start(self) -> None:
-        if self._turn_open or not self._user_speaking:
+        if self._turn_open or not (self._user_speaking or self._in_locked_grace()):
             return
         interrupting = (
             self._bot_speaking or time.monotonic() < self._reply_pending_until

@@ -756,6 +756,8 @@ def test_fusion_needs_the_whole_speaker_gate(tmp_path, monkeypatch, missing):
         ("voice_reject = 0.7", "voice_thresholds"),
         ("lock_asd_frames = 0", "lock_asd_frames"),
         ('embedder_model = ""', "embedder_model"),
+        # Segments stop growing at 3 s (SEGMENT_MAX_SECS): longer never embeds.
+        ("embed_segment_secs = 3.5", "embed_segment_secs_too_long"),
     ],
 )
 def test_bad_fusion_values_fail_the_load(tmp_path, monkeypatch, extra, error):
@@ -765,6 +767,11 @@ def test_bad_fusion_values_fail_the_load(tmp_path, monkeypatch, extra, error):
         body = FUSION_PRESET + extra + "\n"
     with pytest.raises(ValueError, match=error):
         _load(tmp_path, monkeypatch, body)
+
+
+def test_the_longest_embedding_segment_is_the_segment_cap(tmp_path, monkeypatch):
+    s = _load(tmp_path, monkeypatch, FUSION_PRESET + "embed_segment_secs = 3.0\n")
+    assert s.embed_segment_secs == 3.0
 
 
 def test_kiosk_state_accessor_reads_the_fsm(monkeypatch):

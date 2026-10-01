@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import os
 from pathlib import Path
@@ -317,6 +318,10 @@ async def warm_speaker_models() -> None:
     await _diarizer()
     await _separator()
     await _embedder()
+    if load_speaker_settings().identity == "fusion":
+        # The bot voiceprint resamples VieNeu's first chunks with SciPy;
+        # importing it there would stall the first reply's audio.
+        await asyncio.to_thread(importlib.import_module, "scipy.signal")
 
 
 async def _renderer() -> Any:

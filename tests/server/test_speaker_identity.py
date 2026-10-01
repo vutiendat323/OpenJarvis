@@ -236,6 +236,28 @@ def test_track_rebind_needs_absence_asd_a_target_slot_and_a_ready_voiceprint():
     assert lock.desired_pin(103.45) == 9
 
 
+def test_overlap_rows_with_the_target_slot_never_rebind_the_track():
+    # A bystander talking over the absent customer: the nearest face's ASD is
+    # high, and the row holds the customer's slot and the bystander's.
+    lock = _locked()
+    lock.voiceprint.enroll(E0, 2.0)
+    for i in range(12):
+        lock.observe_row(101.0 + i * 0.08, [0, 5], anchor=9, anchor_asd_accept=True)
+    assert lock.target_track == 7
+    assert lock.rebinds["track"] == 0
+
+
+def test_rebind_candidates_do_not_survive_the_target_returning():
+    lock = _locked()  # last seen at 100.4
+    lock.voiceprint.enroll(E0, 2.0)
+    _asd_rows(lock, 5, track=9, slot=0, t0=101.0)  # one row short of a rebind
+    lock.observe_row(
+        101.4, [], anchor=None, anchor_asd_accept=False, target_visible=True
+    )
+    _asd_rows(lock, 1, track=9, slot=0, t0=102.0)  # absent again
+    assert lock.target_track == 7
+
+
 def test_embeddings_from_an_older_epoch_or_segment_are_dropped():
     lock = _locked()
     job = _job(lock)
@@ -390,6 +412,8 @@ def _frame(gate, now, *slots, times=1):
         ),
         ("unknown_with_target_asd", {"asd": 0.9}, False, (1,), A, "asd"),
         ("unknown_without_evidence", {"mouth": 0.0}, False, (1,), U, None),
+        # MAR alone never vouches for a slot that is not the customer's.
+        ("unknown_with_target_mar", {"mouth": 0.9}, False, (1,), U, None),
     ],
 )
 def test_locked_verdict_table(case, faces_kw, voice, slots, expected, source):
@@ -444,6 +468,42 @@ def test_before_the_lock_it_is_the_audio_only_gate_and_asd_rows_lock_it():
             is expected
         )
     assert fusion.locked and fusion.lock.target_track == 7
+
+
+def test_before_the_lock_a_bot_voiceprint_match_is_rejected():
+    faces, now = _faces(mouth=0.9, asd=0.9)
+    fusion = FusionGate(FUSION, faces, fsm_state=lambda: "active")
+    plain = AudioOnlyGate(FUSION, faces=faces)
+    fusion.lock.slots[0] = SlotIdentity(bot_sim=0.9)
+    assert plain.frame(_row(0), bot_speaking=False, t=now, asd_stream_id="s") is A
+    assert fusion.frame(_row(0), bot_speaking=False, t=now, asd_stream_id="s") is R
+    assert not fusion.locked
+
+
+def test_the_asd_wait_follows_the_locked_customer_not_the_nearest_face():
+    now = time.time()
+    faces = FaceTrackBuffer()
+    for k in range(-2, 25):
+        faces.add(
+            {
+                "event": "faces",
+                "ts": now + k * 0.1,
+                "tracks": [
+                    {"track_id": 7, "distance_m": 1.2, "mouth_activity": 0.6},
+                    {"track_id": 9, "distance_m": 0.8, "mouth_activity": 0.1},
+                ],
+            }
+        )
+    gate = FusionGate(FUSION, faces, fsm_state=lambda: "active")
+    assert gate.asd_wait_track(now) == 9  # before the lock: the nearest face
+    gate.lock.observe_fsm("active", now - 1.0)
+    for i in range(6):
+        gate.lock.observe_row(
+            now - 0.45 + i * 0.08, [0], anchor=7, anchor_asd_accept=True
+        )
+    assert gate.asd_wait_track(now) == 7
+    assert gate.asd_wait_candidate(now, [_row(0)])
+    assert AudioOnlyGate(FUSION, faces=faces).asd_wait_track(now) == 9
 
 
 def test_without_asd_evidence_the_lock_never_forms():

@@ -1251,3 +1251,72 @@ async def test_segments_reach_the_embedder_and_enroll_the_voiceprint():
     assert embedder.calls == [13 * _ROW]
     assert gate.lock.voiceprint.seconds == pytest.approx(13 * 0.08)
     assert gate.lock.slots[0].segment_end == pytest.approx(101.96)
+
+
+@pytest.mark.anyio
+async def test_the_asd_wait_holds_for_the_locked_customer_not_a_nearer_face():
+    # Vision is pinned to the customer (track 7, 1.2 m) and pushes ASD for
+    # them only. Waiting on the nearer bystander (9) timed out every chunk and
+    # threw the customer's fresh ASD away; the row fell back to MAR.
+    from unittest.mock import AsyncMock
+
+    from openjarvis.server.voice.speaker_vision import VisionAudioBridge
+
+    now = _time.time()
+    faces = FaceTrackBuffer()
+    faces.set_asd_stream("s")
+    faces.use_pushed_asd(True)
+    for k in range(-2, 25):
+        faces.add({"event": "faces", "ts": now + k * 0.1, "tracks": [
+            {"track_id": 7, "distance_m": 1.2, "mouth_activity": 0.6},
+            {"track_id": 9, "distance_m": 0.8, "mouth_activity": 0.1}]})
+    faces.add_asd({"stream_id": "s", "track_id": 7, "t0": now - 0.5,
+                   "frame_secs": 0.04, "probabilities": [0.95] * 25})
+    bridge = VisionAudioBridge("ws://vision", "voice-1", faces)
+    bridge._ready, bridge._stream_id = True, "s"
+    bridge._start, bridge._samples = now - 2.0, 32000
+    bridge.start, bridge.close = AsyncMock(), AsyncMock()
+    bridge.offer = lambda audio, rate, channels: AudioSpan(now - 0.02, now, "s")
+    gate = _fusion_gate(faces=faces, now=now)
+    diarizer = _FakeDiarizer([(0.9, 0.0, 0.0, 0.0)])
+    processor = SpeakerAudioProcessor(diarizer=diarizer, gate=gate,
+                                      executor=ThreadPoolExecutor(max_workers=1),
+                                      vision_audio=bridge)
+    collector = _FrameCollector()
+    await _run(processor, [_loud()], collector=collector,
+               until=lambda: bool(collector.frames))
+    assert bridge.last_wait_timed_out is False and bridge.asd_late == 0
+    assert [(f.verdict, f.source) for f in collector.frames] == [
+        (Verdict.ACCEPT, "asd")
+    ]
+
+
+def test_a_new_epoch_drops_the_previous_customers_tse_enrollment():
+    gate = _fusion_gate()
+    processor, _ = _fusion_processor(
+        gate, separator=_FakeSeparator(),
+        separator_executor=ThreadPoolExecutor(max_workers=1),
+    )
+    processor._add_enrollment(np.ones(FRAME * 2, np.int16) * 300)
+    assert processor._enrolled == FRAME * 2
+    gate.lock.observe_fsm("cleanup", 101.1)  # the customer left: relock next
+    processor._after_fusion_row(_row_pcm(), 101.2, False)
+    assert processor._enrolled == 0 and len(processor._enroll) == 0
+
+
+@pytest.mark.anyio
+async def test_the_fusion_session_summary_counts_bookkeeping_errors():
+    import openjarvis.server.voice.speaker_audio as speaker_audio
+
+    processor, _ = _fusion_processor(_fusion_gate())
+    processor._fusion_row_errors = 3
+    messages = []
+    sink = speaker_audio.logger.add(
+        lambda message: messages.append(str(message)), level="INFO"
+    )
+    try:
+        await processor._stop()
+    finally:
+        speaker_audio.logger.remove(sink)
+    (line,) = [m for m in messages if "speaker_fusion session" in m]
+    assert "fusion_row_errors=3" in line

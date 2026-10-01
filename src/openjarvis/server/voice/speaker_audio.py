@@ -28,7 +28,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from openjarvis.server.voice.speaker import AudioOnlyGate, Verdict
+from openjarvis.server.voice.speaker import SEGMENT_MAX_SECS, AudioOnlyGate, Verdict
 from openjarvis.server.voice.speaker_embedding import EmbeddingWorker, SpeakerEmbedder
 from openjarvis.server.voice.speaker_identity import EmbeddingJob, FusionGate
 from openjarvis.server.voice.speaker_vision import AudioSpan, VisionAudioBridge
@@ -217,9 +217,6 @@ SEPARATION_CONTEXT_SECS = 2.0
 # Room reverb keeps the bot audible briefly after playback ends.
 BOT_TAIL_SECS = 0.3
 _MAX_QUEUED_CHUNKS = 2
-# Fusion: a slot's solo speech is embedded in segments of embed_segment_secs,
-# keeping at most this much while it accumulates.
-SEGMENT_MAX_SECS = 3.0
 # A segment enrolls the customer's voiceprint only when this share of its rows
 # was ASD-confirmed on the locked face.
 TARGET_CONFIRMED_FRACTION = 0.8
@@ -463,11 +460,19 @@ class SpeakerAudioProcessor(FrameProcessor):
                 and stream_id == self._vision_audio.stream_id
                 and self._gate.asd_wait_candidate(ended, probs)
             ):
+                # Fusion waits for the locked customer's track, the one Vision
+                # is pinned to; the audio-only gate keeps the bridge's anchor.
+                wait_track = (
+                    {"track_id": self._fusion.asd_wait_track(ended)}
+                    if self._fusion is not None
+                    else {}
+                )
                 await self._vision_audio.wait_for_evidence(
                     self._gate._faces,
                     ended - len(probs) * step,
                     ended,
                     timeout=self._gate.asd_wait_secs,
+                    **wait_track,
                 )
                 wait_timed_out = getattr(
                     self._vision_audio, "last_wait_timed_out", False
@@ -639,6 +644,9 @@ class SpeakerAudioProcessor(FrameProcessor):
             self._segments.clear()
             if self._embeddings is not None:
                 self._embeddings.clear()
+            # TSE must not separate the next customer with this one's voice.
+            self._enroll.clear()
+            self._enrolled = 0
         for event in lock.drain_events():
             logger.info(f"{self}: speaker_lock {event.fields()}")
         if self._vision_audio is not None and hasattr(self._vision_audio, "pin"):
@@ -681,8 +689,8 @@ class SpeakerAudioProcessor(FrameProcessor):
         return i is not None and self._overlap_values[i]
 
     def _add_enrollment(self, pcm: np.ndarray) -> None:
-        # ponytail: one enrollment per session (kiosk resets per customer);
-        # re-enroll on a target change if customers ever share a session.
+        # One enrollment per customer: fusion clears it on each lock epoch
+        # (_fusion_bookkeeping); without fusion, one per Voice session.
         self._enroll.append(pcm.astype(np.float32) / 32768.0)
         self._enrolled += len(pcm)
         limit = self._separator.enroll_samples
@@ -826,7 +834,8 @@ class SpeakerAudioProcessor(FrameProcessor):
                 f"embed_ms_p95={_percentile(embeds, 95)} "
                 f"stt_masked_no_verdict_frames={self.stt_masked_no_verdict} "
                 f"echo_rejects={self._fusion.echo_rejects} "
-                f"bargein_blocked={getattr(self._tracker, 'bargein_blocked', 0)}"
+                f"bargein_blocked={getattr(self._tracker, 'bargein_blocked', 0)} "
+                f"fusion_row_errors={self._fusion_row_errors}"
             )
         if self._embeddings is not None:
             await self._embeddings.close()

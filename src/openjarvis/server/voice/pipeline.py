@@ -135,6 +135,13 @@ def build_voice_pipeline(
         if speaker.stt_mask and hasattr(stt, "enable_masked_feed"):
             stt_delay = speaker.stt_mask_delay_secs
         fusion = speaker.identity == "fusion" and faces is not None
+        if speaker.identity == "fusion" and faces is None:
+            from loguru import logger
+
+            logger.warning(
+                "voice speaker identity=fusion without Vision faces; "
+                "using the audio-only gate"
+            )
         if fusion:
             from openjarvis.kiosk.runtime import current_state
             from openjarvis.server.voice.speaker_identity import FusionGate

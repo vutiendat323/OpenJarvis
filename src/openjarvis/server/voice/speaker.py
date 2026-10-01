@@ -67,6 +67,11 @@ class SpeakerSettings:
     embedder_model: str = "titanet_small"
 
 
+# Fusion: a slot's solo speech is embedded in segments of embed_segment_secs,
+# keeping at most this much while it accumulates (speaker_audio uses it).
+SEGMENT_MAX_SECS = 3.0
+
+
 def _fraction(section: Mapping[str, Any], key: str, default: float) -> float:
     value = section.get(key, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -185,6 +190,12 @@ def load_speaker_settings() -> SpeakerSettings:
     embedder_model = section.get("embedder_model", defaults.embedder_model)
     if not isinstance(embedder_model, str) or not embedder_model.strip():
         raise ValueError("voice_speaker_embedder_model_must_be_a_name")
+    embed_segment_secs = _positive_float(
+        section, "embed_segment_secs", defaults.embed_segment_secs
+    )
+    if embed_segment_secs > SEGMENT_MAX_SECS:
+        # A segment never grows past SEGMENT_MAX_SECS, so it would never embed.
+        raise ValueError("voice_speaker_embed_segment_secs_too_long")
 
     return SpeakerSettings(
         enabled=enabled,
@@ -233,9 +244,7 @@ def load_speaker_settings() -> SpeakerSettings:
         voice_match=voice_match,
         voice_reject=voice_reject,
         bot_match=_fraction(section, "bot_match", defaults.bot_match),
-        embed_segment_secs=_positive_float(
-            section, "embed_segment_secs", defaults.embed_segment_secs
-        ),
+        embed_segment_secs=embed_segment_secs,
         embedder_model=embedder_model.strip(),
     )
 
@@ -342,13 +351,19 @@ class AudioOnlyGate:
             and self._bot_frames[slot] / heard >= ECHO_BOT_FRACTION
         )
 
+    def asd_wait_track(self, t: float) -> int | None:
+        """The face whose ASD a chunk ending at *t* waits for: the anchor."""
+        if self._faces is None or not self._faces.fresh(t):
+            return None
+        return self._faces.anchor(t, self._anchor_max_m)
+
     def asd_wait_candidate(self, t: float, rows: Sequence[Sequence[float]]) -> bool:
         return bool(
             self.vision_asd
             and self._faces is not None
             and any(p >= self._threshold for row in rows for p in row)
             and self._faces.fresh(t)
-            and self._faces.anchor(t, self._anchor_max_m) is not None
+            and self.asd_wait_track(t) is not None
         )
 
     def frame(
