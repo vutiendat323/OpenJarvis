@@ -190,7 +190,8 @@ def _is_openai_reasoning_model(model: str) -> bool:
 
 def _uses_openai_responses(model: str) -> bool:
     """Return whether this OpenAI model requires the Responses API here."""
-    return model.lower().startswith("gpt-5.6-") or _is_gpt_6_responses_model(model)
+    name = openrouter_model_id(model).removeprefix("openai/").lower()
+    return name.startswith("gpt-5.6-") or _is_gpt_6_responses_model(model)
 
 
 def _is_gpt_6_responses_model(model: str) -> bool:
@@ -339,7 +340,7 @@ class CloudEngine(InferenceEngine):
     is_cloud = True
 
     def supports_semantic_reasoning_stream(self, model: str) -> bool:
-        return _is_deepseek_model(model) or _is_gpt_6_responses_model(model)
+        return _is_deepseek_model(model) or _uses_openai_responses(model)
 
     def __init__(self) -> None:
         self._openai_client: Any = None
@@ -1375,7 +1376,7 @@ class CloudEngine(InferenceEngine):
             max_tokens=max_tokens,
             **kwargs,
         )
-        if _is_gpt_6_responses_model(model):
+        if _uses_openai_responses(model):
             async for chunk in self._stream_full_openai_responses(
                 messages, model=model, max_tokens=max_tokens, **kwargs
             ):
@@ -1817,7 +1818,7 @@ class CloudEngine(InferenceEngine):
             ):
                 yield chunk
             return
-        if _is_gpt_6_responses_model(model):
+        if _uses_openai_responses(model):
             async for chunk in self._stream_full_openai_responses(
                 messages, model=model, max_tokens=max_tokens, **kwargs
             ):
@@ -1924,7 +1925,7 @@ class CloudEngine(InferenceEngine):
         max_tokens: int,
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
-        """Stream GPT-6 text and function calls while retaining reasoning items."""
+        """Stream Luna text and function calls with high reasoning effort."""
         client = (
             self._openrouter_async_client
             if _is_openrouter_model(model)

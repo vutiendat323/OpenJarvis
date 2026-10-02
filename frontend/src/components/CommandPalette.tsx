@@ -40,6 +40,7 @@ export const CLOUD_PROVIDERS: CloudProvider[] = [
     envKey: 'OPENAI_API_KEY',
     models: [
       { id: 'gpt-6-luna', desc: 'GPT-6 Luna — fast agentic reasoning' },
+      { id: 'gpt-5.6-luna', desc: 'GPT-5.6 Luna' },
       { id: 'gpt-4o', desc: 'GPT-4o — fast, multimodal' },
       { id: 'gpt-4o-mini', desc: 'GPT-4o Mini — cheap, fast' },
       { id: 'o3-mini', desc: 'o3-mini — reasoning' },

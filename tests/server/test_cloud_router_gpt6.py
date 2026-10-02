@@ -9,8 +9,10 @@ from openjarvis.server import cloud_router
 
 
 @pytest.mark.asyncio
-async def test_direct_gpt_6_stream_omits_temperature(
+@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-5.6-luna"])
+async def test_direct_luna_stream_uses_high_reasoning_without_temperature(
     monkeypatch: pytest.MonkeyPatch,
+    model: str,
 ) -> None:
     sent: dict[str, Any] = {}
 
@@ -45,12 +47,12 @@ async def test_direct_gpt_6_stream_omits_temperature(
     tokens = [
         token
         async for token in cloud_router.stream_cloud(
-            "gpt-6-luna", [Message(role=Role.USER, content="Hi")]
+            model, [Message(role=Role.USER, content="Hi")]
         )
     ]
 
     assert tokens == ["OK"]
-    assert sent["model"] == "gpt-6-luna"
+    assert sent["model"] == model
     assert sent["reasoning_effort"] == "high"
     assert sent["max_completion_tokens"] == 1024
     assert "temperature" not in sent

@@ -149,6 +149,7 @@ class TestCloudEngineGenerate:
         ("model", "provider_model"),
         [
             ("gpt-5.6-luna", "gpt-5.6-luna"),
+            ("openrouter/openai/gpt-5.6-luna", "openai/gpt-5.6-luna"),
             ("gpt-6-luna", "gpt-6-luna"),
             ("openrouter/openai/gpt-6-luna", "openai/gpt-6-luna"),
         ],
@@ -224,11 +225,13 @@ class TestCloudEngineGenerate:
     @pytest.mark.parametrize(
         ("model", "provider_model"),
         [
+            ("gpt-5.6-luna", "gpt-5.6-luna"),
+            ("openrouter/openai/gpt-5.6-luna", "openai/gpt-5.6-luna"),
             ("gpt-6-luna", "gpt-6-luna"),
             ("openrouter/openai/gpt-6-luna", "openai/gpt-6-luna"),
         ],
     )
-    async def test_gpt_6_tool_stream_uses_high_reasoning_responses(
+    async def test_luna_tool_stream_uses_high_reasoning_responses(
         self, model: str, provider_model: str
     ) -> None:
         async def events():
@@ -360,11 +363,13 @@ class TestCloudEngineGenerate:
     @pytest.mark.parametrize(
         ("model", "provider_model"),
         [
+            ("gpt-5.6-luna", "gpt-5.6-luna"),
+            ("openrouter/openai/gpt-5.6-luna", "openai/gpt-5.6-luna"),
             ("gpt-6-luna", "gpt-6-luna"),
             ("openrouter/openai/gpt-6-luna", "openai/gpt-6-luna"),
         ],
     )
-    async def test_gpt_6_text_stream_uses_high_reasoning_responses(
+    async def test_luna_text_stream_uses_high_reasoning_responses(
         self, model: str, provider_model: str
     ) -> None:
         async def events():
@@ -844,7 +849,7 @@ class TestOpenRouterToolForwarding:
     @pytest.mark.parametrize(
         ("selected_model", "provider_model"),
         [
-            ("openrouter/openai/gpt-5.6-luna", "openai/gpt-5.6-luna"),
+            ("openrouter/openai/gpt-4o", "openai/gpt-4o"),
             ("openrouter/auto", "openrouter/auto"),
         ],
     )
