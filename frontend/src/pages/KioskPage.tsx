@@ -7,6 +7,7 @@ import { VisualizerControls } from '@/components/Visualizer/VisualizerControls';
 import { FloatingCodexPet } from '@/components/Kiosk/Pet/FloatingCodexPet';
 import { SharedBrowserPane } from '@/components/Kiosk/SharedBrowserPane';
 import { VoiceWaveform } from '@/components/Kiosk/VoiceWaveform';
+import { ScreensMonitorButton } from '@/components/Kiosk/ScreensMonitorButton';
 import { currentVoiceTurnRows } from '@/components/Chat/voiceTurnRows';
 import { useDraggableResizable } from '@/hooks/useDraggableResizable';
 import { useKioskState, type KioskState } from '@/hooks/useKioskState';
@@ -142,6 +143,7 @@ export function KioskPage() {
   );
   const { state: kioskState, micEnabled, respond } = useKioskState();
   const browser = useSharedBrowser();
+  const [screenVisible, setScreenVisible] = useState(true);
   const [voiceCollapsed, setVoiceCollapsed] = useState(false);
   const [browserMode, setBrowserMode] = useState<'split' | 'floating'>(() => {
     try {
@@ -303,8 +305,8 @@ export function KioskPage() {
     if (typeof window === 'undefined') return undefined;
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
-    const horizontalSplit = browserMode === 'split' && viewportWidth >= 768;
-    const verticalSplit = browserMode === 'split' && viewportWidth < 768;
+    const horizontalSplit = screenVisible && browserMode === 'split' && viewportWidth >= 768;
+    const verticalSplit = screenVisible && browserMode === 'split' && viewportWidth < 768;
     const petSize = Math.round(110 * (settings.petScale / 2));
     const paneStartX = horizontalSplit ? viewportWidth * splitRatio / 100 : 0;
     const paneWidth = horizontalSplit ? viewportWidth - paneStartX : viewportWidth;
@@ -314,13 +316,13 @@ export function KioskPage() {
       x: Math.round(paneStartX + (paneWidth - petSize) / 2),
       y: Math.round(paneStartY + (paneHeight - petSize) / 2),
     };
-  }, [browserMode, settings.petScale, splitRatio]);
+  }, [browserMode, screenVisible, settings.petScale, splitRatio]);
 
   const voiceAssistantPane = (
     <aside
       aria-label="Voice assistant"
       className={
-        browserMode === 'floating'
+        !screenVisible || browserMode === 'floating'
           ? 'relative h-full w-full shrink-0 overflow-hidden bg-[#071410]'
           : `relative shrink-0 overflow-hidden border-t border-white/10 bg-[#071410] md:border-l md:border-t-0 ${
               voiceCollapsed ? 'h-14 md:h-full md:w-14' : 'h-[35%] min-h-48 md:h-full'
@@ -328,7 +330,7 @@ export function KioskPage() {
       }
       style={{
         background: 'linear-gradient(155deg, #0b1e19 0%, #071410 58%, #06110f 100%)',
-        ...(browserMode === 'split' && !voiceCollapsed
+        ...(screenVisible && browserMode === 'split' && !voiceCollapsed
           ? {
               width: `${100 - splitRatio}%`,
               flex: `0 0 ${100 - splitRatio}%`,
@@ -403,7 +405,7 @@ export function KioskPage() {
           <X size={20} />
         </button>
 
-        <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col items-center gap-3 px-4 pb-4 pointer-events-none">
+        <div className="absolute inset-x-0 bottom-0 z-40 flex flex-col items-center gap-3 px-4 pb-4 pointer-events-none">
           {kioskState === 'active' && (
             <>
               {settings.showCaptions && (
@@ -434,12 +436,17 @@ export function KioskPage() {
               </div>
             </>
           )}
-          <div className="pointer-events-auto">
+          <div className="pointer-events-auto flex items-center gap-2">
             <VoiceWaveform
               speaking={voice.status === 'speaking' && !voiceCollapsed}
               voiceStatus={voiceCollapsed ? 'idle' : voice.status}
               getFrequencyData={voice.getFrequencyData}
               onMicClick={isVoiceActive ? endVoice : startPolicyVoice}
+            />
+            <ScreensMonitorButton
+              visible={screenVisible}
+              language={uiLanguage}
+              onToggle={() => setScreenVisible((visible) => !visible)}
             />
           </div>
         </div>
@@ -462,9 +469,12 @@ export function KioskPage() {
           >
             {/* Customer display and its browser controls share the outer frame. */}
             <div
+              id="kiosk-shared-screen"
+              hidden={!screenVisible}
               data-testid="customer-display-pane-container"
               className="flex min-h-0 min-w-0 flex-col overflow-hidden"
               style={{
+                display: screenVisible ? undefined : 'none',
                 width: voiceCollapsed ? 'calc(100% - 3.5rem)' : `${splitRatio}%`,
                 flex: voiceCollapsed ? '1 1 auto' : `0 0 ${splitRatio}%`,
               }}
@@ -511,6 +521,8 @@ export function KioskPage() {
 
           {/* Floating Card: Customer Display */}
           <div
+            id="kiosk-shared-screen"
+            hidden={!screenVisible}
             data-testid="floating-browser-container"
             data-maximized={isFloatingMaximized ? 'true' : 'false'}
             className={`fixed z-30 select-none touch-none transition-[box-shadow] ${
@@ -524,16 +536,17 @@ export function KioskPage() {
                   ? 'shadow-[0_20px_50px_rgba(0,0,0,0.8)] ring-1 ring-cyan-400/50'
                   : 'shadow-[0_12px_36px_rgba(0,0,0,0.65)] hover:ring-1 hover:ring-white/20'
             }`}
-            style={
-              isFloatingMaximized
+            style={{
+              display: screenVisible ? undefined : 'none',
+              ...(isFloatingMaximized
                 ? { left: 0, top: 0, width: '100vw', height: '100vh' }
                 : {
                     left: `${floatingPos.x}px`,
                     top: `${floatingPos.y}px`,
                     width: `${floatingSize.width}px`,
                     height: `${floatingSize.height}px`,
-                  }
-            }
+                  }),
+            }}
           >
             {/* Inner content box with overflow-hidden and rounded corners */}
             <div
