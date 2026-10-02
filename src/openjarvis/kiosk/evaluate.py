@@ -28,6 +28,11 @@ def set_config(cfg: KioskConfig) -> None:
     _CFG = cfg
 
 
+def get_config() -> KioskConfig:
+    """Current evaluator settings, shared by live operator controls."""
+    return _CFG
+
+
 # -- Main entry point -------------------------------------------------
 
 

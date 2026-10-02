@@ -60,6 +60,44 @@ class VisionAudioBridge:
         # Arrival age of pushed ASD windows (ms past the window's end), for
         # the session summary.
         self.asd_age_ms: deque[float] = deque(maxlen=_MAX_AGES)
+        self.console = None
+        self._telemetry: dict | None = None
+        self._monitor_ready = False
+        self._control_task: asyncio.Task | None = None
+
+    def offer_telemetry(self, snapshot: dict) -> None:
+        """One pending observation, replaced by newer audio; never a PCM queue."""
+        self._telemetry = snapshot
+        self._queued.set()
+
+    async def _console_command(self, ws, event: dict, stream_id: str) -> None:
+        result = {
+            "cmd": "voice_command_result", "stream_id": stream_id,
+            "request_id": event.get("request_id"), "ok": False,
+        }
+        try:
+            if self.console is None:
+                raise ValueError("Voice console is unavailable")
+            action = event.get("action")
+            if action == "set":
+                result.update(self.console.tune(event.get("key"), event.get("value")))
+            elif action == "save":
+                from openjarvis.server.voice.speaker_console import save_speaker_values
+
+                # Snapshot on the event loop, then write off the realtime path.
+                values = self.console.values()
+                await asyncio.to_thread(save_speaker_values, values)
+            else:
+                raise ValueError("Unknown voice command")
+            result["ok"] = True
+        except Exception as exc:
+            logger.warning("operator console command failed: {}", exc)
+            result["error"] = str(exc)
+        if self._stream_id == stream_id:
+            try:
+                await ws.send(json.dumps(result))
+            except Exception as exc:
+                logger.warning("operator console response send failed: {}", exc)
 
     @property
     def ready(self) -> bool:
@@ -192,6 +230,8 @@ class VisionAudioBridge:
         if stream_id != self._stream_id:
             return
         self._ready = False
+        self._monitor_ready = False
+        self._telemetry = None
         self._stream_id = None
         self._faces.set_asd_stream(None)
         self._pending.clear()
@@ -229,6 +269,12 @@ class VisionAudioBridge:
                             }
                         )
                     )
+                if self._monitor_ready and self._telemetry is not None:
+                    snapshot, self._telemetry = self._telemetry, None
+                    await ws.send(json.dumps({
+                        "cmd": "voice_telemetry", "stream_id": stream_id,
+                        "data": snapshot,
+                    }, allow_nan=False))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - reconnect after send failure
@@ -249,6 +295,11 @@ class VisionAudioBridge:
                 ) as ws:
                     self._stream_id = stream_id
                     try:
+                        if self.console is not None:
+                            await ws.send(json.dumps({
+                                "cmd": "voice_monitor_start", "stream_id": stream_id,
+                                "session_id": self._session_id,
+                            }))
                         await ws.send(
                             json.dumps(
                                 {
@@ -268,6 +319,33 @@ class VisionAudioBridge:
                                 continue
                             if not isinstance(event, dict):
                                 continue
+                            if event.get("event") == "voice_monitor_status":
+                                if event.get("stream_id") != stream_id:
+                                    continue
+                                self._monitor_ready = event.get("status") == "ready"
+                                if self._monitor_ready and sender is None:
+                                    sender = asyncio.create_task(
+                                        self._send(ws, stream_id)
+                                    )
+                                    self._queued.set()
+                                continue
+                            if event.get("event") == "voice_command":
+                                if (event.get("stream_id") == stream_id
+                                        and self._monitor_ready):
+                                    if (self._control_task is not None
+                                            and not self._control_task.done()):
+                                        await ws.send(json.dumps({
+                                            "cmd": "voice_command_result",
+                                            "stream_id": stream_id,
+                                            "request_id": event.get("request_id"),
+                                            "ok": False,
+                                            "error": "Voice control is busy",
+                                        }))
+                                    else:
+                                        self._control_task = asyncio.create_task(
+                                            self._console_command(ws, event, stream_id)
+                                        )
+                                continue
                             if event.get("event") == "asd":
                                 self._on_asd(event, stream_id)
                                 continue
@@ -285,7 +363,10 @@ class VisionAudioBridge:
                                 if self._version == 2 and self._pin is not None:
                                     self._pin_dirty = True
                                     self._queued.set()
-                                sender = asyncio.create_task(self._send(ws, stream_id))
+                                if sender is None:
+                                    sender = asyncio.create_task(
+                                        self._send(ws, stream_id)
+                                    )
                             elif status == "invalid" and self._version == 2:
                                 # A Vision older than v2: no pins, ASD via faces.
                                 self._version = 1
@@ -295,11 +376,20 @@ class VisionAudioBridge:
                                 retry_now = True
                                 break
                             elif status in ("disabled", "unavailable", "invalid"):
+                                if self._monitor_ready:
+                                    # Observations still work without Light-ASD.
+                                    continue
                                 self._terminal = True
                                 break
                             elif status == "busy":
                                 break
                     finally:
+                        if self._control_task is not None:
+                            self._control_task.cancel()
+                            await asyncio.gather(
+                                self._control_task, return_exceptions=True
+                            )
+                            self._control_task = None
                         if sender is not None:
                             sender.cancel()
                             await asyncio.gather(sender, return_exceptions=True)

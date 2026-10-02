@@ -131,12 +131,13 @@ def _setup_kiosk(app: FastAPI, bus, channel_bridge) -> None:
 
     from openjarvis.kiosk.config import KioskConfig
     from openjarvis.kiosk.effects import KioskDependencies
+    from openjarvis.kiosk.operator_config import load_approach_threshold
     from openjarvis.kiosk.routes import router as kiosk_router
     from openjarvis.kiosk.runtime import kiosk_main
     from openjarvis.kiosk.vision_client import VisionClient
 
     config = KioskConfig(
-        approach_threshold_m=float(os.environ.get("KIOSK_APPROACH_THRESHOLD_M", "1.0")),
+        approach_threshold_m=load_approach_threshold(),
         approach_entry_debounce=float(
             os.environ.get("KIOSK_APPROACH_ENTRY_DEBOUNCE", "0.4")
         ),

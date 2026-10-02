@@ -165,6 +165,8 @@ def build_voice_pipeline(
             separator=separator,
             embedder=embedder if fusion else None,
             tracker=tracker,
+            speaker_settings=speaker,
+            audio_enhancer=enhancer,
             **({"vision_audio": vision_audio} if vision_audio is not None else {}),
         )
         if stt_delay:

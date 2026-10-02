@@ -297,6 +297,8 @@ class SpeakerAudioProcessor(FrameProcessor):
         vision_audio: VisionAudioBridge | None = None,
         embedder: SpeakerEmbedder | None = None,
         tracker: Any | None = None,
+        speaker_settings: Any | None = None,
+        audio_enhancer: Any | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -348,6 +350,12 @@ class SpeakerAudioProcessor(FrameProcessor):
             and not getattr(embedder, "disabled", False)
             else None
         )
+        self._console = None
+        if speaker_settings is not None and hasattr(vision_audio, "offer_telemetry"):
+            from openjarvis.server.voice.speaker_console import SpeakerConsole
+
+            self._console = SpeakerConsole(self, speaker_settings, audio_enhancer)
+            vision_audio.console = self._console
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -381,6 +389,11 @@ class SpeakerAudioProcessor(FrameProcessor):
                 arrival = span.end if span is not None else time.time()
                 self._stt_line.append((arrival, frame))
             self._enqueue(frame, span)
+            if self._console is not None:
+                try:
+                    self._console.audio(frame.audio)
+                except Exception:
+                    logger.exception("operator console audio observation failed")
 
     def _enqueue(
         self, frame: InputAudioRawFrame, span: AudioSpan | None = None
@@ -534,6 +547,8 @@ class SpeakerAudioProcessor(FrameProcessor):
                             f"{self}: speaker target slot {target} -> "
                             f"{self._gate.target}"
                         )
+                    if self._console is not None:
+                        self._console.verdict(verdict, t)
                     if verdict is not None:
                         fusion = self._fusion
                         await self.push_frame(

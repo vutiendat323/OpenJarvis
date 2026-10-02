@@ -29,6 +29,7 @@ class OptionalRNNoiseFilter(BaseAudioFilter):
     def __init__(self, delegate: Any) -> None:
         self._delegate = delegate
         self.effective_name = "none"
+        self.raw_rms_dbfs: float | None = None
 
     async def start(self, sample_rate: int) -> None:
         try:
@@ -42,6 +43,9 @@ class OptionalRNNoiseFilter(BaseAudioFilter):
         self.effective_name = "rnnoise"
 
     async def filter(self, audio: bytes) -> bytes:
+        from openjarvis.server.voice.speaker_console import audio_levels
+
+        self.raw_rms_dbfs = audio_levels(audio, include_waveform=False)["rms_dbfs"]
         if self.effective_name == "none":
             return audio
         try:

@@ -448,6 +448,11 @@ class FusionGate(AudioOnlyGate):
     def locked(self) -> bool:
         return self.lock.locked
 
+    def apply_live_settings(self, settings: SpeakerSettings) -> None:
+        super().apply_live_settings(settings)
+        self.settings = settings
+        self.lock._s = settings
+
     def asd_wait_track(self, t: float) -> int | None:
         """The pinned customer once locked: Vision pushes ASD for them only,
         so waiting on a nearer face would time out every chunk."""

@@ -344,6 +344,13 @@ class AudioOnlyGate:
     def overlap(self) -> bool:
         return self._overlap.active
 
+    def apply_live_settings(self, settings: SpeakerSettings) -> None:
+        """Apply validated console thresholds without resetting speaker evidence."""
+        self._mouth_active = settings.mouth_active
+        self._anchor_max_m = settings.anchor_max_m
+        self._asd_accept = settings.asd_accept_prob
+        self._asd_reject = settings.asd_reject_prob
+
     def is_echo(self, slot: int) -> bool:
         heard = self._active_frames[slot]
         return (
