@@ -102,7 +102,9 @@ async def kiosk_main(
                     result = task.result()
                     if isinstance(result, dict) and "event" in result:
                         # It's a vision event
-                        runtime.history.push(_dict_to_vision_event(result))
+                        event = _dict_to_vision_event(result)
+                        runtime.history.push(event)
+                        _set_presence_from_event(event.kind)
                     elif result in ("accept", "decline"):
                         # It's a user response — store for this evaluation cycle
                         user_response = result
@@ -192,6 +194,20 @@ def _set_state(state: KioskState) -> None:
 def current_state() -> KioskState:
     """The FSM's current state; Voice's target lock follows it (same process)."""
     return _current_state
+
+
+# Whether Vision's latest event saw a customer; None before the first event.
+_customer_present: bool | None = None
+
+
+def _set_presence_from_event(kind: str) -> None:
+    global _customer_present
+    _customer_present = kind != "no_person"
+
+
+def customer_present() -> bool | None:
+    """Read-only view for the voice session's absence timer; not FSM input."""
+    return _customer_present
 
 
 async def push_user_response(response: UserResponse) -> None:

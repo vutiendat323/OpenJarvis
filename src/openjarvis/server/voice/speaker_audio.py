@@ -277,8 +277,9 @@ class SpeakerAudioProcessor(FrameProcessor):
     model. With ``stt_delay_secs`` it also releases a delayed copy of the mic
     for Gemini (``SttAudioFrame``), silencing every stretch the gate
     rejected, so a phone video or a bystander never lands in the customer's
-    transcript, and every stretch the diarizer heard no voice in. Audio whose
-    verdict is not in yet goes through unchanged.
+    transcript, and every stretch the diarizer heard no voice in. Fusion
+    releases audio early once verdicts cover it; missing evidence waits until
+    the configured deadline and is silenced after a customer is locked.
 
     With a ``separator``, overlapped speech is held back from Gemini and
     replaced by the customer's voice extracted from it, enrolled from their
@@ -597,6 +598,21 @@ class SpeakerAudioProcessor(FrameProcessor):
             return i
         return None
 
+    def _verdict_covers(self, start: float, end: float) -> bool:
+        """Every sample of an early-released audio frame needs decided evidence."""
+        if end <= start:
+            return False
+        half_sample = 0.5 / SAMPLE_RATE
+        first = self._frame_at(start + half_sample)
+        last = self._frame_at(end - half_sample)
+        if first is None or last is None:
+            return False
+        return all(
+            self._verdict_starts[i + 1]
+            <= self._verdict_starts[i] + self._diarizer.frame_secs + 1e-6
+            for i in range(first, last)
+        )
+
     def _silenced(self, t: float) -> bool:
         """Rejected speech, sound the diarizer heard no voice in, or -- once a
         customer is locked -- anything not confirmed as them.
@@ -726,12 +742,21 @@ class SpeakerAudioProcessor(FrameProcessor):
 
     async def _release_stt(self, cutoff: float, *, separate: bool = True) -> None:
         async with self._release_lock:
-            while self._stt_line and self._stt_line[0][0] <= cutoff:
-                arrived, frame = self._stt_line.popleft()
+            while self._stt_line:
+                arrived, frame = self._stt_line[0]
                 duration = (
                     frame.num_frames / frame.sample_rate if frame.sample_rate else 0
                 )
                 t = arrived - duration / 2
+                # Fusion rows are immutable once decided. Send covered audio
+                # early; the configured delay remains the missing-evidence
+                # deadline, including fail-closed masking after customer lock.
+                if arrived > cutoff and (
+                    self._fusion is None
+                    or not self._verdict_covers(arrived - duration, arrived)
+                ):
+                    break
+                self._stt_line.popleft()
                 if self._can_separate(frame) and self._overlap_at(t):
                     self._held.append((arrived, frame))
                     if self._held_samples() >= self._separator.window_samples // 2:

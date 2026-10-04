@@ -20,6 +20,7 @@ input_schema_json = '''
       }
     },
     "open_cart":{"type":"boolean"},
+    "finish_turn":{"type":"boolean"},
     "customer_message":{"type":"string","minLength":1}
   },
   "required":["items","open_cart","customer_message"],
@@ -35,6 +36,9 @@ captured_from = "browser_network_requests"
 allowed_content_types = ["application/json"]
 required_paths_json = '''[{"path":"result.items","type":"array"},{"path":"result.hasNext","type":"boolean"}]'''
 
+[skill.metadata.openjarvis.input_defaults]
+finish_turn = true
+
 [[skill.steps]]
 tool_name = "http_request"
 output_key = "menu"
@@ -47,6 +51,7 @@ arguments_template = '''
 {
   "action":"add",
   "open_cart":"{open_cart}",
+  "finish_turn":"{finish_turn}",
   "items":{
     "$map":"{items}",
     "as":"request",

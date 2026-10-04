@@ -941,10 +941,11 @@ def _fusion_gate(locked=True, faces=None, now=100.0):
     return gate
 
 
-def _fusion_processor(gate, **kwargs):
+def _fusion_processor(gate, *, stt_delay_secs=0.5, **kwargs):
     processor = SpeakerAudioProcessor(
         diarizer=_FakeDiarizer([]), gate=gate,
-        executor=ThreadPoolExecutor(max_workers=1), stt_delay_secs=0.5, **kwargs,
+        executor=ThreadPoolExecutor(max_workers=1),
+        stt_delay_secs=stt_delay_secs, **kwargs,
     )
     pushed = []
 
@@ -960,6 +961,70 @@ def _unverdicted(processor, arrival, level=1000):
     processor._stt_line.append((arrival, InputAudioRawFrame(
         audio=(np.ones(FRAME, np.int16) * level).tobytes(),
         sample_rate=16_000, num_channels=1)))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("verdict, masked, expected", [
+    (Verdict.ACCEPT, False, 1000),
+    (Verdict.REJECT, False, 0),
+    (None, False, 0),
+    (Verdict.UNCERTAIN, True, 0),
+])
+async def test_fusion_releases_decided_audio_before_the_stt_deadline(
+    verdict, masked, expected,
+):
+    processor, pushed = _fusion_processor(_fusion_gate(), stt_delay_secs=0.7)
+    processor._remember_verdict(100.0, verdict, mask=masked)
+    _unverdicted(processor, 100.08)
+
+    # Now is 100.42: the row is decided after 340 ms, before its 700 ms cap.
+    await processor._release_stt(100.42 - processor._stt_delay)
+
+    assert [int(p[0]) for p in pushed] == [expected]
+    assert not processor._stt_line
+    assert processor.stt_masked_no_verdict == 0
+
+
+@pytest.mark.anyio
+async def test_fusion_waits_for_a_late_verdict_then_releases_without_extra_delay():
+    processor, pushed = _fusion_processor(_fusion_gate(), stt_delay_secs=0.7)
+    _unverdicted(processor, 100.08)
+    await processor._release_stt(99.9)
+    assert pushed == []
+    assert len(processor._stt_line) == 1
+    assert processor.stt_masked_no_verdict == 0
+
+    processor._remember_verdict(100.0, Verdict.ACCEPT)
+    await processor._release_stt(99.9)
+    assert [int(p[0]) for p in pushed] == [1000]
+
+
+@pytest.mark.anyio
+async def test_fusion_keeps_the_deadline_and_audio_order_when_a_verdict_is_missing():
+    processor, pushed = _fusion_processor(_fusion_gate(), stt_delay_secs=0.7)
+    _unverdicted(processor, 100.08)
+    _unverdicted(processor, 100.16, level=2000)
+    processor._remember_verdict(100.08, Verdict.ACCEPT)
+    await processor._release_stt(100.07)
+    assert pushed == []  # A decided later frame must not overtake the first.
+
+    await processor._release_stt(100.08)
+    assert [int(p[0]) for p in pushed] == [0, 2000]
+    assert processor.stt_masked_no_verdict == 1
+
+
+@pytest.mark.anyio
+async def test_fusion_does_not_release_a_frame_with_only_partial_verdict_coverage():
+    processor, pushed = _fusion_processor(_fusion_gate(), stt_delay_secs=0.7)
+    # One 80 ms audio frame spans two rows: only its midpoint/first row is ready.
+    _unverdicted(processor, 100.10)
+    processor._remember_verdict(100.0, Verdict.ACCEPT)
+    await processor._release_stt(99.9)
+    assert pushed == []
+
+    processor._remember_verdict(100.08, Verdict.ACCEPT)
+    await processor._release_stt(99.9)
+    assert [int(p[0]) for p in pushed] == [1000]
 
 
 @pytest.mark.anyio

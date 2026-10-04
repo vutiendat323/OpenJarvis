@@ -229,11 +229,11 @@ class OrchestratorAgent(ToolUsingAgent):
                             round_content.append(chunk.content)
                             for visible in visible_text_filter.feed(chunk.content):
                                 visible_parts.append(visible)
-                                # Handed over here, not replayed at the end:
-                                # TTS cannot start speaking until it has text,
-                                # so collecting first costs a full generation
-                                # of silence.
-                                yield AgentTextDelta(visible)
+                                # Tools may still arrive in later chunks. Hold
+                                # speech until the decision resolves; without
+                                # tools, preserve immediate text streaming.
+                                if not openai_tools:
+                                    yield AgentTextDelta(visible)
                         if chunk.finish_reason:
                             finish_reason = chunk.finish_reason
                         if chunk.usage:
@@ -243,7 +243,8 @@ class OrchestratorAgent(ToolUsingAgent):
 
                 for trailing_visible in visible_text_filter.finish():
                     visible_parts.append(trailing_visible)
-                    yield AgentTextDelta(trailing_visible)
+                    if not openai_tools:
+                        yield AgentTextDelta(trailing_visible)
 
                 self._emit_stream_inference_end(
                     model=model,
@@ -317,13 +318,10 @@ class OrchestratorAgent(ToolUsingAgent):
                 content = "".join(visible_parts)
                 completed = self._completed_display_batch(tool_calls, new_tool_results)
                 if completed:
-                    delta = _display_message_delta(
-                        content, self._display_customer_message(new_tool_results)
-                    )
-                    if delta:
-                        content += delta
-                        yield AgentTextDelta(delta)
-                if content.strip() and completed:
+                    if any("customer_message" in r.metadata for r in new_tool_results):
+                        content = self._display_customer_message(new_tool_results)
+                    if content:
+                        yield AgentTextDelta(content)
                     metadata = {
                         "prompt_tokens": total_prompt_tokens,
                         "completion_tokens": total_completion_tokens,
@@ -341,9 +339,9 @@ class OrchestratorAgent(ToolUsingAgent):
                     return
                 continue
 
-            # Every part was already yielded as it was produced; visible_parts
-            # is kept only to assemble the whole answer for AgentRunCompleted.
             content = "".join(visible_parts)
+            if openai_tools and content:
+                yield AgentTextDelta(content)
             metadata = {
                 "prompt_tokens": total_prompt_tokens,
                 "completion_tokens": total_completion_tokens,
@@ -709,10 +707,8 @@ class OrchestratorAgent(ToolUsingAgent):
             final_content = self._strip_think_tags(content)
             completed = self._completed_display_batch(tool_calls, new_tool_results)
             if completed:
-                final_content += _display_message_delta(
-                    final_content, self._display_customer_message(new_tool_results)
-                )
-            if final_content and completed:
+                if any("customer_message" in r.metadata for r in new_tool_results):
+                    final_content = self._display_customer_message(new_tool_results)
                 metadata = {
                     "prompt_tokens": total_prompt_tokens,
                     "completion_tokens": total_completion_tokens,
@@ -866,7 +862,7 @@ class OrchestratorAgent(ToolUsingAgent):
         tool_calls: list[ToolCall],
         tool_results: list[ToolResult],
     ) -> bool:
-        """Whether a successful display-only batch can finish this turn."""
+        """Whether every successful tool in the batch acknowledges completion."""
         if len(tool_calls) != len(tool_results) or not tool_results:
             return False
         if any(
@@ -881,6 +877,7 @@ class OrchestratorAgent(ToolUsingAgent):
         return all(result.success for result in tool_results) and all(
             call.name in display_tools
             or result.metadata.get("completed_display") is True
+            or result.metadata.get("complete_turn") is True
             for call, result in zip(tool_calls, tool_results)
         )
 
@@ -1007,13 +1004,6 @@ def _build_tool_calls(
         )
         for index, fragment in sorted(fragments.items())
     ]
-
-
-def _display_message_delta(content: str, message: str) -> str:
-    """Result-derived display text still owed after any pre-tool text."""
-    if not message or message in content:
-        return ""
-    return f"\n{message}" if content.strip() else message
 
 
 def _requires_pending_approval(value: Any) -> bool:

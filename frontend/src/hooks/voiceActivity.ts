@@ -1,5 +1,6 @@
 export type VoiceActivity =
   | { phase: 'processing' }
+  | { phase: 'listening' }
   | { phase: 'inference'; model: string }
   | { phase: 'tool'; toolName: string };
 
@@ -17,6 +18,7 @@ export function voiceActivityFromServerMessage(
   };
   if (activity.type !== 'voice_activity') return null;
   if (activity.phase === 'processing') return { phase: 'processing' };
+  if (activity.phase === 'listening') return { phase: 'listening' };
   if (
     activity.phase === 'inference' &&
     typeof activity.model === 'string' &&

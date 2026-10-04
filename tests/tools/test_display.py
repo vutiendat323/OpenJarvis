@@ -771,7 +771,7 @@ def test_display_cart_can_save_an_add_without_leaving_the_current_screen():
         True,
     ]
     assert stay.metadata["continue_agent"] is False
-    assert buy.metadata["continue_agent"] is True
+    assert buy.metadata["continue_agent"] is False
     assert recorder.events[0].data["lines"][0]["quantity"] == 1
     assert snapshot["lines"][0]["quantity"] == 3
     assert json.loads(stay.content)["shown"] == "cart_badge"
@@ -832,11 +832,11 @@ def test_display_cart_draft_is_isolated_by_conversation():
     }
 
 
-def test_display_cart_view_requires_the_agent_to_continue_with_fresh_state():
+def test_compound_cart_view_can_continue_with_fresh_state():
     tool, _recorder = _wired(DisplayCartTool)
 
     with conversation_scope("cart-checkout"):
-        result = tool.execute(action="view")
+        result = tool.execute(action="view", finish_turn=False)
 
     assert result.success
     assert result.metadata["continue_agent"] is True
@@ -1411,9 +1411,7 @@ def test_agent_menu_tool_refines_verified_customer_screen_search_rows(shown):
         assert display.execute(
             items=shown, menu_items=[*shown, *typed], result_complete=True
         ).success
-        assert manager.share_screen_search(
-            session.session_id, ["coffee", "cocoa"]
-        ) == 2
+        assert manager.share_screen_search(session.session_id, ["coffee", "cocoa"]) == 2
         result = agent_tool.execute(item_indices=[2])
         assert result.success
         assert agent_tool.agent_context() == {"displayed_menu": [typed[1]]}
@@ -1508,9 +1506,7 @@ def test_agent_cart_can_add_customer_screen_search_result():
 
     class Screen:
         def screen_search(self):
-            return [
-                {"id": "strawberry", "name": "Yaourt Dâu", "price": 65_000}
-            ]
+            return [{"id": "strawberry", "name": "Yaourt Dâu", "price": 65_000}]
 
     menu = DisplayMenuTool()
     menu._presentation = Screen()
@@ -1660,7 +1656,12 @@ def test_complete_display_menu_publishes_every_projected_item(count):
         "count": count,
         "complete": True,
     }
-    assert result.metadata["customer_message"] != "model supplied text"
+    if count:
+        assert result.metadata["customer_message"] == "model supplied text"
+        assert "continue_agent" not in result.metadata
+    else:
+        assert "customer_message" not in result.metadata
+        assert result.metadata["continue_agent"] is True
 
 
 def test_complete_display_menu_rejects_any_unrenderable_row_before_publication():
@@ -1685,44 +1686,25 @@ def test_complete_empty_menu_is_verified_and_published():
     assert result.success
     assert recorder.events[0].data["items"] == []
     assert result.metadata["completed_display"] is True
-    message = result.metadata["customer_message"].lower()
-    assert "0" in message
-    assert "đang tìm" not in message
-    assert "kiểm tra" not in message
+    # An agent reply written before the read cannot know nothing matched:
+    # hand the verified empty result back so the agent answers it.
+    assert "customer_message" not in result.metadata
+    assert result.metadata["continue_agent"] is True
 
 
-@pytest.mark.parametrize("count", [1, 6, 10])
-def test_complete_small_menu_message_names_every_item_and_price(count):
-    tool, _ = _wired(DisplayMenuTool)
-    items = [
-        {"id": f"id-{index}", "name": f"Món {index}", "price": 10_000 + index}
-        for index in range(count)
-    ]
-
-    message = tool.execute(items=items, result_complete=True).metadata[
-        "customer_message"
-    ]
-
-    for item in items:
-        assert item["name"] in message
-        assert str(item["price"]) in message
-
-
-def test_complete_large_menu_message_is_bounded_and_reports_exact_count():
+def test_complete_menu_without_agent_message_lets_the_agent_reply():
+    """The runtime never authors the spoken reply; the agent does."""
     tool, _ = _wired(DisplayMenuTool)
     items = [
         {"id": f"id-{index}", "name": f"Món {index}", "price": index}
         for index in range(11)
     ]
 
-    message = tool.execute(items=items, result_complete=True).metadata[
-        "customer_message"
-    ]
+    result = tool.execute(items=items, result_complete=True, customer_message=" ")
 
-    assert "11" in message
-    assert "Món 9" in message
-    assert "Món 10" not in message
-    assert "Toàn bộ" in message
+    assert result.success
+    assert "customer_message" not in result.metadata
+    assert result.metadata["continue_agent"] is True
 
 
 def test_failed_complete_publication_releases_no_terminal_metadata():
@@ -1956,3 +1938,97 @@ def test_display_update_is_forwarded_to_websocket_clients():
     from openjarvis.server.ws_bridge import _AGENT_EVENTS
 
     assert EventType.DISPLAY_UPDATE in _AGENT_EVENTS
+
+
+_CATALOG = [
+    {
+        "id": "latte",
+        "name": "Latte",
+        "price": 45000,
+        "available": True,
+        "category": "CÀ PHÊ",
+    },
+    {
+        "id": "dua",
+        "name": "Nước dừa",
+        "price": 39000,
+        "available": True,
+        "category": "SINH TỐ",
+    },
+    {
+        "id": "banh",
+        "name": "Bánh lạnh",
+        "price": 39000,
+        "available": True,
+        "category": "MÓN BÁNH",
+    },
+]
+
+
+def _catalog_rows():
+    return [dict(row) for row in _CATALOG]
+
+
+def test_a_refinement_never_replaces_the_live_catalog_in_the_menu_grid():
+    """The MENU grid is always the live catalog by category; an agent's search
+    or suggestion only fills RECOMMENDATIONS (live 2026-10-03: a refinement
+    published its rows as the catalog, so the grid showed them under "OTHER")."""
+    tool, recorder = _wired(DisplayMenuTool)
+    with conversation_scope("grid-refine"):
+        tool.execute(
+            items=_catalog_rows(),
+            menu_items=_catalog_rows(),
+            result_complete=True,
+            display_mode="browse",
+        )
+        tool.execute(from_displayed_menu=True, item_ids=["dua"])
+
+    payload = recorder.events[-1].data
+    assert [row["id"] for row in payload["items"]] == ["dua"]
+    assert payload["menu_items"] == _catalog_rows()
+
+
+def test_an_agent_listing_without_a_catalog_keeps_the_last_live_catalog():
+    tool, recorder = _wired(DisplayMenuTool)
+    with conversation_scope("grid-direct"):
+        tool.execute(
+            items=_catalog_rows(), menu_items=_catalog_rows(), result_complete=True
+        )
+        tool.execute(items=[_catalog_rows()[1]], result_complete=True)
+
+    payload = recorder.events[-1].data
+    assert [row["id"] for row in payload["items"]] == ["dua"]
+    assert payload["menu_items"] == _catalog_rows()
+
+
+def test_a_newer_live_catalog_replaces_the_remembered_one():
+    tool, recorder = _wired(DisplayMenuTool)
+    fresh = _catalog_rows()[:2]
+    with conversation_scope("grid-refresh"):
+        tool.execute(
+            items=_catalog_rows(), menu_items=_catalog_rows(), result_complete=True
+        )
+        tool.execute(items=fresh, menu_items=fresh, result_complete=True)
+        tool.execute(items=[fresh[0]], result_complete=True)
+
+    assert recorder.events[-1].data["menu_items"] == fresh
+
+
+def test_each_conversation_remembers_its_own_catalog():
+    tool, recorder = _wired(DisplayMenuTool)
+    with conversation_scope("grid-a"):
+        tool.execute(
+            items=_catalog_rows(), menu_items=_catalog_rows(), result_complete=True
+        )
+    with conversation_scope("grid-b"):
+        tool.execute(items=[_catalog_rows()[0]], result_complete=True)
+
+    assert recorder.events[-1].data["menu_items"] == [_catalog_rows()[0]]
+
+
+def test_without_any_known_catalog_the_listing_is_the_grid_as_before():
+    tool, recorder = _wired(DisplayMenuTool)
+    with conversation_scope("grid-none"):
+        tool.execute(items=[_catalog_rows()[1]], result_complete=True)
+
+    assert recorder.events[-1].data["menu_items"] == [_catalog_rows()[1]]

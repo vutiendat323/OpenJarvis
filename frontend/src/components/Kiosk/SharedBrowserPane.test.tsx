@@ -49,7 +49,7 @@ describe('SharedBrowserPane', () => {
     expect(markup).toContain('aria-label="Shared browser viewport"');
   });
 
-  it('renders zoom controls and floating toggle button when props are provided', () => {
+  it('renders floating toggle button when props are provided without zoom controls', () => {
     const markup = renderToStaticMarkup(
       <SharedBrowserPane
         browser={{
@@ -60,13 +60,12 @@ describe('SharedBrowserPane', () => {
         }}
         isFloating={false}
         onToggleFloating={vi.fn()}
-        onZoom={vi.fn()}
       />,
     );
 
-    expect(markup).toContain('aria-label="Zoom in"');
-    expect(markup).toContain('aria-label="Zoom out"');
-    expect(markup).toContain('data-testid="browser-zoom-controls" class="absolute bottom-2 right-2');
+    expect(markup).not.toContain('data-testid="browser-zoom-controls"');
+    expect(markup).not.toContain('aria-label="Zoom in"');
+    expect(markup).not.toContain('aria-label="Zoom out"');
     expect(markup).toContain('aria-label="Pop out to floating window"');
   });
 
@@ -87,10 +86,14 @@ describe('SharedBrowserPane', () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="Drag window"');
+    expect(markup).not.toContain('aria-label="Drag window"');
     expect(markup).toContain('data-testid="mock-drag-handle"');
     expect(markup).toContain('cursor-grab');
     expect(markup).toContain('aria-label="Maximize"');
+    expect(markup).toContain('title="Maximize"');
     expect(markup).toContain('aria-label="Dock to split"');
+    expect(markup).toContain('title="Dock to split [7:3]"');
+    expect(markup).not.toContain('Quay lại dạng chia đôi');
+    expect(markup).not.toContain('Phóng to hết cỡ');
   });
 });

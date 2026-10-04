@@ -437,7 +437,9 @@ class TestOrchestratorAgent:
                     "tool_calls": [
                         {
                             "name": "display_cart",
-                            "arguments": json.dumps({"action": "add", "item": item}),
+                            "arguments": json.dumps(
+                                {"action": "add", "item": item, "finish_turn": False}
+                            ),
                         }
                     ],
                 }
@@ -717,7 +719,7 @@ class TestOrchestratorAgent:
                         "id": "set-type",
                         "name": "display_cart",
                         "arguments": (
-                            '{"action":"set_order_type","order_type":"take-out"}'
+                            '{"action":"set_order_type","order_type":"take-out","finish_turn":false}'
                         ),
                     }
                 ],
@@ -761,9 +763,7 @@ class TestOrchestratorAgent:
             "display_cart",
             "skill_trendcoffee-checkout",
         ]
-        assert result.content == (
-            "Dạ, tôi xử lý thanh toán ngay.\nQR thanh toán đã sẵn sàng."
-        )
+        assert result.content == "QR thanh toán đã sẵn sàng."
         assert snapshot is not None
         assert snapshot["order_type"] == "take-out"
 
@@ -831,13 +831,13 @@ class TestOrchestratorAgent:
         [
             (
                 "Dạ, mình xem các món có khoai nhé.",
-                "Dạ, mình xem các món có khoai nhé.\nĐã tìm thấy 1 kết quả.",
+                "Đã tìm thấy 1 kết quả.",
             ),
             ("Đã tìm thấy 1 kết quả.", "Đã tìm thấy 1 kết quả."),
         ],
         ids=["after-acknowledgement", "not-repeated"],
     )
-    def test_result_derived_display_message_follows_pre_tool_text(
+    def test_result_derived_display_message_replaces_pre_tool_text(
         self, pre_tool_text: str, expected: str
     ) -> None:
         class ResultDisplay(_DisplayStub):
@@ -905,8 +905,8 @@ class TestOrchestratorAgent:
 
         assert len(engine.calls) == 1
         assert isinstance(events[finished + 1], AgentTextDelta)
-        assert events[finished + 1].content == "\nĐã tìm thấy 1 kết quả."
-        assert text == "Dạ, mình xem nhé.\nĐã tìm thấy 1 kết quả."
+        assert events[finished + 1].content == "Đã tìm thấy 1 kết quả."
+        assert text == "Đã tìm thấy 1 kết quả."
         assert events[-1].result.content == text
 
     @pytest.mark.asyncio
@@ -936,7 +936,8 @@ class TestOrchestratorAgent:
         events = [event async for event in agent.run_stream("show menu")]
 
         assert len(engine.calls) == 1
-        assert events[0] == AgentTextDelta("Dạ menu đang ở trên màn hình.")
+        assert type(events[0]).__name__ == "AgentToolStarted"
+        assert events[-2] == AgentTextDelta("Dạ menu đang ở trên màn hình.")
         assert isinstance(events[-1], AgentRunCompleted)
         assert events[-1].result.content == "Dạ menu đang ở trên màn hình."
 
@@ -1466,15 +1467,7 @@ class TestOrchestratorAgent:
     async def test_orchestrator_stream_keeps_tool_call_arguments_out_of_the_text(
         self,
     ) -> None:
-        """Prose from a tool-call round is streamed, tool arguments are not.
-
-        Withholding that prose used to come free with the end-of-run replay
-        that `fix: verify external actions before completion` introduced so it
-        could swap the whole answer for a refusal. That feature was reverted;
-        the replay it left behind is what kept TTS silent until generation
-        ended, so the deltas stream again and this round's prose is spoken.
-        The answer itself still excludes it — visible_parts resets per turn.
-        """
+        """Tool-round prose and arguments stay out of the spoken answer."""
 
         class RecordingCalculator(_CalculatorStub):
             def __init__(self) -> None:
@@ -1524,7 +1517,7 @@ class TestOrchestratorAgent:
         completions = [
             event for event in events if isinstance(event, AgentRunCompleted)
         ]
-        assert deltas == ["Do not mix", " this answer.", "Result is 4."]
+        assert deltas == ["Result is 4."]
         assert len(completions) == 1
         assert completions[0].result.content == "Result is 4."
         assert '{"expression":"2+2"}' not in "".join(deltas)
@@ -1971,8 +1964,10 @@ class TestOrchestratorAgent:
 
         events = [event async for event in agent.run_stream("Hai cộng hai?")]
 
-        assert isinstance(events[0], AgentTextDelta)
-        assert events[0].content == "Dạ để tôi tính. "
+        assert type(events[0]).__name__ == "AgentToolStarted"
+        assert [e.content for e in events if isinstance(e, AgentTextDelta)] == [
+            "Kết quả là 4."
+        ]
         second_messages = engine.calls[1][0]
         assistant = next(
             message

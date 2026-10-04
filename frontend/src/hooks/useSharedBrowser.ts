@@ -34,7 +34,7 @@ export const initialBrowserState: BrowserViewState = {
 export type BrowserCommand =
   | { type: 'navigate'; url: string }
   | { type: 'back' | 'forward' | 'reload' }
-  | { type: 'resize'; width: number; height: number }
+  | { type: 'resize'; width: number; height: number; device_scale_factor?: number }
   | { type: 'pointer'; event: 'pressed' | 'released' | 'moved'; x: number; y: number; button: string }
   | { type: 'wheel'; x: number; y: number; delta_x: number; delta_y: number }
   | { type: 'key'; event: 'down' | 'up'; key: string; code: string; text?: string; key_code?: number; modifiers?: number }
@@ -44,6 +44,7 @@ export type BrowserCommand =
 type BrowserMessage = {
   type: string;
   data?: unknown;
+  format?: unknown;
   url?: unknown;
   title?: unknown;
   width?: unknown;
@@ -76,7 +77,7 @@ export function reduceBrowserMessage(
     agentAction: typeof message.agent_action === 'string' ? message.agent_action : message.agent_action === null ? null : current.agentAction,
     error: typeof message.url === 'string' && message.url !== current.url ? null : current.error,
     frame: message.type === 'frame' && typeof message.data === 'string'
-      ? `data:image/jpeg;base64,${message.data}`
+      ? `data:image/${message.format === 'png' ? 'png' : 'jpeg'};base64,${message.data}`
       : current.frame,
   };
 }
@@ -102,9 +103,14 @@ function browserWsUrl(): string {
   return `${protocol}//${window.location.host}/api/kiosk/browser/ws`;
 }
 
-export function useSharedBrowser(): BrowserViewState & { send: (command: BrowserCommand) => void } {
+export function useSharedBrowser(): BrowserViewState & {
+  send: (command: BrowserCommand) => void;
+  hitTest: (x: number, y: number) => Promise<boolean>;
+} {
   const [state, setState] = useState<BrowserViewState>(initialBrowserState);
   const socketRef = useRef<WebSocket | null>(null);
+  const nextProbeRef = useRef(0);
+  const probesRef = useRef(new Map<number, (interactive: boolean) => void>());
 
   useEffect(() => {
     let disposed = false;
@@ -117,10 +123,16 @@ export function useSharedBrowser(): BrowserViewState & { send: (command: Browser
       socket.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data) as BrowserMessage;
+          const probe = message as BrowserMessage & { request_id?: number; interactive?: boolean };
+          if (probe.type === 'hit_test' && probe.request_id !== undefined) {
+            probesRef.current.get(probe.request_id)?.(probe.interactive !== false);
+            return;
+          }
           setState((current) => reduceBrowserMessage(current, message));
         } catch { /* ignore malformed browser event */ }
       };
       socket.onclose = () => {
+        for (const resolve of [...probesRef.current.values()]) resolve(true);
         if (!disposed) {
           setState((current) => ({ ...current, status: 'disconnected' }));
           timer = setTimeout(connect, 500);
@@ -133,6 +145,7 @@ export function useSharedBrowser(): BrowserViewState & { send: (command: Browser
       disposed = true;
       if (timer) clearTimeout(timer);
       socketRef.current?.close();
+      for (const resolve of [...probesRef.current.values()]) resolve(true);
     };
   }, []);
 
@@ -142,5 +155,21 @@ export function useSharedBrowser(): BrowserViewState & { send: (command: Browser
     }
   }, []);
 
-  return { ...state, send };
+  const hitTest = useCallback((x: number, y: number): Promise<boolean> => {
+    const socket = socketRef.current;
+    if (socket?.readyState !== WebSocket.OPEN) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const requestId = ++nextProbeRef.current;
+      const finish = (interactive: boolean) => {
+        clearTimeout(timer);
+        probesRef.current.delete(requestId);
+        resolve(interactive);
+      };
+      const timer = setTimeout(() => finish(true), 500);
+      probesRef.current.set(requestId, finish);
+      socket.send(JSON.stringify({ type: 'hit_test', request_id: requestId, x, y }));
+    });
+  }, []);
+
+  return { ...state, send, hitTest };
 }

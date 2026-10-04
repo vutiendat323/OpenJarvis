@@ -59,14 +59,58 @@ def test_resize_changes_the_shared_page_viewport(tmp_path) -> None:
         async def exercise() -> None:
             await bridge.connect()
             try:
-                await bridge.handle({"type": "resize", "width": 640, "height": 480})
+                await bridge.handle(
+                    {
+                        "type": "resize",
+                        "width": 640,
+                        "height": 480,
+                        "device_scale_factor": 2,
+                    }
+                )
                 result = await bridge._command(
                     "Runtime.evaluate",
-                    {"expression": "[innerWidth, innerHeight]", "returnByValue": True},
+                    {
+                        "expression": "[innerWidth, innerHeight, devicePixelRatio]",
+                        "returnByValue": True,
+                    },
                 )
-                assert result["result"]["value"] == [640, 480]
+                assert result["result"]["value"] == [640, 480, 2]
                 assert bridge.state()["width"] == 640
                 assert bridge.state()["height"] == 480
+            finally:
+                await bridge.close()
+
+        asyncio.run(exercise())
+    finally:
+        browser.close()
+
+
+def test_hit_test_preserves_controls_and_detects_static_drag_area(tmp_path) -> None:
+    browser = SharedBrowserProcess(profile_dir=tmp_path / "profile")
+    try:
+        bridge = BrowserBridge(browser.start())
+
+        async def exercise() -> None:
+            await bridge.connect()
+            try:
+                await bridge.handle({"type": "resize", "width": 640, "height": 480})
+                await bridge.handle(
+                    {
+                        "type": "navigate",
+                        "url": "data:text/html,<style>body{margin:0}div,button,input{"
+                        "display:block;width:200px;height:50px;box-sizing:border-box}"
+                        "</style><div>Static background</div>"
+                        "<button><span>Cart</span></button><input>"
+                        "<div id='native'>Item</div><div id='react'>React item</div>"
+                        "<script>document.getElementById('native').addEventListener('click',()=>{});"
+                        "document.getElementById('react').__reactProps$test={onClick:()=>{}};</script>",
+                    }
+                )
+                assert await bridge.hit_test(100, 25) is False
+                assert await bridge.hit_test(100, 75) is True
+                assert await bridge.hit_test(100, 125) is True
+                assert await bridge.hit_test(100, 175) is True
+                assert await bridge.hit_test(100, 225) is True
             finally:
                 await bridge.close()
 

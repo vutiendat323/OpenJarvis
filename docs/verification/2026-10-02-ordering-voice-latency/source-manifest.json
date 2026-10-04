@@ -1,0 +1,27 @@
+{
+  "base_commit": "50a65d9b58d72480935c8a4825d80f0de501a5f9",
+  "sha256_final_sources": {
+    "configs/openjarvis/prompts/ordering-kiosk.md": "177964f9357ce91c6cca530be6f7417070b1015731f012f2d800db2ff52478b0",
+    "skills/trendcoffee-add-to-cart.toml": "0c5abf30068e702f9a4113530ed7d64a275e6a13a48488ab1ab24a912310befa",
+    "scripts/benchmark_ordering_voice.py": "f2f9dc3d0f6233b7c4dbf2820f5bf1cfcc635371be4eaeef8f34aa1bbefb2bea",
+    "src/openjarvis/agents/_stubs.py": "84a736459cd20db8f1aa63546ba810065db9820120360d0cd1f33ff478693298",
+    "src/openjarvis/agents/orchestrator.py": "54e439b2e0e4fc04ae5fcbb62f2f7eeefd346f1dd643c44e23bca023b6304444",
+    "src/openjarvis/cli/serve.py": "e0a8d794304fd9b93bf4759532ed50c6c110b8e8ce7c1e227fe6c30962dd7104",
+    "src/openjarvis/kiosk/ordering_tools.py": "ee428bfcb785d682c0d7069dba31749b6f6eb8a62211a905d86e6d695b24037c",
+    "src/openjarvis/kiosk/voice_response.py": "fead5594e6de7f1c5eb03b3756f97cbd012a0396dfcf7dc5bcf1e646fdb70ce1",
+    "src/openjarvis/kiosk/menu_search.py": "6edb45de900722834bc6f3b28c32ebe40361809905fc60073542f4951ef14f8d",
+    "src/openjarvis/skills/executor.py": "5e9ac3c23c9e14395e2ce024b7fbad300395c3094c0a9a25a109fd4513f45aab",
+    "src/openjarvis/skills/tool_adapter.py": "f0d5f03389b868598f8a9bd0adffeb9487230f2218bd3d44019d3e73260b87cc",
+    "src/openjarvis/system/builder.py": "9809e2195e6c1e7ed028e0655adb8bfe224dcdd3ab1dfdd01158d41f9e548823",
+    "src/openjarvis/tools/display.py": "68f5a696bd2a58b5c5ae1cc2572ac909f393f3499d1894b83defba8cd6f588a2",
+    "tests/agents/test_ordering_voice_latency.py": "944f91d53bdcef52c45df588650edf9c69a0489f0b6bbfeac212ef10c7f3a26b"
+  },
+  "raw_artifacts": {
+    "before-deepseek-v4-flash.json": "ed2f316d8cafcacd80f861fc3950ad14ebedfe7f26490228dcfc18ce06be8590",
+    "before-gpt-6-luna.json": "c8405e9c4b35d8b79db673908f58d519b16cdc7f94d8277f522dbf7bb217b03f",
+    "before-gpt-5.6-luna.json": "a519bfb5ff263189c2c4a1c4f0156eb4c00dc0a543a31498d2bf2a1f01babb65",
+    "after-deepseek-v4-flash.json": "52466a18fc54df08f3b623156059497de23066a1f5f88245f4a783cb03e535d6",
+    "after-gpt-6-luna.json": "0a3c17a8da202eb99dc0a70cd7e3944708a469b4836cfe62ba9dc42e45ca6116",
+    "after-gpt-5.6-luna.json": "c120716ee8bde7f2c6103df3a1feec9b27b8eb5134abdb5f8e8d8556721ed5e2"
+  }
+}

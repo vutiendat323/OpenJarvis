@@ -44,15 +44,20 @@ log_warn()  { _log_msg "WARN"  "\033[33m" 1 "$@"; }   # Yellow
 log_error() { _log_msg "ERROR" "\033[31m" 2 "$@"; }   # Red
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKSPACE_DIR="$(cd "$ROOT_DIR/.." && pwd)"
 ENV_FILE="${OPENJARVIS_ENV_FILE:-$ROOT_DIR/.env}"
-VISION_DIR="${OPENJARVIS_VISION_DIR:-$ROOT_DIR/../vision}"
+VISION_DIR="${OPENJARVIS_VISION_DIR:-$WORKSPACE_DIR/vision}"
 VISION_CONFIG="${JARVIS_CONFIG:-$ROOT_DIR/configs/vision/ordering-kiosk.yml}"
+if [ -z "${JARVIS_CONFIG:-}" ] && [ -f "$WORKSPACE_DIR/.vision-prod-noyolo.yml" ]; then
+    VISION_CONFIG="$WORKSPACE_DIR/.vision-prod-noyolo.yml"
+fi
 ARTIFACT_DIR="${OPENJARVIS_LOCAL_TTS_ARTIFACT_DIR:-$HOME/.cache/openjarvis/vieneu-3.2.3-onnx}"
 # The kiosk config is the default because it is what this stack is run for:
 # it gives the Agent the http_request + display_* tools the /kiosk route
 # drives. The browser-agent config is still one env var away.
-MCP_CONFIG="${OPENJARVIS_CONFIG:-configs/openjarvis/examples/ordering-kiosk-mcp.toml}"
-MODEL="${OPENJARVIS_MODEL:-openrouter/openai/gpt-5.6-luna}"
+MCP_CONFIG="${OPENJARVIS_CONFIG:-$ROOT_DIR/configs/openjarvis/examples/ordering-kiosk-mcp.toml}"
+# Unprefixed GPT models use CloudEngine's direct OpenAI client.
+MODEL="${OPENJARVIS_MODEL:-gpt-6-luna}"
 # VieNeu ONNX thread pools.  More threads buy no audible speed here: measured
 # on this box (i7-11800H, otherwise idle) across four utterance lengths,
 # 1 thread renders at RTF 0.34 on 2.99 cores while 4 threads render at RTF
@@ -65,7 +70,19 @@ MODEL="${OPENJARVIS_MODEL:-openrouter/openai/gpt-5.6-luna}"
 # override with OPENJARVIS_VIENEU_THREADS rather than editing this default.
 THREADS="${OPENJARVIS_VIENEU_THREADS:-1}"
 
-LOG_DIR="${OPENJARVIS_LOG_DIR:-/tmp/openjarvis-stack}"
+LOG_DIR="${OPENJARVIS_LOG_DIR:-$WORKSPACE_DIR/.stack-logs}"
+
+# Production kiosk defaults: callers need only launcher.sh start/status/logs.
+# Paths follow this checkout; explicit environment overrides still work.
+export OPENJARVIS_LOG_DIR="$LOG_DIR"
+export OPENJARVIS_ENV_FILE="$ENV_FILE"
+export OPENJARVIS_VISION_DIR="$VISION_DIR"
+export JARVIS_CONFIG="$VISION_CONFIG"
+export OPENJARVIS_CONFIG="$MCP_CONFIG"
+export OPENJARVIS_VITE_PROXY_TARGET="${OPENJARVIS_VITE_PROXY_TARGET:-http://127.0.0.1:8000}"
+export PYTHONPATH="$ROOT_DIR/src:$VISION_DIR${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
+
 BACKEND_LOG="$LOG_DIR/backend.log"
 FRONTEND_LOG="$LOG_DIR/frontend.log"
 VISION_LOG="$LOG_DIR/vision.log"
@@ -88,6 +105,9 @@ Commands:
 Options:
   --no-vision   Leave the vision service out (start/restart/stop/status)
   -f            Follow the logs (logs only)
+
+Defaults: ordering-kiosk preset, Vision without YOLO, logs in ../.stack-logs.
+OPENJARVIS_* and JARVIS_CONFIG environment variables override these defaults.
 EOF
 }
 
@@ -324,7 +344,17 @@ set -a
 . "$ENV_FILE"
 set +a
 [ -n "${GEMINI_API_KEY:-}" ]   || { log_error "preflight: GEMINI_API_KEY missing in $ENV_FILE (voice STT needs it)"; exit 1; }
-[ -n "${DEEPSEEK_API_KEY:-}" ] || { log_error "preflight: DEEPSEEK_API_KEY missing in $ENV_FILE"; exit 1; }
+case "$MODEL" in
+    openrouter/*)
+        [ -n "${OPENROUTER_API_KEY:-}" ] || { log_error "preflight: OPENROUTER_API_KEY missing for model=$MODEL"; exit 1; }
+        ;;
+    gpt-*|chatgpt-*|o1*|o3*|o4*)
+        [ -n "${OPENAI_API_KEY:-}" ] || { log_error "preflight: OPENAI_API_KEY missing for model=$MODEL"; exit 1; }
+        ;;
+    deepseek*)
+        [ -n "${DEEPSEEK_API_KEY:-}" ] || { log_error "preflight: DEEPSEEK_API_KEY missing for model=$MODEL"; exit 1; }
+        ;;
+esac
 
 log_ok "preflight: ok (model=$MODEL, vision=$WITH_VISION, threads=$THREADS)"
 mkdir -p "$LOG_DIR"

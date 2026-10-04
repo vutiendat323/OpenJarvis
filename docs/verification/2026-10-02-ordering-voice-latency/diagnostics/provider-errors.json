@@ -1,0 +1,170 @@
+[
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "menu",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "add_shown",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "view_cart",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "checkout_draft",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "checkout_named",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "clarify",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "tables",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "missing_type",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "menu",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "add_shown",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "view_cart",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "checkout_draft",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "checkout_named",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "clarify",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "tables",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "missing_type",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "menu",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "add_shown",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "view_cart",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "checkout_draft",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "checkout_named",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "clarify",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "tables",
+    "error": "NotFoundError",
+    "model_calls": 1
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "missing_type",
+    "error": "NotFoundError",
+    "model_calls": 1
+  }
+]

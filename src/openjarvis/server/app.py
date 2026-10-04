@@ -176,6 +176,10 @@ def _setup_kiosk(app: FastAPI, bus, channel_bridge) -> None:
 
     # Register kiosk routes
     app.include_router(kiosk_router)
+    # A kiosk page opened with ?camera=remote sends its camera through here.
+    from openjarvis.kiosk.remote_camera_routes import router as remote_camera_router
+
+    app.include_router(remote_camera_router)
 
     # Store client reference for shutdown
     app.state.vision_client = client

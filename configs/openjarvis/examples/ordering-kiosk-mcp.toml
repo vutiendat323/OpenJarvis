@@ -29,12 +29,10 @@ default_model = "qwen3.5:9b"        # needs reliable function calling
 # failing turn stopped at exactly 1024 output tokens, while an order body is
 # only ~130 tokens. This is per inference call, not per turn.
 max_tokens = 4096
-# Not yet exercised end to end. `scripts/launcher.sh` passes
-# `--engine cloud --model "$MODEL"` on the CLI (default
-# openrouter/openai/gpt-5.6-luna),
-# which overrides both keys above -- that combination is what the manual
-# ordering run has actually verified calls these tools. The local ollama
-# target above is the intended one; it just hasn't been proven yet.
+# `scripts/launcher.sh` passes `--engine cloud --model "$MODEL"`, overriding
+# both keys above. Its default is gpt-6-luna via direct OpenAI; select another
+# cloud model with OPENJARVIS_MODEL. The local ollama target above has not yet
+# been exercised end to end.
 
 [agent]
 default_agent = "orchestrator"
@@ -99,81 +97,30 @@ agent = "orchestrator"
 # Gemini Live applies these when the Voice session connects. Keep this local:
 # fetching the menu here would add provider I/O before the WebRTC pipeline can
 # accept speech. Product terms below were refreshed from trendcoffee-menu's
-# read-only endpoint on 2026-09-14; ordinary order language is included too.
-language_codes = ["vi-VN", "en-US"]
+# read-only endpoint on 2026-09-14. Bias only English/loanword terms: common
+# Vietnamese words here over-bias the decoder, which then forces unclear
+# audio into menu words (e.g. "bạc xỉu"). Vietnamese is left to vi-VN.
+# Vietnamese only: an en-US hint made short Vietnamese phrases come back as
+# English ("Về menu" -> "Wallet menu"). Add it back for an English kiosk.
+language_codes = ["vi-VN"]
 mode = "VERBATIM"
 custom_vocabulary = [
-  "bạc xỉu",
-  "cà phê muối",
-  "đá xay",
   "takeaway",
-  "mang đi",
-  "tại chỗ",
-  "ít đường",
-  "không đường",
-  "ít đá",
-  "không đá",
-  "thêm đá",
-  "nóng",
-  "lạnh",
-  "size lớn",
-  "size nhỏ",
-  "một phần",
-  "hai phần",
   "topping",
-  "thêm topping",
-  "gấp đôi",
-  "mỗi món",
+  "menu",
+  "back menu",
   "Affogato",
   "Americano",
   "Choco latte",
   "Chocolate Coco",
   "Coffee Trend",
-  "Cold Brew Mộng Mơ",
   "Cold Brew Original",
-  "Cold Brew Yuzu Xoài",
-  "Cà phê bạc xỉu",
-  "Cà phê hạt dẻ",
-  "Cà phê sữa",
-  "Cà Phê Tiramisu",
-  "Cà phê đen",
-  "Dâu kem đá xay",
   "Espresso",
   "Latte",
   "Matcha Coco",
   "Matcha latte",
   "Matcha Trend",
-  "Matcha đá xay",
   "Strawberry matcha latte",
-  "Tiramisu choco đá xay",
-  "Yaourt dâu đá xay",
-  "Yaourt xoài đá xay",
-  "Đậu đỏ đá xay",
-  "Cam tươi",
-  "Nước dừa",
-  "Nước khoáng",
-  "Nước khoáng có gas",
-  "Nước ép các loại",
-  "Trà Bắc",
-  "Trà Lipton chanh mật ong",
-  "Trà lựu nhãn",
-  "Trà nhiệt đới",
-  "Trà nho xanh kiwi",
-  "Trà nhài hoa cúc",
-  "Trà sữa Bá Tước",
-  "Trà thảo mộc mật ong",
-  "Trà táo lê quế",
-  "Trà vải đào",
-  "Trà ổi hồng",
-  "cà phê",
-  "món trà",
-  "sinh tố",
-  "nước giải khát",
-  "món bánh",
-  "món ăn",
-  "bia",
-  "rượu vang",
-  "tiêu chuẩn",
   "Croissant",
   "Bruschetta",
   "burrito",
@@ -192,10 +139,9 @@ custom_vocabulary = [
   "USDA",
   "Aukube",
   "Hokube",
-  "cá hồi xông khói",
-  "bò xông khói",
-  "phô mai Burrata",
-  "heo muối Parma",
+  "Yaourt",
+  "Lipton",
+  "Yuzu",
 ]
 
 [voice.speaker]
@@ -222,10 +168,11 @@ asd_accept_prob = 0.7
 # replies in trial A. A low score never REJECTs; MAR decides.
 asd_reject_prob = 0.0
 asd_wait_secs = 0.12
-# Send Gemini a copy of the mic delayed 0.5 s with rejected speech silenced,
+# Send Gemini a speaker-gated copy of the mic with rejected speech silenced,
 # so a phone video or bystander never lands in the customer's transcript.
 stt_mask = true
-# With vision_asd the verdict can wait up to asd_wait_secs: keep >= 0.7.
+# Fusion sends audio as soon as verdicts cover it. Keep a 0.7 s deadline for
+# missing evidence: ASD can wait up to asd_wait_secs before deciding a row.
 stt_mask_delay_secs = 0.7
 # "tse" (needs stt_mask): hold overlapped speech back from Gemini and send
 # the customer's voice extracted from it. Export the model first with

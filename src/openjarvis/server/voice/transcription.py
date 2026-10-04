@@ -24,6 +24,8 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.google.gemini_live.stt import GeminiSTTService
 
+from openjarvis.server.voice.stt_capture import capture_from_environment
+
 DEFAULT_LANGUAGE_CODES = ("vi-VN", "en-US")
 DEFAULT_TRANSCRIPTION_MODE = AudioTranscriptionConfigMode.VERBATIM
 MAX_CUSTOM_VOCABULARY_TERMS = 1_000
@@ -114,6 +116,9 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
         self._masked_delay = 0.0
         self._drain: Callable[[], Awaitable[None]] | None = None
         self._finalize_task: asyncio.Task | None = None
+        self._capture = capture_from_environment()
+        self._heard_bytes = 0
+        self._heard_peak = 0
         super().__init__(**kwargs)
 
     def enable_masked_feed(
@@ -136,7 +141,43 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
         extra = delay_secs + (DRAIN_TIMEOUT_SECS if drain is not None else 0.0)
         self._ttfs_p99_latency = (self._ttfs_p99_latency or 0.0) + extra
 
+    def _record(self, name: str, audio: bytes, sample_rate: int) -> None:
+        """Review recording must never be able to break a live session."""
+        if self._capture is None:
+            return
+        try:
+            getattr(self._capture, name)(audio, sample_rate)
+        except Exception:
+            logger.exception(f"{self}: STT capture failed; recording stopped")
+            self._capture = None
+
+    async def run_stt(self, audio: bytes):
+        # Per-utterance level of what Gemini is sent: a turn that comes back
+        # with no transcript is then either silenced upstream (peak ~0) or
+        # real speech Gemini dropped.
+        self._heard_bytes += len(audio)
+        if audio:
+            samples = memoryview(audio).cast("h")
+            self._heard_peak = max(self._heard_peak, max(map(abs, samples)))
+        async for frame in super().run_stt(audio):
+            yield frame
+
+    def _log_heard(self) -> None:
+        logger.info(
+            f"{self}: utterance audio sent to Gemini "
+            f"{self._heard_bytes / (self.sample_rate * 2 or 32_000):.2f}s "
+            f"peak={self._heard_peak}"
+        )
+        self._heard_bytes = 0
+        self._heard_peak = 0
+
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        if isinstance(frame, InputAudioRawFrame):
+            self._record("raw", frame.audio, frame.sample_rate)
+            if not self._masked_delay:
+                self._record("heard", frame.audio, frame.sample_rate)
+        elif isinstance(frame, SttAudioFrame):
+            self._record("heard", frame.audio, frame.sample_rate)
         if self._masked_delay:
             if isinstance(frame, SttAudioFrame):
                 await self.process_audio_frame(
@@ -159,10 +200,17 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
         if isinstance(frame, TranscriptionFrame):
             # What Gemini actually heard, for checking the speaker gate live.
             logger.info(f"{self}: transcript {frame.text!r}")
+            if self._capture is not None:
+                try:
+                    self._capture.transcript(frame.text)
+                except Exception:
+                    logger.exception(f"{self}: STT capture failed; recording stopped")
+                    self._capture = None
         await super().push_frame(frame, direction)
 
     async def _send_finalization_signal(self):
         if not self._masked_delay:
+            self._log_heard()
             await super()._send_finalization_signal()
             return
         # The utterance's last audio is still in the delay line: flush it first.
@@ -177,11 +225,15 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
                 await asyncio.wait_for(self._drain(), DRAIN_TIMEOUT_SECS)
             except TimeoutError:
                 logger.warning(f"{self}: held audio not drained; finalizing")
+        self._log_heard()
         await super()._send_finalization_signal()
 
     async def cleanup(self) -> None:
         if self._finalize_task is not None:
             self._finalize_task.cancel()
+        if self._capture is not None:
+            self._capture.close()
+            self._capture = None
         await super().cleanup()
 
     def _build_live_config(self):

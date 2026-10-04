@@ -1,0 +1,731 @@
+[
+  {
+    "variant": "after",
+    "repeat": 0,
+    "flow": "menu",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 3,
+    "tool_names": [
+      "skill_trendcoffee-menu"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-menu",
+        "arguments": {
+          "itemTerms": [
+            "latte"
+          ],
+          "categoryTerms": [],
+          "minPrice": 0,
+          "maxPrice": 1000000000,
+          "displayMode": "filtered"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 1.2288,
+    "time_to_final_response_s": 1.2417,
+    "spoken_words": 5,
+    "speech": "Đã hiển thị 2 món.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [
+      "latte",
+      "matcha-latte"
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 0,
+    "flow": "add_shown",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 1,
+    "tool_names": [
+      "display_cart"
+    ],
+    "tool_arguments": [],
+    "time_to_first_tool_s": 1.2821,
+    "time_to_final_response_s": 1.2848,
+    "spoken_words": 5,
+    "speech": "Đã cập nhật giỏ hàng.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 0,
+    "flow": "view_cart",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 1,
+    "tool_names": [
+      "display_cart"
+    ],
+    "tool_arguments": [],
+    "time_to_first_tool_s": 1.1606,
+    "time_to_final_response_s": 1.1629,
+    "spoken_words": 5,
+    "speech": "Giỏ hàng đã hiển thị.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 0,
+    "flow": "checkout_draft",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 7,
+    "tool_names": [
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 2.0758,
+    "time_to_final_response_s": 2.0869,
+    "spoken_words": 7,
+    "speech": "QR sẵn sàng, đang chờ thanh toán.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 0,
+    "flow": "checkout_named",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 9,
+    "tool_names": [
+      "skill_trendcoffee-take-out-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-take-out-checkout",
+        "arguments": {
+          "items": [
+            {
+              "contains": "Yaourt dâu",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      }
+    ],
+    "time_to_first_tool_s": 1.8327,
+    "time_to_final_response_s": 1.8471,
+    "spoken_words": 7,
+    "speech": "QR sẵn sàng, đang chờ thanh toán.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 0,
+    "flow": "clarify",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 1.2545,
+    "spoken_words": 4,
+    "speech": "Bạn chọn món nào?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 0,
+    "flow": "tables",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 2,
+    "tool_names": [
+      "skill_trendcoffee-tables"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-tables",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 1.2129,
+    "time_to_final_response_s": 1.217,
+    "spoken_words": 3,
+    "speech": "Bàn trống: 1.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 0,
+    "flow": "missing_type",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 1.3088,
+    "spoken_words": 8,
+    "speech": "Bạn dùng tại quán hay mang về ạ?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 1,
+    "flow": "menu",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 3,
+    "tool_names": [
+      "skill_trendcoffee-menu"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-menu",
+        "arguments": {
+          "itemTerms": [
+            "latte"
+          ],
+          "categoryTerms": [],
+          "minPrice": 0,
+          "maxPrice": 1000000000,
+          "displayMode": "filtered"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 1.3379,
+    "time_to_final_response_s": 1.3471,
+    "spoken_words": 5,
+    "speech": "Đã hiển thị 2 món.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [
+      "latte",
+      "matcha-latte"
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 1,
+    "flow": "add_shown",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 1,
+    "tool_names": [
+      "display_cart"
+    ],
+    "tool_arguments": [],
+    "time_to_first_tool_s": 1.6014,
+    "time_to_final_response_s": 1.604,
+    "spoken_words": 5,
+    "speech": "Đã cập nhật giỏ hàng.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 1,
+    "flow": "view_cart",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 1,
+    "tool_names": [
+      "display_cart"
+    ],
+    "tool_arguments": [],
+    "time_to_first_tool_s": 1.1365,
+    "time_to_final_response_s": 1.1388,
+    "spoken_words": 5,
+    "speech": "Giỏ hàng đã hiển thị.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 1,
+    "flow": "checkout_draft",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 7,
+    "tool_names": [
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 1.6991,
+    "time_to_final_response_s": 1.7102,
+    "spoken_words": 7,
+    "speech": "QR sẵn sàng, đang chờ thanh toán.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 1,
+    "flow": "checkout_named",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 9,
+    "tool_names": [
+      "skill_trendcoffee-take-out-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-take-out-checkout",
+        "arguments": {
+          "items": [
+            {
+              "contains": "Yaourt dâu",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      }
+    ],
+    "time_to_first_tool_s": 1.664,
+    "time_to_final_response_s": 1.6785,
+    "spoken_words": 7,
+    "speech": "QR sẵn sàng, đang chờ thanh toán.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 1,
+    "flow": "clarify",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 1.8644,
+    "spoken_words": 6,
+    "speech": "Bạn muốn thêm món nào ạ?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 1,
+    "flow": "tables",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 2,
+    "tool_names": [
+      "skill_trendcoffee-tables"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-tables",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 1.1301,
+    "time_to_final_response_s": 1.1342,
+    "spoken_words": 3,
+    "speech": "Bàn trống: 1.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 1,
+    "flow": "missing_type",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 1.2288,
+    "spoken_words": 7,
+    "speech": "Bạn dùng tại bàn hay mang đi?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 2,
+    "flow": "menu",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 3,
+    "tool_names": [
+      "skill_trendcoffee-menu"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-menu",
+        "arguments": {
+          "itemTerms": [
+            "latte"
+          ],
+          "categoryTerms": [],
+          "minPrice": 0,
+          "maxPrice": 1000000000,
+          "displayMode": "filtered"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 1.1004,
+    "time_to_final_response_s": 1.1078,
+    "spoken_words": 5,
+    "speech": "Đã hiển thị 2 món.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [
+      "latte",
+      "matcha-latte"
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 2,
+    "flow": "add_shown",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 1,
+    "tool_names": [
+      "display_cart"
+    ],
+    "tool_arguments": [],
+    "time_to_first_tool_s": 1.9801,
+    "time_to_final_response_s": 1.9825,
+    "spoken_words": 5,
+    "speech": "Đã cập nhật giỏ hàng.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 2,
+    "flow": "view_cart",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 1,
+    "tool_names": [
+      "display_cart"
+    ],
+    "tool_arguments": [],
+    "time_to_first_tool_s": 0.7397,
+    "time_to_final_response_s": 0.7419,
+    "spoken_words": 5,
+    "speech": "Giỏ hàng đã hiển thị.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 2,
+    "flow": "checkout_draft",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 7,
+    "tool_names": [
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 2.3417,
+    "time_to_final_response_s": 2.3509,
+    "spoken_words": 7,
+    "speech": "QR sẵn sàng, đang chờ thanh toán.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 2,
+    "flow": "checkout_named",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 9,
+    "tool_names": [
+      "skill_trendcoffee-take-out-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-take-out-checkout",
+        "arguments": {
+          "items": [
+            {
+              "contains": "Yaourt dâu",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      }
+    ],
+    "time_to_first_tool_s": 1.8501,
+    "time_to_final_response_s": 1.8618,
+    "spoken_words": 7,
+    "speech": "QR sẵn sàng, đang chờ thanh toán.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 2,
+    "flow": "clarify",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 1.5818,
+    "spoken_words": 4,
+    "speech": "Bạn chọn món nào?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 2,
+    "flow": "tables",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 2,
+    "tool_names": [
+      "skill_trendcoffee-tables"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-tables",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 1.2454,
+    "time_to_final_response_s": 1.2488,
+    "spoken_words": 3,
+    "speech": "Bàn trống: 1.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  {
+    "variant": "after",
+    "repeat": 2,
+    "flow": "missing_type",
+    "model": "deepseek-v4-flash",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 1.4227,
+    "spoken_words": 8,
+    "speech": "Bạn dùng tại quán hay mang về ạ?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  }
+]

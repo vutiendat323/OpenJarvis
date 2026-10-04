@@ -11,11 +11,11 @@ export interface VoiceWaveformProps {
 }
 
 export function computeWaveformHeights(
-  data: Uint8Array | Float32Array | undefined,
-  isActive: boolean,
-  prevHeights: [number, number, number] = [7, 16, 7],
+  data: Uint8Array | Float32Array | null | undefined,
+  active: boolean,
+  prevHeights: [number, number, number] = [8, 18, 8],
 ): [number, number, number] {
-  if (!isActive) {
+  if (!active) {
     return [7, 16, 7];
   }
   if (!data || data.length === 0) {
@@ -35,7 +35,10 @@ export function computeWaveformHeights(
         sum += (val as number) / 255;
       }
     }
-    return sum / (e - s);
+    const rawAvg = sum / (e - s);
+    // Non-linear response curve: boosts conversational voice levels
+    // so customer speech produces dynamic, visible bar modulation.
+    return Math.min(1, Math.pow(rawAvg, 0.65) * 1.6);
   };
 
   // 3 Voice Frequency Bands:
@@ -59,11 +62,18 @@ export function computeWaveformHeights(
   target1 = Math.max(target1, Math.max(target0, target2) + 4);
   target1 = Math.min(maxCenter, target1);
 
-  // Smooth lerp (0.35)
-  const lerp = 0.35;
-  const h0 = Math.round(prevHeights[0] + (target0 - prevHeights[0]) * lerp);
-  const h1 = Math.round(prevHeights[1] + (target1 - prevHeights[1]) * lerp);
-  const h2 = Math.round(prevHeights[2] + (target2 - prevHeights[2]) * lerp);
+  // Smooth lerp without integer rounding deadlock
+  const lerpStep = (prev: number, target: number, factor = 0.4): number => {
+    const diff = target - prev;
+    if (Math.abs(diff) === 0) return target;
+    const step = diff * factor;
+    const change = Math.abs(step) >= 0.5 ? Math.round(step) : (diff > 0 ? 1 : -1);
+    return prev + change;
+  };
+
+  const h0 = lerpStep(prevHeights[0], target0);
+  const h1 = lerpStep(prevHeights[1], target1);
+  const h2 = lerpStep(prevHeights[2], target2);
 
   const finalCenter = Math.max(h1, Math.max(h0, h2) + 3);
 
@@ -78,7 +88,7 @@ export function VoiceWaveform({
   className = '',
   onMicClick,
 }: VoiceWaveformProps) {
-  const isActive = speaking || listening || voiceStatus === 'speaking' || voiceStatus === 'listening';
+  const isActive = speaking || listening || (Boolean(voiceStatus) && voiceStatus !== 'idle' && voiceStatus !== 'ended' && voiceStatus !== 'error');
   const [heights, setHeights] = useState<[number, number, number]>(() => (isActive ? [8, 18, 8] : [7, 16, 7]));
   const heightsRef = useRef<[number, number, number]>(heights);
   heightsRef.current = heights;

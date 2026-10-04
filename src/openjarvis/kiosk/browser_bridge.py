@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from contextlib import suppress
 from typing import Any, AsyncIterator
 
@@ -27,6 +28,9 @@ class BrowserBridge:
         self._last_frame: dict[str, Any] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._sensitive_values: list[str] = []
+        self._device_scale_factor = 1.0
+        self._capture_task: asyncio.Task[None] | None = None
+        self._capture_requested = False
         self._state: dict[str, Any] = {
             "url": "about:blank",
             "title": "",
@@ -70,10 +74,17 @@ class BrowserBridge:
         await self._command("Page.addScriptToEvaluateOnNewDocument", {"source": script})
         await self._command("Runtime.evaluate", {"expression": script})
         await self._refresh_state()
-        await self._command("Page.startScreencast", {"format": "jpeg", "quality": 60})
+        # Lossless frames keep menu text and thin UI edges sharp.
+        await self._command("Page.startScreencast", {"format": "png"})
 
     async def close(self) -> None:
         self._closed.set()
+        if self._capture_task is not None:
+            self._capture_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._capture_task
+            self._capture_task = None
+        self._capture_requested = False
         if self._focus_refresh is not None:
             self._focus_refresh.cancel()
             with suppress(asyncio.CancelledError):
@@ -90,6 +101,59 @@ class BrowserBridge:
 
     def state(self) -> dict[str, Any]:
         return dict(self._state)
+
+    async def hit_test(self, x: float, y: float) -> bool:
+        """Protect page controls from the floating window's drag gesture."""
+        if not math.isfinite(x) or not math.isfinite(y):
+            return True
+        expression = (
+            """((x, y) => {
+            let node = document.elementFromPoint(x, y);
+            const selectors = 'a[href],button,input,textarea,select,label,summary,'
+                + 'iframe,canvas,audio,video,'
+                + '[contenteditable]:not([contenteditable="false"]),'
+                + '[role="button"],[role="link"],[role="tab"],[role="menuitem"],'
+                + '[role="checkbox"],[role="switch"],[role="slider"],[role="textbox"]';
+            const events = ['click','dblclick','mousedown','pointerdown','touchstart',
+                'keydown','input','change','contextmenu','dragstart'];
+            const reactActionProps = ['onClick','onDoubleClick','onMouseDown',
+                'onPointerDown','onTouchStart','onKeyDown','onInput','onChange',
+                'onContextMenu','onDragStart'];
+            while (node) {
+                if (node.matches(selectors) || node.tabIndex >= 0) return true;
+                if (getComputedStyle(node).cursor === 'pointer') return true;
+                if (events.some(name => typeof node['on' + name] === 'function'))
+                    return true;
+                const propsKey = Object.keys(node).find(
+                    key => key.startsWith('__reactProps$'));
+                const props = propsKey ? node[propsKey] : null;
+                // Hover/move handlers are often attached to layout wrappers for
+                // animation. Treat only handlers that can activate an action as
+                // interactive, or those wrappers make the whole page undraggable.
+                if (props && reactActionProps.some(name =>
+                    typeof props[name] === 'function')) return true;
+                // React root listeners delegate to props already checked above.
+                const reactRoot = Object.keys(node).some(
+                    key => key.startsWith('__reactContainer$'));
+                if (!reactRoot && typeof getEventListeners === 'function') {
+                    const listeners = getEventListeners(node);
+                    if (events.some(name => listeners[name]?.length)) return true;
+                }
+                node = node.parentElement;
+            }
+            return false;
+        })"""
+            + f"({json.dumps(x)}, {json.dumps(y)})"
+        )
+        result = await self._command(
+            "Runtime.evaluate",
+            {
+                "expression": expression,
+                "returnByValue": True,
+                "includeCommandLineAPI": True,
+            },
+        )
+        return result.get("result", {}).get("value") is not False
 
     def redact(self, text: str) -> str:
         from openjarvis.kiosk.browser_privacy import redact_browser_text
@@ -179,17 +243,22 @@ class BrowserBridge:
                 },
             )
         elif kind == "resize":
+            scale = float(command.get("device_scale_factor", 1))
+            if not math.isfinite(scale):
+                scale = 1
+            scale = max(1, min(2, scale))
             await self._command(
                 "Emulation.setDeviceMetricsOverride",
                 {
                     "width": command["width"],
                     "height": command["height"],
-                    "deviceScaleFactor": 1,
+                    "deviceScaleFactor": scale,
                     "mobile": False,
                 },
             )
             self._state["width"] = command["width"]
             self._state["height"] = command["height"]
+            self._device_scale_factor = scale
         elif kind == "wheel":
             await self._command(
                 "Input.dispatchMouseEvent",
@@ -344,9 +413,17 @@ class BrowserBridge:
                     await self._send_no_wait(
                         "Page.screencastFrameAck", {"sessionId": params["sessionId"]}
                     )
-                    self._publish(
-                        {"type": "frame", "data": params["data"], **self.state()}
-                    )
+                    if self._device_scale_factor > 1:
+                        # Screencast always downsamples to CSS pixels. Capture
+                        # native pixels outside the reader so CDP replies can
+                        # still be processed. Coalesce frames while capturing.
+                        self._capture_requested = True
+                        if self._capture_task is None or self._capture_task.done():
+                            self._capture_task = asyncio.create_task(
+                                self._capture_high_density_frame()
+                            )
+                    else:
+                        self._publish_frame(params["data"])
         finally:
             self._closed.set()
             if self._load_waiter is not None and not self._load_waiter.done():
@@ -356,6 +433,36 @@ class BrowserBridge:
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(RuntimeError("Browser CDP disconnected"))
+
+    def _publish_frame(self, data: str) -> None:
+        self._publish(
+            {
+                "type": "frame",
+                "format": "png",
+                "data": data,
+                **self.state(),
+            }
+        )
+
+    async def _capture_high_density_frame(self) -> None:
+        try:
+            while self._capture_requested and not self._closed.is_set():
+                self._capture_requested = False
+                screenshot = await self._command(
+                    "Page.captureScreenshot",
+                    {
+                        "format": "png",
+                        "fromSurface": True,
+                        "captureBeyondViewport": False,
+                    },
+                )
+                if self._device_scale_factor > 1:
+                    self._publish_frame(screenshot["data"])
+                # Bound capture work for animated pages to 30 frames/s.
+                await asyncio.sleep(1 / 30)
+        except (RuntimeError, TimeoutError):
+            # A late screenshot may fail while the browser is shutting down.
+            return
 
     async def _refresh_state(self) -> None:
         expression = """(() => {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import struct
 from urllib.request import urlopen
 
 import pytest
@@ -72,6 +73,14 @@ def test_bridge_streams_a_real_chrome_frame(tmp_path) -> None:
             try:
                 await bridge.handle(
                     {
+                        "type": "resize",
+                        "width": 640,
+                        "height": 480,
+                        "device_scale_factor": 2,
+                    }
+                )
+                await bridge.handle(
+                    {
                         "type": "navigate",
                         "url": (
                             "data:text/html,<body style='background:red'>Shared</body>"
@@ -82,11 +91,16 @@ def test_bridge_streams_a_real_chrome_frame(tmp_path) -> None:
                 async def read_frame() -> dict:
                     async for message in bridge.subscribe():
                         if message["type"] == "frame":
-                            return message
+                            pixels = base64.b64decode(message["data"])
+                            assert pixels.startswith(b"\x89PNG\r\n\x1a\n")
+                            if struct.unpack(">II", pixels[16:24]) == (1280, 960):
+                                return message
                     raise AssertionError("frame stream stopped")
 
                 frame = await asyncio.wait_for(read_frame(), timeout=3)
-                assert base64.b64decode(frame["data"]).startswith(b"\xff\xd8")
+                assert frame["format"] == "png"
+                assert frame["width"] == 640
+                assert frame["height"] == 480
                 assert frame["url"].startswith("data:text/html,")
             finally:
                 await bridge.close()

@@ -12,6 +12,8 @@ let mockVoiceState = {
   enabled: true,
   status: 'idle' as LocalVoiceStatus,
   activityDetail: null as string | null,
+  transcript: '',
+  error: null as string | null,
   assistantCaptionText: '',
   getFrequencyData: () => new Uint8Array(),
   start: vi.fn().mockResolvedValue(undefined),
@@ -47,6 +49,8 @@ beforeEach(() => {
     enabled: true,
     status: 'idle',
     activityDetail: null,
+    transcript: '',
+    error: null,
     assistantCaptionText: '',
     getFrequencyData: () => new Uint8Array(),
     start: vi.fn().mockResolvedValue(undefined),
@@ -93,8 +97,6 @@ vi.mock('@/components/Kiosk/Pet/FloatingCodexPet', () => ({
     <div data-testid="mock-floating-codex-pet" data-scale={props.scale} />
   ),
 }));
-vi.mock('@/components/Chat/voiceTurnRows', () => ({ currentVoiceTurnRows: () => [] }));
-
 vi.mock('@/components/Kiosk/SharedBrowserPane', () => ({
   SharedBrowserPane: () => <section data-testid="shared-browser-pane" />,
 }));
@@ -147,6 +149,16 @@ describe('KioskPage', () => {
     expect(markup).not.toContain('data-testid="kiosk-prompting-overlay"');
     expect(markup).not.toContain('Sẵn sàng trò chuyện?');
     expect(markup).not.toContain('Bắt đầu trò chuyện');
+  });
+
+  it('shows live transcription when the microphone starts a session before kiosk policy is active', () => {
+    mockVoiceState.status = 'listening';
+    mockVoiceState.transcript = 'Tôi muốn gọi món';
+
+    const markup = renderToStaticMarkup(<MemoryRouter><KioskPage /></MemoryRouter>);
+
+    expect(markup).toContain('Tôi muốn gọi món');
+    expect(markup).not.toContain('data-testid="kiosk-prompting-overlay"');
   });
 
   it('renders 4-edge border glow and center ambient glow layers', () => {
@@ -213,19 +225,22 @@ describe('KioskPage', () => {
     expect(markup).toContain('data-testid="kiosk-shared-layout"');
     expect(markup).toContain('data-testid="shared-browser-pane"');
     expect(markup).toContain('aria-label="Voice assistant"');
-    expect(markup).toContain('Collapse voice pane');
+    expect(markup).not.toContain('Collapse voice pane');
     expect(markup).not.toContain('Share Screen');
     expect(markup).not.toContain('hero-talk-btn');
     expect(markup).not.toContain('dock-mic-btn');
   });
 
-  it('renders 7:3 split layout with floating rounded customer display on the left and seamless voice assistant on the right', () => {
+  it('renders 7:3 split layout with fullscreen customer display on the left and seamless voice assistant on the right', () => {
     const markup = renderToStaticMarkup(<MemoryRouter><KioskPage /></MemoryRouter>);
     expect(markup).toContain('data-testid="customer-display-pane-container"');
     expect(markup).toContain('width:70%');
-    expect(markup).toContain('border-radius:16px');
+    expect(markup).not.toContain('border-radius:16px');
     // Divider is removed for a seamless floating feel
     expect(markup).not.toContain('role="separator"');
+
+    expect(markup).toContain('data-testid="kiosk-pane-resizer"');
+    expect(markup).toContain('cursor-col-resize');
 
     // Confirm left pane (customer display) appears before right pane (voice assistant)
     const customerDisplayIndex = markup.indexOf('data-testid="customer-display-pane-container"');

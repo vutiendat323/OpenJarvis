@@ -397,6 +397,7 @@ def serve(
                 parallel_tools=system.config.agent.parallel_tools,
                 prompt_builder=prompt_builder,
                 extra_kwargs={
+                    "max_tokens": system.config.intelligence.max_tokens,
                     "skill_few_shot_examples": system._skill_few_shot_examples,
                 },
             )

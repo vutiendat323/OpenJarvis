@@ -1,0 +1,890 @@
+[
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "menu",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 3,
+    "tool_names": [
+      "skill_trendcoffee-menu"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-menu",
+        "arguments": {
+          "itemTerms": [
+            "latte"
+          ],
+          "categoryTerms": [],
+          "minPrice": 0,
+          "maxPrice": 1000000000,
+          "displayMode": "filtered"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 2.5831,
+    "time_to_final_response_s": 2.5881,
+    "spoken_words": 11,
+    "speech": "Đã tìm thấy 2 kết quả: Latte: 51000, Matcha latte: 55000.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [
+      "latte",
+      "matcha-latte"
+    ],
+    "cart_lines": [],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4070,
+    "completion_tokens": 119
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "add_shown",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 1,
+    "internal_tool_calls": 1,
+    "tool_names": [
+      "display_cart"
+    ],
+    "tool_arguments": [],
+    "time_to_first_tool_s": 2.4303,
+    "time_to_final_response_s": 3.5796,
+    "spoken_words": 9,
+    "speech": "Đã thêm 2 Latte vào giỏ và mở giỏ.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "latte",
+        "quantity": 2,
+        "unit_price": 51000,
+        "note": ""
+      }
+    ],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 8544,
+    "completion_tokens": 144
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "view_cart",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 1,
+    "tool_names": [
+      "display_cart"
+    ],
+    "tool_arguments": [],
+    "time_to_first_tool_s": 1.3061,
+    "time_to_final_response_s": 1.3081,
+    "spoken_words": 9,
+    "speech": "Giỏ hàng đã hiển thị. Tổng hiện tại 102.000đ.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "latte",
+        "quantity": 2,
+        "unit_price": 51000,
+        "note": ""
+      }
+    ],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4153,
+    "completion_tokens": 23
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "checkout_draft",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 7,
+    "tool_names": [
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 1.6488,
+    "time_to_final_response_s": 1.6596,
+    "spoken_words": 8,
+    "speech": "Thanh toán đơn mang về này, lấy QR",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "latte",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4164,
+    "completion_tokens": 108
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "checkout_named",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "arguments": {
+          "items": [
+            {
+              "contains": "Yaourt dâu",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 1.9047,
+    "time_to_final_response_s": 9.8553,
+    "spoken_words": 12,
+    "speech": "Thanh toán ngay 2 Yaourt dâu mang về và hiển thị QR.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "yaourt-dau",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 8521,
+    "completion_tokens": 973
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "clarify",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 1.3447,
+    "spoken_words": 13,
+    "speech": "Bạn muốn thêm món nào vào giỏ: Latte, Matcha latte hay Yaourt dâu?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4145,
+    "completion_tokens": 53
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "tables",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 1,
+    "internal_tool_calls": 2,
+    "tool_names": [
+      "skill_trendcoffee-tables"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-tables",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 1.8418,
+    "time_to_final_response_s": 3.0159,
+    "spoken_words": 7,
+    "speech": "Hiện chỉ bàn 1 còn trống ạ.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 8230,
+    "completion_tokens": 34
+  },
+  {
+    "variant": "before",
+    "repeat": 0,
+    "flow": "missing_type",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 2.0636,
+    "spoken_words": 18,
+    "speech": "Bạn muốn dùng tại quán hay mang đi? Nếu dùng tại quán, vui lòng cho mình biết bàn.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "latte",
+        "quantity": 2,
+        "unit_price": 51000,
+        "note": ""
+      }
+    ],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4160,
+    "completion_tokens": 98
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "menu",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 3,
+    "tool_names": [
+      "skill_trendcoffee-menu"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-menu",
+        "arguments": {
+          "itemTerms": [],
+          "categoryTerms": [
+            "Latte"
+          ],
+          "minPrice": 0,
+          "maxPrice": 1000000000,
+          "displayMode": "filtered"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 1.4342,
+    "time_to_final_response_s": 1.4403,
+    "spoken_words": 13,
+    "speech": "Đã xác minh 0 kết quả phù hợp trong dữ liệu mới nhất.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": false,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4068,
+    "completion_tokens": 46
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "add_shown",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 1,
+    "tool_names": [
+      "display_cart"
+    ],
+    "tool_arguments": [],
+    "time_to_first_tool_s": 2.3091,
+    "time_to_final_response_s": 2.3111,
+    "spoken_words": 9,
+    "speech": "Đã cập nhật giỏ hàng. Tổng hiện tại 102.000đ.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "latte",
+        "quantity": 2,
+        "unit_price": 51000,
+        "note": ""
+      }
+    ],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4103,
+    "completion_tokens": 112
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "view_cart",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 1,
+    "tool_names": [
+      "display_cart"
+    ],
+    "tool_arguments": [],
+    "time_to_first_tool_s": 1.1573,
+    "time_to_final_response_s": 1.1593,
+    "spoken_words": 9,
+    "speech": "Giỏ hàng đã hiển thị. Tổng hiện tại 102.000đ.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "latte",
+        "quantity": 2,
+        "unit_price": 51000,
+        "note": ""
+      }
+    ],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4155,
+    "completion_tokens": 23
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "checkout_draft",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 7,
+    "tool_names": [
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 1.7791,
+    "time_to_final_response_s": 1.7896,
+    "spoken_words": 5,
+    "speech": "Thanh toán đơn mang về",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "latte",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4165,
+    "completion_tokens": 100
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "checkout_named",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "arguments": {
+          "items": [
+            {
+              "contains": "Yaourt dâu",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 3.5961,
+    "time_to_final_response_s": 9.637,
+    "spoken_words": 13,
+    "speech": "Thanh toán ngay đơn 2 Yaourt dâu mang về, xin hiển thị QR.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "yaourt-dau",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 8610,
+    "completion_tokens": 856
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "clarify",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 1.4018,
+    "spoken_words": 13,
+    "speech": "Bạn muốn thêm món nào vào giỏ: Latte, Matcha latte hay Yaourt dâu?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4145,
+    "completion_tokens": 74
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "tables",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 1,
+    "internal_tool_calls": 2,
+    "tool_names": [
+      "skill_trendcoffee-tables"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-tables",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 1.165,
+    "time_to_final_response_s": 2.2903,
+    "spoken_words": 5,
+    "speech": "Bàn 1 còn trống ạ.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 8228,
+    "completion_tokens": 32
+  },
+  {
+    "variant": "before",
+    "repeat": 1,
+    "flow": "missing_type",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 2.7536,
+    "spoken_words": 20,
+    "speech": "Bạn muốn mang đi hay dùng tại bàn? Nếu dùng tại bàn, vui lòng cho mình biết số bàn nhé.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "latte",
+        "quantity": 2,
+        "unit_price": 51000,
+        "note": ""
+      }
+    ],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4156,
+    "completion_tokens": 217
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "menu",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 3,
+    "tool_names": [
+      "skill_trendcoffee-menu"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-menu",
+        "arguments": {
+          "itemTerms": [
+            "latte"
+          ],
+          "categoryTerms": [],
+          "minPrice": 0,
+          "maxPrice": 1000000000,
+          "displayMode": "filtered"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 2.4039,
+    "time_to_final_response_s": 2.4092,
+    "spoken_words": 11,
+    "speech": "Đã tìm thấy 2 kết quả: Latte: 51000, Matcha latte: 55000.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [
+      "latte",
+      "matcha-latte"
+    ],
+    "cart_lines": [],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4073,
+    "completion_tokens": 133
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "add_shown",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 1,
+    "tool_names": [
+      "display_cart"
+    ],
+    "tool_arguments": [],
+    "time_to_first_tool_s": 1.8374,
+    "time_to_final_response_s": 1.8395,
+    "spoken_words": 9,
+    "speech": "Đã cập nhật giỏ hàng. Tổng hiện tại 102.000đ.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "latte",
+        "quantity": 2,
+        "unit_price": 51000,
+        "note": ""
+      }
+    ],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4101,
+    "completion_tokens": 120
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "view_cart",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 1,
+    "internal_tool_calls": 1,
+    "tool_names": [
+      "display_cart"
+    ],
+    "tool_arguments": [],
+    "time_to_first_tool_s": 1.2294,
+    "time_to_final_response_s": 2.4756,
+    "spoken_words": 13,
+    "speech": "Giỏ hàng của bạn có 2 Latte, tổng cộng 102.000₫. Đơn mang đi.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "latte",
+        "quantity": 2,
+        "unit_price": 51000,
+        "note": ""
+      }
+    ],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 8472,
+    "completion_tokens": 46
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "checkout_draft",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 7,
+    "tool_names": [
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 1.4967,
+    "time_to_final_response_s": 1.507,
+    "spoken_words": 7,
+    "speech": "Thanh toán đơn mang về, lấy QR.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "latte",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4158,
+    "completion_tokens": 95
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "checkout_named",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "arguments": {
+          "items": [
+            {
+              "contains": "Yaourt dâu",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 2.3688,
+    "time_to_final_response_s": 11.8207,
+    "spoken_words": 7,
+    "speech": "Thanh toán 2 Yaourt dâu mang về.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "yaourt-dau",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 8530,
+    "completion_tokens": 952
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "clarify",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 1.7857,
+    "spoken_words": 13,
+    "speech": "Bạn muốn thêm món nào vào giỏ: Latte, Matcha latte hay Yaourt dâu?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4148,
+    "completion_tokens": 64
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "tables",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 1,
+    "internal_tool_calls": 2,
+    "tool_names": [
+      "skill_trendcoffee-tables"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-tables",
+        "arguments": {}
+      }
+    ],
+    "time_to_first_tool_s": 1.2399,
+    "time_to_final_response_s": 2.349,
+    "spoken_words": 7,
+    "speech": "Hiện chỉ bàn 1 còn trống ạ.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 8230,
+    "completion_tokens": 34
+  },
+  {
+    "variant": "before",
+    "repeat": 2,
+    "flow": "missing_type",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 1.9268,
+    "spoken_words": 21,
+    "speech": "Giỏ hàng hiện có 2 Latte. Bạn muốn dùng tại bàn hay mang đi để mình tạo đơn và lấy QR?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "latte",
+        "quantity": 2,
+        "unit_price": 51000,
+        "note": ""
+      }
+    ],
+    "order_lines": [],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4157,
+    "completion_tokens": 90
+  }
+]

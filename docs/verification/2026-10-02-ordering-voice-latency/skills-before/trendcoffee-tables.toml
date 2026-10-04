@@ -1,0 +1,21 @@
+[skill]
+name = "trendcoffee-tables"
+description = "Read the current TrendCoffee table list from its fixed public API in one call. Return each table name, slug, and status. Only status exactly available means free. Use for table questions or a requested table before selecting it; never browse the merchant website."
+required_capabilities = ["network:fetch"]
+input_schema_json = '''{"type":"object","properties":{},"additionalProperties":false}'''
+
+[skill.metadata.openjarvis.request_recipe]
+origin = "https://trendcoffee.net"
+method = "GET"
+read_only = true
+allowed_content_types = ["application/json"]
+required_paths_json = '''[{"path":"result","type":"array"}]'''
+
+[[skill.steps]]
+tool_name = "http_request"
+output_key = "tables"
+arguments_template = '''{"url":"https://trendcoffee.net/api/latest/tables?branch=ba9355f797","method":"GET","timeout":5}'''
+assertions_json = '''[
+  {"actual":{"$map":"{tables.result}","as":"table","value":"{table.slug}"},"all_unique_non_empty":true},
+  {"actual":{"$map":"{tables.result}","as":"table","value":"{table.name}"},"all_unique_non_empty":true}
+]'''

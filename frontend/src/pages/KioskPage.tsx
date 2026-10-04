@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { X, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { X } from 'lucide-react';
 
 import { AudioVisualizer } from '@/components/Visualizer/AudioVisualizer';
 import { VisualizerControls } from '@/components/Visualizer/VisualizerControls';
@@ -12,6 +12,7 @@ import { currentVoiceTurnRows } from '@/components/Chat/voiceTurnRows';
 import { useDraggableResizable } from '@/hooks/useDraggableResizable';
 import { useKioskState, type KioskState } from '@/hooks/useKioskState';
 import { usePipecatVoiceMode } from '@/hooks/usePipecatVoiceMode';
+import { useRemoteCamera } from '@/hooks/useRemoteCamera';
 import { useSharedBrowser } from '@/hooks/useSharedBrowser';
 import { useUiLanguage, type UiLanguage } from '@/hooks/useUiLanguage';
 import { shouldShimmerVoiceStatus, voiceStatusLabel } from '@/hooks/voiceUiText';
@@ -131,6 +132,8 @@ export function KioskPage() {
 
   const addMessage = useAppStore((state) => state.addMessage);
   const threadIdRef = useRef<string>('');
+  // ?camera=remote: this device's camera replaces the kiosk's C920 for Vision.
+  useRemoteCamera();
   const voice = usePipecatVoiceMode({
     onTurn: (message) => {
       if (threadIdRef.current) addMessage(threadIdRef.current, message);
@@ -193,20 +196,40 @@ export function KioskPage() {
     enableWheelZoom: true,
   });
 
-  const handleZoom = useCallback((direction: number) => {
-    if (browserMode === 'floating') {
-      zoomFloating(direction * 40);
-    } else {
-      setSplitRatio((prev) => {
-        const next = Math.min(85, Math.max(25, Math.round((prev + direction * 5) * 10) / 10));
-        try {
-          const storage = typeof window !== 'undefined' ? window.localStorage : globalThis.localStorage;
-          storage?.setItem('openjarvis_kiosk_split_ratio', next.toString());
-        } catch {}
-        return next;
-      });
-    }
-  }, [browserMode, zoomFloating]);
+  const [isResizingSplit, setIsResizingSplit] = useState(false);
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+
+  const handleSplitResizeStart = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingSplit(true);
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const container = splitContainerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const rawX = moveEvent.clientX - rect.left;
+      const pct = (rawX / rect.width) * 100;
+      const clamped = Math.min(85, Math.max(25, Math.round(pct * 10) / 10));
+      setSplitRatio(clamped);
+      try {
+        const storage = typeof window !== 'undefined' ? window.localStorage : globalThis.localStorage;
+        storage?.setItem('openjarvis_kiosk_split_ratio', clamped.toString());
+      } catch {}
+    };
+
+    const onPointerUp = () => {
+      setIsResizingSplit(false);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+  }, []);
 
 
   const { language: uiLanguage, setLanguage: setUiLanguage } = useUiLanguage();
@@ -324,7 +347,7 @@ export function KioskPage() {
       className={
         !screenVisible || browserMode === 'floating'
           ? 'relative h-full w-full shrink-0 overflow-hidden bg-[#071410]'
-          : `relative shrink-0 overflow-hidden border-t border-white/10 bg-[#071410] md:border-l md:border-t-0 ${
+          : `relative shrink-0 overflow-hidden bg-[#071410] ${
               voiceCollapsed ? 'h-14 md:h-full md:w-14' : 'h-[35%] min-h-48 md:h-full'
             }`
       }
@@ -338,13 +361,6 @@ export function KioskPage() {
           : {}),
       }}
     >
-      <button
-        aria-label={voiceCollapsed ? 'Expand voice pane' : 'Collapse voice pane'}
-        onClick={() => setVoiceCollapsed(!voiceCollapsed)}
-        className="absolute top-4 left-4 z-40 cursor-pointer text-[var(--color-text-secondary)] hover:text-[var(--color-text)] transition-colors"
-      >
-        {voiceCollapsed ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
-      </button>
       <div className={`relative h-full ${voiceCollapsed ? 'invisible' : ''}`}>
 
         {/* Center ambient glow - intensity dynamically tuned by settings.glow */}
@@ -406,7 +422,7 @@ export function KioskPage() {
         </button>
 
         <div className="absolute inset-x-0 bottom-0 z-40 flex flex-col items-center gap-3 px-4 pb-4 pointer-events-none">
-          {kioskState === 'active' && (
+          {(kioskState === 'active' || isVoiceActive) && (
             <>
               {settings.showCaptions && (
                 <div className="w-full max-w-2xl flex flex-col items-center gap-2 rounded-2xl bg-black/20 px-4 py-2 text-center backdrop-blur-sm">
@@ -439,6 +455,7 @@ export function KioskPage() {
           <div className="pointer-events-auto flex items-center gap-2">
             <VoiceWaveform
               speaking={voice.status === 'speaking' && !voiceCollapsed}
+              listening={voice.status === 'listening' && !voiceCollapsed}
               voiceStatus={voiceCollapsed ? 'idle' : voice.status}
               getFrequencyData={voice.getFrequencyData}
               onMicClick={isVoiceActive ? endVoice : startPolicyVoice}
@@ -460,47 +477,66 @@ export function KioskPage() {
       className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden md:flex-row"
       style={{ background: 'var(--color-bg)', color: 'var(--color-text)' }}
     >
-      {browserMode === 'split' ? (
-        <div className="flex h-full w-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-2 md:p-2.5">
-          {/* One shared frame keeps the customer display and voice assistant together. */}
-          <div
-            className="relative isolate flex h-full w-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[16px] border border-white/10 bg-[#08100f] shadow-2xl shadow-black/45 md:flex-row"
-            style={{ borderRadius: '16px' }}
-          >
-            {/* Customer display and its browser controls share the outer frame. */}
-            <div
-              id="kiosk-shared-screen"
-              hidden={!screenVisible}
-              data-testid="customer-display-pane-container"
-              className="flex min-h-0 min-w-0 flex-col overflow-hidden"
-              style={{
-                display: screenVisible ? undefined : 'none',
-                width: voiceCollapsed ? 'calc(100% - 3.5rem)' : `${splitRatio}%`,
-                flex: voiceCollapsed ? '1 1 auto' : `0 0 ${splitRatio}%`,
-              }}
-            >
-              <SharedBrowserPane
-                browser={browser}
-                isFloating={false}
-                onToggleFloating={() => handleSetBrowserMode('floating')}
-                onZoom={handleZoom}
-              />
-            </div>
+      {/* Global overlay during split drag to guarantee pointer tracking and correct cursor */}
+      {isResizingSplit && (
+        <div className="fixed inset-0 z-50 cursor-col-resize select-none pointer-events-auto" />
+      )}
 
-            {/* Voice status, captions, mascot, and microphone stay in this pane. */}
-            {voiceAssistantPane}
-            <div
-              aria-hidden
-              data-testid="kiosk-edge-glow"
-              className="pointer-events-none absolute inset-0 z-30 rounded-[inherit] transition-all duration-700"
-              style={{ boxShadow: edgeGlowShadow }}
+      {browserMode === 'split' ? (
+        <div
+          ref={splitContainerRef}
+          className="relative isolate flex h-full w-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[#08100f] md:flex-row"
+        >
+          {/* Customer display and its browser controls share the outer frame. */}
+          <div
+            id="kiosk-shared-screen"
+            hidden={!screenVisible}
+            data-testid="customer-display-pane-container"
+            className="flex min-h-0 min-w-0 flex-col overflow-hidden"
+            style={{
+              display: screenVisible ? undefined : 'none',
+              width: voiceCollapsed ? 'calc(100% - 3.5rem)' : `${splitRatio}%`,
+              flex: voiceCollapsed ? '1 1 auto' : `0 0 ${splitRatio}%`,
+            }}
+          >
+            <SharedBrowserPane
+              browser={browser}
+              isFloating={false}
+              onToggleFloating={() => handleSetBrowserMode('floating')}
             />
           </div>
+
+          {/* Invisible interactive resize handle at the seam — no UI changes, pure UX */}
+          {screenVisible && !voiceCollapsed && (
+            <div
+              data-testid="kiosk-pane-resizer"
+              aria-label="Resize split panes"
+              onPointerDown={handleSplitResizeStart}
+              onDoubleClick={() => {
+                setSplitRatio(70);
+                try {
+                  const storage = typeof window !== 'undefined' ? window.localStorage : globalThis.localStorage;
+                  storage?.setItem('openjarvis_kiosk_split_ratio', '70');
+                } catch {}
+              }}
+              className="absolute top-0 bottom-0 z-40 hidden md:block w-4 -translate-x-1/2 cursor-col-resize select-none touch-none bg-transparent"
+              style={{ left: `${splitRatio}%` }}
+            />
+          )}
+
+          {/* Voice status, captions, mascot, and microphone stay in this pane. */}
+          {voiceAssistantPane}
+          <div
+            aria-hidden
+            data-testid="kiosk-edge-glow"
+            className="pointer-events-none absolute inset-0 z-30 transition-all duration-700"
+            style={{ boxShadow: edgeGlowShadow }}
+          />
         </div>
       ) : (
         <>
           {/* Global overlay during drag or resize to guarantee pointer tracking and correct cursor */}
-          {(isFloatingDragging || isFloatingResizing) && (
+          {screenVisible && (isFloatingDragging || isFloatingResizing) && (
             <div
               className={`fixed inset-0 z-50 select-none ${
                 isFloatingDragging
@@ -563,7 +599,6 @@ export function KioskPage() {
                 onToggleFloating={() => handleSetBrowserMode('split')}
                 onToggleMaximize={toggleFloatingMaximize}
                 dragHandleProps={floatingCardHandlers}
-                onZoom={handleZoom}
               />
             </div>
 

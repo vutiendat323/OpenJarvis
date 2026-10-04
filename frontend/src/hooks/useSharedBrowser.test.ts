@@ -7,10 +7,14 @@ import {
 } from './useSharedBrowser';
 
 describe('shared browser state', () => {
-  it('updates the URL and latest frame together', () => {
+  it.each([
+    { format: undefined, data: '/9j/abc', mime: 'jpeg' },
+    { format: 'png', data: 'iVBORabc', mime: 'png' },
+  ])('updates the URL and $mime frame together', ({ format, data, mime }) => {
     const next = reduceBrowserMessage(initialBrowserState, {
       type: 'frame',
-      data: '/9j/abc',
+      data,
+      format,
       url: 'https://example.test/menu',
       title: 'Menu',
       width: 800,
@@ -19,7 +23,7 @@ describe('shared browser state', () => {
 
     expect(next.url).toBe('https://example.test/menu');
     expect(next.title).toBe('Menu');
-    expect(next.frame).toBe('data:image/jpeg;base64,/9j/abc');
+    expect(next.frame).toBe(`data:image/${mime};base64,${data}`);
     expect(next.width).toBe(800);
     expect(next.height).toBe(600);
   });

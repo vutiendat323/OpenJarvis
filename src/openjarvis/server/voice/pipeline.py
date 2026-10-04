@@ -39,6 +39,23 @@ def claim_voice_lease(
     return result.session
 
 
+async def return_to_listening_if_unheard(aggregator: Any) -> None:
+    """Close a turn the stop timeout ended without a transcript.
+
+    The kiosk shows "Processing" from the moment the customer stops talking,
+    and only a reply clears it. With no words there is no reply, so tell the
+    kiosk it is listening again. A turn that has words is answered as usual.
+    """
+    if aggregator.aggregation_string().strip():
+        return
+    from loguru import logger
+
+    from openjarvis.server.voice.llm import voice_activity_frame
+
+    logger.warning("voice: user turn ended with no transcript; listening again")
+    await aggregator.push_frame(voice_activity_frame("listening"))
+
+
 def build_voice_pipeline(
     *,
     connection: Any,
@@ -82,6 +99,8 @@ def build_voice_pipeline(
     from pipecat.transports.base_transport import TransportParams
     from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
+    from openjarvis.kiosk.runtime import customer_present
+    from openjarvis.server.voice.lifecycle import VoiceSessionLifecycle
     from openjarvis.server.voice.llm import (
         OpenJarvisLLMService,
         VoiceTurnState,
@@ -224,6 +243,9 @@ def build_voice_pipeline(
         ),
         realtime_service_mode=False,
     )
+    user_aggregator.event_handler("on_user_turn_stop_timeout")(
+        return_to_listening_if_unheard
+    )
     on_bot_audio = None
     if (
         speaker.identity == "fusion"
@@ -234,6 +256,15 @@ def build_voice_pipeline(
         from openjarvis.server.voice.speaker_embedding import bot_audio_sink
 
         on_bot_audio = bot_audio_sink(embedder, bot_voiceprint)
+    # Greeting, idle nudge, time limit and absence goodbye: fixed event -> TTS,
+    # never through the Agent. The session starts once the client connects,
+    # which only happens after the kiosk FSM accepted a customer.
+    lifecycle = VoiceSessionLifecycle(presence=customer_present)
+
+    @transport.event_handler("on_client_connected")
+    async def _start_lifecycle(_transport: Any, _client: Any) -> None:
+        await lifecycle.start_session()
+
     pipeline = Pipeline(
         [
             transport.input(),
@@ -242,6 +273,7 @@ def build_voice_pipeline(
             stt,
             user_aggregator,
             llm,
+            lifecycle,
             VieNeuTTSService(
                 renderer, sample_rate=VIENEU_SAMPLE_RATE_HZ, on_audio=on_bot_audio
             ),

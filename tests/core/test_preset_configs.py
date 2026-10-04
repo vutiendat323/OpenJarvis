@@ -131,6 +131,36 @@ def test_model_visible_menu_tool_only_accepts_verified_memory_selection() -> Non
     assert "all_from_latest_http" not in properties
 
 
+def test_kiosk_mcp_prompt_forbids_guessing_items_from_unclear_speech() -> None:
+    from openjarvis.system.agent_construction import resolve_agent_system_prompt
+
+    cfg = load_config(path=PRESETS_DIR / "ordering-kiosk-mcp.toml")
+    prompt = resolve_agent_system_prompt(cfg.agent)
+    assert prompt is not None
+    folded = " ".join(prompt.casefold().split())
+
+    assert "unclear, garbled or hesitant speech is not evidence of a product" in folded
+    assert "never substitute the closest-sounding item" in folded
+
+
+def test_kiosk_mcp_prompt_has_the_agent_write_a_brief_menu_reply() -> None:
+    from openjarvis.system.agent_construction import resolve_agent_system_prompt
+
+    cfg = load_config(path=PRESETS_DIR / "ordering-kiosk-mcp.toml")
+    prompt = resolve_agent_system_prompt(cfg.agent)
+    assert prompt is not None
+    folded = " ".join(prompt.casefold().split())
+
+    assert "pass your own brief `customer_message` to `skill_trendcoffee-menu`" in (
+        folded
+    )
+    assert "never read item names, prices or counts aloud" in folded
+    # Without this rule the model deliberated for 5-20s over whether a menu
+    # that is already in context needs fetching after cart/bill/QR screens.
+    assert "even when `displayed_menu` already holds the full menu" in folded
+    assert "switches the screen back from cart, bill or qr" in folded
+
+
 def test_kiosk_mcp_prompt_uses_prepared_reads_and_verified_cart() -> None:
     from openjarvis.system.agent_construction import resolve_agent_system_prompt
 

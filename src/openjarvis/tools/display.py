@@ -173,27 +173,6 @@ def _menu_items_from_latest_http() -> list[dict[str, Any]]:
     return items
 
 
-def _menu_customer_message(items: list[dict[str, Any]]) -> str:
-    count = len(items)
-    if count == 0:
-        return "Đã xác minh 0 kết quả phù hợp trong dữ liệu mới nhất."
-
-    spoken = []
-    for item in items[:10]:
-        name = str(item.get("name", "")).strip()
-        if "price" in item:
-            spoken.append(f"{name}: {item['price']}")
-        else:
-            spoken.append(name)
-    summary = ", ".join(part for part in spoken if part)
-    if count <= 10:
-        return f"Đã tìm thấy {count} kết quả: {summary}."
-    return (
-        f"Đã tìm thấy {count} kết quả. Một số kết quả đầu: {summary}. "
-        "Toàn bộ kết quả đang hiển thị trên màn hình."
-    )
-
-
 @ToolRegistry.register("display_menu")
 class DisplayMenuTool(_DisplayTool):
     """Put freshly retrieved menu items on the customer's screen."""
@@ -204,6 +183,10 @@ class DisplayMenuTool(_DisplayTool):
         super().__init__()
         self._displayed: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
         self._displayed_lock = RLock()
+        # The last live catalog (all categories) each conversation published.
+        # The MENU grid always shows it; a search or suggestion that brings no
+        # catalog of its own changes only RECOMMENDATIONS.
+        self._catalogs: OrderedDict[str, list[Any]] = OrderedDict()
 
     def agent_context(self) -> dict[str, Any]:
         """Hand the verified on-screen rows to later turns without a tool round.
@@ -310,8 +293,15 @@ class DisplayMenuTool(_DisplayTool):
         items = [_menu_row(row) for row in rows]
         picked = [i for i in items if i]
         menu_rows = params.get("menu_items")
+        catalog_given = menu_rows is not None
+        conversation_id = current_conversation_id()
         if menu_rows is None:
-            menu_rows = rows
+            with self._displayed_lock:
+                menu_rows = (
+                    self._catalogs.get(conversation_id) if conversation_id else None
+                )
+            if menu_rows is None:
+                menu_rows = rows
         menu_items = [_menu_row(row) for row in menu_rows]
         picked_menu = [item for item in menu_items if item]
         display_mode = params.get("display_mode", "filtered")
@@ -359,6 +349,12 @@ class DisplayMenuTool(_DisplayTool):
                 }
             )
         result = self._publish(payload)
+        if result.success and catalog_given and conversation_id:
+            with self._displayed_lock:
+                self._catalogs[conversation_id] = list(menu_rows)
+                self._catalogs.move_to_end(conversation_id)
+                while len(self._catalogs) > 64:
+                    self._catalogs.popitem(last=False)
         if result.success and result_complete:
             menu_categories = list(
                 dict.fromkeys(
@@ -372,9 +368,16 @@ class DisplayMenuTool(_DisplayTool):
                 {"shown": "menu", "count": len(picked), "complete": True},
                 separators=(",", ":"),
             )
+            # The agent writes the spoken reply in the same call. Without one,
+            # or when nothing matched (a reply written before the read cannot
+            # know that), the agent continues and answers the verified result.
+            message = params.get("customer_message")
+            if picked and isinstance(message, str) and message.strip():
+                result.metadata["customer_message"] = message.strip()
+            else:
+                result.metadata["continue_agent"] = True
             result.metadata.update(
                 {
-                    "customer_message": _menu_customer_message(picked),
                     "completed_display": True,
                     "result_complete": True,
                     "projected_count": len(picked),
@@ -474,9 +477,7 @@ class DisplayMenuMemoryTool(BaseTool):
                 result_complete=True,
             )
         ids = [rows[index - 1].get("id") for index in indices]
-        return self._display.execute(
-            from_displayed_menu=True, item_ids=ids
-        )
+        return self._display.execute(from_displayed_menu=True, item_ids=ids)
 
 
 @ToolRegistry.register("display_cart")
@@ -599,7 +600,7 @@ class DisplayCartTool(_DisplayTool):
                         "type": "boolean",
                         "description": (
                             "Finish after a standalone verified cart update. "
-                            "Defaults to true for an add with open_cart=false; "
+                            "Defaults to true for standalone edits and views; "
                             "pass false when more work follows in this turn."
                         ),
                     },
@@ -681,7 +682,7 @@ class DisplayCartTool(_DisplayTool):
                 success=False,
             )
         open_cart = open_cart or action == "view"
-        finish_turn = params.get("finish_turn", action == "add" and not open_cart)
+        finish_turn = params.get("finish_turn", True)
         if not isinstance(finish_turn, bool):
             return ToolResult(
                 tool_name=self.spec.name,

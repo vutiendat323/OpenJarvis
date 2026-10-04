@@ -72,6 +72,34 @@ def test_browser_socket_rejects_missing_api_key() -> None:
         assert ws.receive_json()["url"] == "about:blank"
 
 
+def test_hit_test_reply_preserves_request_id_and_static_result() -> None:
+    from openjarvis.kiosk.browser_routes import create_browser_router
+
+    class HitTestBridge(_Bridge):
+        async def hit_test(self, x, y):
+            return x < 100
+
+    app = FastAPI()
+    app.state.api_key = ""
+    app.include_router(create_browser_router(HitTestBridge()))
+    with TestClient(app).websocket_connect("/api/kiosk/browser/ws") as ws:
+        ws.receive_json()
+        for request_id, x, interactive in [(1, 50, True), (2, 150, False)]:
+            ws.send_json(
+                {
+                    "type": "hit_test",
+                    "request_id": request_id,
+                    "x": x,
+                    "y": 20,
+                }
+            )
+            assert ws.receive_json() == {
+                "type": "hit_test",
+                "request_id": request_id,
+                "interactive": interactive,
+            }
+
+
 def test_main_app_mounts_browser_socket_when_shared_browser_is_supplied() -> None:
     bridge = _Bridge()
     config = JarvisConfig()

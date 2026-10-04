@@ -179,7 +179,7 @@ def agent_input(
 
 
 def voice_activity_frame(
-    phase: Literal["processing", "inference", "tool"],
+    phase: Literal["processing", "listening", "inference", "tool"],
     *,
     model: str | None = None,
     tool_name: str | None = None,

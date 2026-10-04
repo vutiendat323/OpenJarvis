@@ -47,7 +47,19 @@ def create_browser_router(bridge: Any) -> APIRouter:
 
         async def handle(command: dict[str, Any]) -> None:
             try:
-                await bridge.handle(command)
+                if command.get("type") == "hit_test":
+                    interactive = await bridge.hit_test(
+                        float(command["x"]), float(command["y"])
+                    )
+                    await websocket.send_json(
+                        {
+                            "type": "hit_test",
+                            "request_id": command["request_id"],
+                            "interactive": interactive,
+                        }
+                    )
+                else:
+                    await bridge.handle(command)
             except (ValueError, KeyError, TypeError, RuntimeError, TimeoutError):
                 await websocket.send_json(
                     {"type": "error", "message": "Browser action failed"}

@@ -102,6 +102,7 @@ export function voiceStatusForActivity(activity: VoiceActivity): {
   detail: string | null;
 } {
   if (activity.phase === 'processing') return { status: 'processing', detail: null };
+  if (activity.phase === 'listening') return { status: 'listening', detail: null };
   if (activity.phase === 'inference') return { status: 'inference', detail: activity.model };
   return { status: 'tool', detail: activity.toolName };
 }
@@ -194,6 +195,7 @@ export function usePipecatVoiceMode(options: { onTurn?: (message: ChatMessage) =
   const analyserRef = useRef<AnalyserNode | null>(null);
   const spectrumRef = useRef(new Uint8Array(128));
   const idleRef = useRef({ t: 0, spectrum: new Uint8Array(128) });
+  const localAudioSourcesRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     void apiFetch('/api/voice/availability')
@@ -313,9 +315,45 @@ export function usePipecatVoiceMode(options: { onTurn?: (message: ChatMessage) =
     }
   }, [playBotAudio]);
 
+  /**
+   * Tap the local microphone track into the analyser for waveform visualization.
+   *
+   * Unlike the remote assistant track, the local mic track does not need an <audio>
+   * element to flow into Web Audio. Crucially, it must NEVER connect to
+   * context.destination so the customer does not hear an echo of their own voice.
+   */
+  const attachLocalAudio = useCallback((client: PipecatClient) => {
+    const analyser = ensureAnalyser();
+    if (!analyser || !audioContextRef.current) return;
+
+    const tapTrack = (track: MediaStreamTrack | undefined | null) => {
+      if (!track || track.kind !== 'audio' || localAudioSourcesRef.current.has(track.id)) return;
+      try {
+        const stream = new MediaStream([track]);
+        const source = audioContextRef.current!.createMediaStreamSource(stream);
+        source.connect(analyser);
+        localAudioSourcesRef.current.add(track.id);
+      } catch (err) {
+        console.warn('VOICE-AUDIO: could not connect local mic to analyser', err);
+      }
+    };
+
+    const tracksObj = typeof client.tracks === 'function' ? client.tracks() : null;
+    const localAudio = tracksObj?.local?.audio;
+    if (localAudio) tapTrack(localAudio);
+
+    const pc = (client.transport as unknown as { pc?: RTCPeerConnection })?.pc;
+    if (pc && typeof pc.getSenders === 'function') {
+      for (const sender of pc.getSenders()) {
+        if (sender.track?.kind === 'audio') tapTrack(sender.track);
+      }
+    }
+  }, [ensureAnalyser]);
+
   const end = useCallback(async () => {
     const client = clientRef.current;
     clientRef.current = null;
+    localAudioSourcesRef.current.clear();
     setStatus('ended');
     setActivityDetail(null);
     clearCaptionTimers();
@@ -355,7 +393,13 @@ export function usePipecatVoiceMode(options: { onTurn?: (message: ChatMessage) =
     });
     clientRef.current = client;
 
+    client.on(RTVIEvent.TrackStarted, (track: MediaStreamTrack, participant?: { local?: boolean }) => {
+      if (track.kind === 'audio' && (participant?.local ?? true)) {
+        attachLocalAudio(client);
+      }
+    });
     client.on(RTVIEvent.UserStartedSpeaking, () => {
+      attachLocalAudio(client);
       setStatus('listening');
       setActivityDetail(null);
       clearCaptionTimers();
@@ -409,8 +453,9 @@ export function usePipecatVoiceMode(options: { onTurn?: (message: ChatMessage) =
       pacerRef.current?.enqueue(data.text);
     });
     client.on(RTVIEvent.UserTranscript, (data: { text: string; final: boolean }) => {
-      if (!data.final) return;
+      // Interim results replace the utterance so far; only finals enter history.
       setTranscript(data.text);
+      if (!data.final) return;
       const message = voiceTurnMessage('user', data.text);
       if (message) onTurnRef.current?.(message);
     });
@@ -425,6 +470,7 @@ export function usePipecatVoiceMode(options: { onTurn?: (message: ChatMessage) =
     try {
       await connectWithLeaseRetry(client);
       attachRemoteAudio(client);
+      attachLocalAudio(client);
       setStatus('listening');
     } catch (failure) {
       clientRef.current = null;
@@ -433,7 +479,7 @@ export function usePipecatVoiceMode(options: { onTurn?: (message: ChatMessage) =
       setActivityDetail(null);
       setError(next === 'busy' ? 'voice_busy' : voiceErrorMessage(failure));
     }
-  }, [attachRemoteAudio, clearCaptionTimers]);
+  }, [attachLocalAudio, attachRemoteAudio, clearCaptionTimers]);
 
   useEffect(() => () => {
     clearCaptionTimers();

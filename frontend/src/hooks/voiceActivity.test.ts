@@ -26,6 +26,14 @@ describe('voiceActivityFromServerMessage', () => {
     ).toEqual({ phase: 'tool', toolName: 'browser_open' });
   });
 
+  it('accepts the listening phase sent when a turn ends unheard', () => {
+    expect(
+      voiceActivityFromServerMessage({
+        data: { type: 'voice_activity', phase: 'listening' },
+      }),
+    ).toEqual({ phase: 'listening' });
+  });
+
   it('rejects invalid phases and incomplete details', () => {
     expect(
       voiceActivityFromServerMessage({

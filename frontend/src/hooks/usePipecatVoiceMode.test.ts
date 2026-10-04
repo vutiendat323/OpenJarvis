@@ -149,6 +149,13 @@ describe('voiceStatusForActivity', () => {
       detail: 'browser_open',
     });
   });
+
+  it('leaves processing when the server dropped a turn with no transcript', () => {
+    expect(voiceStatusForActivity({ phase: 'listening' })).toEqual({
+      status: 'listening',
+      detail: null,
+    });
+  });
 });
 
 describe('statusAfterUserStoppedSpeaking', () => {

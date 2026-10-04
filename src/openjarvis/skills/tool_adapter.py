@@ -292,6 +292,9 @@ class SkillTool(BaseTool):
         if self._manifest.steps:
             # Build initial context from all supplied params
             initial_ctx: Dict[str, Any] = {
+                **self._manifest.metadata.get("openjarvis", {}).get(
+                    "input_defaults", {}
+                ),
                 **params,
                 "today": datetime.now().astimezone().date().isoformat(),
             }

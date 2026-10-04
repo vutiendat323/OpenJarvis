@@ -1,11 +1,21 @@
-import { ArrowLeft, ArrowRight, Keyboard, RotateCw, AppWindow, Columns2, Maximize2, Minimize2, ZoomIn, ZoomOut, GripVertical } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, ArrowRight, Keyboard, RotateCw, AppWindow, Columns2, Maximize2, Minimize2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, PointerEvent, TouchEvent, WheelEvent } from 'react';
 
 import { remotePoint } from '@/hooks/useSharedBrowser';
 import type { BrowserCommand, BrowserViewState } from '@/hooks/useSharedBrowser';
 
-type BrowserController = BrowserViewState & { send: (command: BrowserCommand) => void };
+type BrowserController = BrowserViewState & {
+  send: (command: BrowserCommand) => void;
+  hitTest?: (x: number, y: number) => Promise<boolean>;
+};
+
+type FloatingGesture = {
+  mode: 'pending' | 'page' | 'drag';
+  down: PointerEvent<HTMLDivElement>;
+  latest: PointerEvent<HTMLDivElement>;
+  up?: PointerEvent<HTMLDivElement>;
+};
 
 export interface SharedBrowserPaneProps {
   browser: BrowserController;
@@ -14,7 +24,6 @@ export interface SharedBrowserPaneProps {
   onToggleFloating?: () => void;
   onToggleMaximize?: () => void;
   dragHandleProps?: Record<string, unknown>;
-  onZoom?: (delta: number) => void;
 }
 
 export function SharedBrowserPane({
@@ -24,16 +33,65 @@ export function SharedBrowserPane({
   onToggleFloating,
   onToggleMaximize,
   dragHandleProps,
-  onZoom,
 }: SharedBrowserPaneProps) {
   const [address, setAddress] = useState(browser.url);
   const [chromeHovered, setChromeHovered] = useState(false);
   const [chromePinned, setChromePinned] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
+  const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearLeaveTimer = useCallback(() => {
+    if (leaveTimerRef.current) {
+      clearTimeout(leaveTimerRef.current);
+      leaveTimerRef.current = null;
+    }
+  }, []);
+
+  const handleMouseEnter = useCallback(() => {
+    clearLeaveTimer();
+    setChromeHovered(true);
+  }, [clearLeaveTimer]);
+
+  const handleMouseLeave = useCallback(() => {
+    clearLeaveTimer();
+    if (isFocused || chromePinned) return;
+    leaveTimerRef.current = setTimeout(() => {
+      setChromeHovered(false);
+    }, 700);
+  }, [clearLeaveTimer, isFocused, chromePinned]);
+
+  const handleFocusCapture = useCallback(() => {
+    clearLeaveTimer();
+    setIsFocused(true);
+    setChromeHovered(true);
+  }, [clearLeaveTimer]);
+
+  const handleBlurCapture = useCallback(
+    (event: React.FocusEvent<HTMLDivElement>) => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+        setIsFocused(false);
+        clearLeaveTimer();
+        if (!chromePinned) {
+          leaveTimerRef.current = setTimeout(() => {
+            setChromeHovered(false);
+          }, 700);
+        }
+      }
+    },
+    [clearLeaveTimer, chromePinned],
+  );
+
+  useEffect(() => {
+    return () => clearLeaveTimer();
+  }, [clearLeaveTimer]);
+
   const viewportRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const moveTimeRef = useRef(0);
   const composingRef = useRef(false);
   const touchRef = useRef(false);
+  const floatingGestureRef = useRef<FloatingGesture | null>(null);
+  useEffect(() => () => { floatingGestureRef.current = null; }, [isFloating]);
   const editable = browser.focusedElement?.tag === 'input' || browser.focusedElement?.tag === 'textarea' || browser.focusedElement?.editable;
   const chromeVisible = chromeHovered || chromePinned;
 
@@ -48,13 +106,25 @@ export function SharedBrowserPane({
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
-    const observer = new ResizeObserver(([entry]) => {
-      const width = Math.round(entry.contentRect.width);
-      const height = Math.round(entry.contentRect.height);
-      if (width >= 64 && height >= 64) browser.send({ type: 'resize', width, height });
-    });
+    const updateViewport = () => {
+      const rect = viewport.getBoundingClientRect();
+      const width = Math.round(rect.width);
+      const height = Math.round(rect.height);
+      if (width >= 64 && height >= 64) {
+        browser.send({
+          type: 'resize', width, height,
+          device_scale_factor: Math.max(1, Math.min(2, window.devicePixelRatio || 1)),
+        });
+      }
+    };
+    const observer = new ResizeObserver(updateViewport);
     observer.observe(viewport);
-    return () => observer.disconnect();
+    window.addEventListener('resize', updateViewport);
+    updateViewport();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateViewport);
+    };
   }, [browser.send, browser.status]);
 
   const point = (clientX: number, clientY: number) => {
@@ -82,7 +152,7 @@ export function SharedBrowserPane({
       if (now - moveTimeRef.current < 16) return;
       moveTimeRef.current = now;
     }
-    if (action === 'pressed') event.currentTarget.setPointerCapture(event.pointerId);
+    if (action === 'pressed') event.currentTarget?.setPointerCapture(event.pointerId);
     const button = event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left';
     browser.send({ type: 'pointer', event: action, ...position, button: action === 'moved' ? (event.buttons ? 'left' : 'none') : button });
     if (action === 'released') inputRef.current?.focus({ preventScroll: true });
@@ -104,6 +174,69 @@ export function SharedBrowserPane({
     if (position) browser.send({ type: 'touch', event: action, ...position });
   };
 
+  const dragPointer = (name: string, event: PointerEvent<HTMLDivElement>) => {
+    const handler = dragHandleProps?.[name];
+    if (typeof handler === 'function') handler(event);
+  };
+
+  const pagePointer = (event: PointerEvent<HTMLDivElement>, action: 'pressed' | 'released' | 'moved') => {
+    if (event.pointerType !== 'touch') {
+      pointer(event, action);
+      return;
+    }
+    touchRef.current = true;
+    const position = point(event.clientX, event.clientY);
+    if (position) browser.send({
+      type: 'touch',
+      event: action === 'pressed' ? 'start' : action === 'released' ? 'end' : 'move',
+      ...position,
+    });
+  };
+
+  const floatingPointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (floatingGestureRef.current) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const gesture: FloatingGesture = { mode: 'pending', down: event, latest: event };
+    floatingGestureRef.current = gesture;
+    const position = point(event.clientX, event.clientY);
+    const probe = position && browser.hitTest
+      ? browser.hitTest(position.x, position.y)
+      : Promise.resolve(true);
+    void probe.catch(() => true).then((interactive) => {
+      if (floatingGestureRef.current !== gesture) return;
+      gesture.mode = interactive || event.button !== 0 ? 'page' : 'drag';
+      if (gesture.mode === 'page') {
+        pagePointer(gesture.down, 'pressed');
+        if (gesture.latest !== gesture.down) pagePointer(gesture.latest, 'moved');
+        if (gesture.up) pagePointer(gesture.up, 'released');
+      } else {
+        dragPointer('onPointerDown', gesture.down);
+        if (gesture.latest !== gesture.down) dragPointer('onPointerMove', gesture.latest);
+        if (gesture.up) dragPointer('onPointerUp', gesture.up);
+      }
+      if (gesture.up) floatingGestureRef.current = null;
+    });
+  };
+
+  const floatingPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    const gesture = floatingGestureRef.current;
+    if (!gesture) { pointer(event, 'moved'); return; }
+    if (event.pointerId !== gesture.down.pointerId) return;
+    gesture.latest = event;
+    if (gesture.mode === 'page') pagePointer(event, 'moved');
+    else if (gesture.mode === 'drag') dragPointer('onPointerMove', event);
+  };
+
+  const floatingPointerUp = (event: PointerEvent<HTMLDivElement>) => {
+    const gesture = floatingGestureRef.current;
+    if (!gesture || event.pointerId !== gesture.down.pointerId) return;
+    gesture.up = event;
+    if (gesture.mode === 'pending') return;
+    if (gesture.mode === 'page') pagePointer(event, 'released');
+    else dragPointer('onPointerUp', event);
+    floatingGestureRef.current = null;
+  };
+
   return (
     <section
       data-testid="shared-browser-pane"
@@ -112,12 +245,10 @@ export function SharedBrowserPane({
       <div
         className="absolute inset-x-0 top-0 z-20 flex flex-col transition-transform duration-200 ease-out"
         style={{ transform: chromeVisible ? 'translateY(0)' : 'translateY(calc(-100% + 12px))' }}
-        onMouseEnter={() => setChromeHovered(true)}
-        onMouseLeave={() => setChromeHovered(false)}
-        onFocusCapture={() => setChromeHovered(true)}
-        onBlurCapture={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setChromeHovered(false);
-        }}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        onFocusCapture={handleFocusCapture}
+        onBlurCapture={handleBlurCapture}
       >
         <div
           data-testid="browser-controls"
@@ -131,19 +262,12 @@ export function SharedBrowserPane({
               onToggleMaximize();
             }
           }}
+          {...(isFloating ? dragHandleProps : {})}
         >
-          {isFloating && (
-            <div
-              aria-label="Drag window"
-              title="Drag to move (Kéo để di chuyển)"
-              className="flex items-center p-1 text-white/40 hover:text-white pointer-events-none"
-            >
-              <GripVertical size={16} />
-            </div>
-          )}
           <button
             type="button"
             aria-label="Back"
+            title="Back"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={() => browser.send({ type: 'back' })}
             className="rounded p-2 hover:bg-white/10"
@@ -153,6 +277,7 @@ export function SharedBrowserPane({
           <button
             type="button"
             aria-label="Forward"
+            title="Forward"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={() => browser.send({ type: 'forward' })}
             className="rounded p-2 hover:bg-white/10"
@@ -162,6 +287,7 @@ export function SharedBrowserPane({
           <button
             type="button"
             aria-label="Reload"
+            title="Reload"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={() => browser.send({ type: 'reload' })}
             className="rounded p-2 hover:bg-white/10"
@@ -186,6 +312,7 @@ export function SharedBrowserPane({
             <button
               type="button"
               aria-label="Type in focused field"
+              title="Type in focused field"
               onPointerDown={(e) => e.stopPropagation()}
               onClick={() => inputRef.current?.focus({ preventScroll: true })}
               className="rounded p-2 hover:bg-white/10"
@@ -201,7 +328,7 @@ export function SharedBrowserPane({
             <button
               type="button"
               aria-label={isMaximized ? 'Restore size' : 'Maximize'}
-              title={isMaximized ? 'Thu nhỏ lại' : 'Phóng to hết cỡ'}
+              title={isMaximized ? 'Restore size' : 'Maximize'}
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -216,7 +343,7 @@ export function SharedBrowserPane({
             <button
               type="button"
               aria-label={isFloating ? 'Dock to split' : 'Pop out to floating window'}
-              title={isFloating ? 'Quay lại dạng chia đôi [7:3]' : 'Mở thành cửa sổ nổi di chuyển tự do'}
+              title={isFloating ? 'Dock to split [7:3]' : 'Pop out to floating window'}
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -236,61 +363,89 @@ export function SharedBrowserPane({
           title="Browser controls"
           {...(isFloating ? dragHandleProps : {})}
           onClick={() => {
-            setChromeHovered(false);
-            setChromePinned((pinned) => !pinned);
+            clearLeaveTimer();
+            setChromePinned((pinned) => {
+              if (pinned) {
+                setChromeHovered(false);
+                return false;
+              } else {
+                setChromeHovered(true);
+                return true;
+              }
+            });
           }}
-          className={`mx-auto flex h-3 w-14 shrink-0 items-center justify-center rounded-b-md border border-t-0 border-[#7b5737]/30 bg-[#f4e6cf] shadow-sm ${
+          className={`mx-auto flex h-3 w-14 shrink-0 items-center justify-center rounded-b-md border border-t-0 border-[#7b5737]/30 bg-[#f4e6cf] shadow-sm cursor-pointer ${
             isFloating ? 'cursor-grab active:cursor-grabbing' : ''
           }`}
         >
           <span aria-hidden="true" className="h-0.5 w-6 rounded-full bg-[#7b5737]/60" />
         </button>
       </div>
-      {onZoom && (
-        <div
-          data-testid="browser-zoom-controls"
-          className="absolute bottom-2 right-2 z-30 flex items-center gap-1 opacity-40 transition-opacity hover:opacity-100 focus-within:opacity-100"
-          onPointerDown={(e) => e.stopPropagation()}
-        >
-          <button
-            type="button"
-            aria-label="Zoom out"
-            title="Thu nhỏ"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => onZoom(-1)}
-            className="rounded p-1.5 text-[#7b5737]/70 hover:text-[#4b2d17] cursor-pointer"
-          >
-            <ZoomOut size={15} />
-          </button>
-          <button
-            type="button"
-            aria-label="Zoom in"
-            title="Phóng to"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => onZoom(1)}
-            className="rounded p-1.5 text-[#7b5737]/70 hover:text-[#4b2d17] cursor-pointer"
-          >
-            <ZoomIn size={15} />
-          </button>
-        </div>
-      )}
       {browser.error && <div role="alert" className="bg-red-950 px-3 py-1 text-xs text-red-200">{browser.error}</div>}
       <div
         ref={viewportRef}
         role="application"
         aria-label="Shared browser viewport"
         tabIndex={0}
-        className="relative min-h-0 w-full flex-1 cursor-default overflow-hidden outline-none"
+        className={`relative min-h-0 w-full flex-1 overflow-hidden outline-none ${
+          isFloating ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'
+        }`}
         style={{ touchAction: 'none' }}
-        onPointerDown={(event) => pointer(event, 'pressed')}
-        onPointerUp={(event) => pointer(event, 'released')}
-        onPointerMove={(event) => pointer(event, 'moved')}
+        onPointerDown={(event) => {
+          if (isFloating) {
+            floatingPointerDown(event);
+            return;
+          }
+          pointer(event, 'pressed');
+        }}
+        onPointerUp={(event) => {
+          if (isFloating) {
+            floatingPointerUp(event);
+            return;
+          }
+          pointer(event, 'released');
+        }}
+        onPointerMove={(event) => {
+          if (isFloating) {
+            floatingPointerMove(event);
+            return;
+          }
+          pointer(event, 'moved');
+        }}
+        onPointerCancel={(event) => {
+          const gesture = floatingGestureRef.current;
+          if (!gesture || event.pointerId !== gesture.down.pointerId) return;
+          if (gesture.mode === 'drag') dragPointer('onPointerUp', event);
+          else if (gesture.mode === 'page') {
+            if (event.pointerType === 'touch') browser.send({ type: 'touch', event: 'cancel', x: 0, y: 0 });
+            else pagePointer(event, 'released');
+          }
+          floatingGestureRef.current = null;
+        }}
         onContextMenu={(event) => event.preventDefault()}
-        onWheel={wheel}
-        onTouchStart={(event) => touch(event, 'start')}
-        onTouchMove={(event) => touch(event, 'move')}
-        onTouchEnd={(event) => touch(event, 'end')}
-        onTouchCancel={(event) => touch(event, 'cancel')}
+        onWheel={(event) => {
+          if (isFloating && (event.ctrlKey || event.metaKey) && (dragHandleProps as any)?.onWheel) {
+            (dragHandleProps as any).onWheel(event);
+            return;
+          }
+          wheel(event);
+        }}
+        onTouchStart={(event) => {
+          if (isFloating) return;
+          touch(event, 'start');
+        }}
+        onTouchMove={(event) => {
+          if (isFloating) return;
+          touch(event, 'move');
+        }}
+        onTouchEnd={(event) => {
+          if (isFloating) return;
+          touch(event, 'end');
+        }}
+        onTouchCancel={(event) => {
+          if (isFloating) return;
+          touch(event, 'cancel');
+        }}
         onKeyDown={(event) => {
           if (event.nativeEvent.isComposing || composingRef.current) return;
           if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey && event.target === inputRef.current) return;
@@ -322,9 +477,9 @@ export function SharedBrowserPane({
           }}
         />
         {browser.frame ? (
-          <img src={browser.frame} alt={browser.title || 'Shared browser page'} draggable={false} className="h-full w-full select-none object-fill" />
+          <img src={browser.frame} alt={browser.title || 'Shared browser page'} draggable={false} className="pointer-events-none h-full w-full select-none object-fill" />
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-white/50">Connecting to shared browser…</div>
+          <div className="pointer-events-none flex h-full items-center justify-center text-sm text-white/50 select-none">Connecting to shared browser…</div>
         )}
       </div>
     </section>

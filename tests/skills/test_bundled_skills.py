@@ -250,6 +250,7 @@ def test_workspace_batch_add_reads_once_and_mutates_the_cart_once() -> None:
     assert set(tool.spec.parameters["properties"]) == {
         "items",
         "open_cart",
+        "finish_turn",
         "customer_message",
     }
     assert "open_cart" in tool.spec.parameters["required"]
@@ -1071,6 +1072,11 @@ def test_menu_recipe_exposes_only_native_inputs_and_fixed_request_contract() -> 
         "minPrice",
         "maxPrice",
         "displayMode",
+        "customer_message",
+    }
+    assert parameters["properties"]["customer_message"] == {
+        "type": "string",
+        "minLength": 1,
     }
     assert set(parameters["required"]) == {
         "itemTerms",
@@ -1106,7 +1112,33 @@ def test_menu_recipe_exposes_only_native_inputs_and_fixed_request_contract() -> 
         "http_request",
         "display_menu",
     ]
-    assert "customer_message" not in manifest.steps[-1].arguments_template
+
+
+@pytest.mark.parametrize(
+    ("params", "forwarded"),
+    [
+        (
+            {"customer_message": "Menu đây, bạn chọn món nhé."},
+            "Menu đây, bạn chọn món nhé.",
+        ),
+        ({}, ""),
+    ],
+)
+def test_menu_recipe_forwards_the_agent_reply_to_the_display(params, forwarded):
+    _, result, _, display, _ = _run_menu(
+        {
+            "itemTerms": [],
+            "categoryTerms": [],
+            "minPrice": 0,
+            "maxPrice": 1000000000,
+            "displayMode": "browse",
+            **params,
+        }
+    )
+
+    assert result.success is True
+    [call] = display.calls
+    assert call["customer_message"] == forwarded
 
 
 def test_menu_recipe_binds_native_price_and_filters_text_locally() -> None:
@@ -1193,6 +1225,7 @@ def test_menu_recipe_binds_native_price_and_filters_text_locally() -> None:
         ],
         "display_mode": "filtered",
         "result_complete": True,
+        "customer_message": "",
     }
     assert result.metadata["completed_display"] is True
     assert body not in result.content
@@ -1356,19 +1389,3 @@ def test_menu_recipe_asserts_completeness_and_identity_before_display(
     assert display.calls == []
 
 
-def test_menu_recipe_rejects_model_authored_message_before_io() -> None:
-    _, result, http, display, _ = _run_menu(
-        {
-            "itemTerms": [],
-            "categoryTerms": [],
-            "minPrice": 0,
-            "maxPrice": 300000,
-            "displayMode": "browse",
-            "customer_message": "đang tìm",
-        }
-    )
-
-    assert result.success is False
-    assert result.content.startswith("invalid_skill_arguments")
-    assert http.calls == []
-    assert display.calls == []
