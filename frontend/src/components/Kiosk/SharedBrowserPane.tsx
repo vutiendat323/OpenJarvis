@@ -1,14 +1,25 @@
 import { ArrowLeft, ArrowRight, Keyboard, RotateCw, AppWindow, Columns2, Maximize2, Minimize2 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { FormEvent, PointerEvent, TouchEvent, WheelEvent } from 'react';
 
 import { remotePoint } from '@/hooks/useSharedBrowser';
-import type { BrowserCommand, BrowserViewState } from '@/hooks/useSharedBrowser';
+import type { BrowserCommand, BrowserFrameStore, BrowserViewState } from '@/hooks/useSharedBrowser';
 
-type BrowserController = BrowserViewState & {
+type BrowserController = Omit<BrowserViewState, 'frame'> & {
+  frameStore: BrowserFrameStore;
   send: (command: BrowserCommand) => void;
   hitTest?: (x: number, y: number) => Promise<boolean>;
 };
+
+function SharedBrowserFrame({ frameStore, title }: { frameStore: BrowserFrameStore; title: string }) {
+  const frame = useSyncExternalStore(frameStore.subscribe, frameStore.getSnapshot, frameStore.getSnapshot);
+
+  return frame ? (
+    <img src={frame} alt={title || 'Shared browser page'} draggable={false} className="pointer-events-none h-full w-full select-none object-fill" />
+  ) : (
+    <div className="pointer-events-none flex h-full items-center justify-center text-sm text-white/50 select-none">Connecting to shared browser…</div>
+  );
+}
 
 type FloatingGesture = {
   mode: 'pending' | 'page' | 'drag';
@@ -321,9 +332,11 @@ export function SharedBrowserPane({
             </button>
           )}
           {browser.agentAction && <span role="status" className="shrink-0 text-xs text-cyan-300">AI working…</span>}
-          <span className="hidden shrink-0 text-xs text-white/60 sm:inline">
-            {browser.status === 'disconnected' ? 'Reconnecting…' : browser.status === 'connected' ? (browser.loading ? 'Loading…' : 'Live') : 'Connecting…'}
-          </span>
+          {(browser.status !== 'connected' || browser.loading) && (
+            <span className="hidden shrink-0 text-xs text-white/60 sm:inline">
+              {browser.status === 'disconnected' ? 'Reconnecting…' : browser.loading ? 'Loading…' : 'Connecting…'}
+            </span>
+          )}
           {isFloating && onToggleMaximize && (
             <button
               type="button"
@@ -476,11 +489,7 @@ export function SharedBrowserPane({
             event.currentTarget.value = '';
           }}
         />
-        {browser.frame ? (
-          <img src={browser.frame} alt={browser.title || 'Shared browser page'} draggable={false} className="pointer-events-none h-full w-full select-none object-fill" />
-        ) : (
-          <div className="pointer-events-none flex h-full items-center justify-center text-sm text-white/50 select-none">Connecting to shared browser…</div>
-        )}
+        <SharedBrowserFrame frameStore={browser.frameStore} title={browser.title} />
       </div>
     </section>
   );

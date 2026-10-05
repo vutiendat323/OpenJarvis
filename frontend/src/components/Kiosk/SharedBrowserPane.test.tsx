@@ -1,16 +1,42 @@
+// @vitest-environment jsdom
+
+import { act, render } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
-import { initialBrowserState } from '@/hooks/useSharedBrowser';
+import { createBrowserFrameStore, initialBrowserState } from '@/hooks/useSharedBrowser';
 import { SharedBrowserPane } from './SharedBrowserPane';
 
 describe('SharedBrowserPane', () => {
+  it('displays incoming frames without needing a new browser controller', () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      disconnect() {}
+    });
+    const frameStore = createBrowserFrameStore();
+    const view = render(
+      <SharedBrowserPane browser={{ ...initialBrowserState, title: 'Menu', frameStore, send: vi.fn() }} />,
+    );
+
+    try {
+      expect(view.getByText('Connecting to shared browser…')).toBeTruthy();
+      act(() => frameStore.publish('data:image/jpeg;base64,/9j/abc'));
+      expect(view.getByAltText('Menu').getAttribute('src')).toBe('data:image/jpeg;base64,/9j/abc');
+      act(() => frameStore.publish('data:image/jpeg;base64,/9j/next'));
+      expect(view.getByAltText('Menu').getAttribute('src')).toBe('data:image/jpeg;base64,/9j/next');
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('keeps browser controls hidden until the reveal handle is used', () => {
     const markup = renderToStaticMarkup(
       <SharedBrowserPane
         browser={{
           ...initialBrowserState,
           url: 'https://example.test/menu',
+          frameStore: createBrowserFrameStore(),
           send: vi.fn(),
         }}
       />,
@@ -31,7 +57,7 @@ describe('SharedBrowserPane', () => {
           status: 'connected',
           url: 'https://example.test/menu',
           title: 'Menu',
-          frame: 'data:image/jpeg;base64,/9j/abc',
+          frameStore: createBrowserFrameStore('data:image/jpeg;base64,/9j/abc'),
           width: 800,
           height: 600,
           send: vi.fn(),
@@ -47,6 +73,7 @@ describe('SharedBrowserPane', () => {
     expect(markup).toContain('aria-label="Reload"');
     expect(markup).toContain('data:image/jpeg;base64,/9j/abc');
     expect(markup).toContain('aria-label="Shared browser viewport"');
+    expect(markup).not.toContain('Live');
   });
 
   it('renders floating toggle button when props are provided without zoom controls', () => {
@@ -56,6 +83,7 @@ describe('SharedBrowserPane', () => {
           ...initialBrowserState,
           status: 'connected',
           url: 'https://example.test/menu',
+          frameStore: createBrowserFrameStore(),
           send: vi.fn(),
         }}
         isFloating={false}
@@ -76,6 +104,7 @@ describe('SharedBrowserPane', () => {
           ...initialBrowserState,
           status: 'connected',
           url: 'https://example.test/menu',
+          frameStore: createBrowserFrameStore(),
           send: vi.fn(),
         }}
         isFloating={true}

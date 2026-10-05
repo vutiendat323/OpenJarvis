@@ -79,7 +79,8 @@ Only exact `status="available"` means free. Use the returned name and slug,
 never a guess or reserved/unknown table. Ask the customer to choose if needed;
 do not assign one. Select using
 `display_cart(action="set_table", table=<slug>, table_name=<name>, finish_turn=true)`;
-this sets `at-table`. Checkout rechecks the table.
+this sets `at-table`. Checkout rechecks the table. A table chosen together with
+payment is selected by checkout itself (below), not by `set_table`.
 
 ## Draft cart
 
@@ -119,9 +120,13 @@ unsupported. Notes are requests to staff, not promises of fulfillment.
 - Existing `draft_cart`: call `skill_trendcoffee-checkout` once with its exact
   `revision` as `cart_revision`, current `turn_nonce`, matching `order_note`,
   confirmed `order_type`, selected table slug and brief `customer_message`.
-- Explicit take-out and payment on an existing draft: use `order_type="take-out"`,
-  `table=""`, `update_order_type=true` in checkout. It atomically clears the
-  table and claims that revision; do not call `set_order_type` first.
+- Dining choice stated with payment on an existing draft (“mang về thanh
+  toán”, “bàn 5 thanh toán ngay”): one checkout with `update_order_type=true`.
+  Take-out: `order_type="take-out"`, `table=""`. At-table:
+  `order_type="at-table"`, the table slug and `update_order_type=true`, the
+  slug taken from current verified table rows (read tables first only when none
+  are current). It atomically applies the choice and claims that revision; do
+  not call `set_table` or `set_order_type` first.
 - Fully specified items already verified on screen plus payment: call
   checkout directly with exact `cart_lines`, `order_type`, `table`,
   `order_note`, `turn_nonce`, `customer_message`; this replaces the older draft.

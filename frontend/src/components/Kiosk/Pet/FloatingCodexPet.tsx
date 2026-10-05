@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CodexPet, DEFAULT_MINTY_MANIFEST } from './CodexPet';
 import { PetRenderer, type PetRendererType } from './PetRenderer';
 import { parsePetManifest } from './codexPetAtlas';
@@ -123,6 +123,7 @@ export function FloatingCodexPet({
     position,
     scale,
     setScale,
+    setPosition,
     isDragging,
     isResizing,
     dragDeltaX,
@@ -135,6 +136,7 @@ export function FloatingCodexPet({
     initialScale: scaleProp ?? activeManifest.scale ?? 2,
     baseSize,
     enableWandering,
+    maxScale: Math.max(10, scaleProp ?? 10),
   });
 
   // Dynamically update pet scale when scaleProp changes (e.g. from settings slider)
@@ -143,6 +145,21 @@ export function FloatingCodexPet({
       setScale(scaleProp);
     }
   }, [scaleProp, setScale]);
+
+  // Synchronize initial position when target position changes (e.g. screen split layout changes)
+  const prevInitPosRef = useRef(initialPosition);
+  useEffect(() => {
+    if (
+      initialPosition &&
+      (prevInitPosRef.current?.x !== initialPosition.x ||
+        prevInitPosRef.current?.y !== initialPosition.y)
+    ) {
+      prevInitPosRef.current = initialPosition;
+      if (!isDragging) {
+        setPosition(initialPosition);
+      }
+    }
+  }, [initialPosition, isDragging, setPosition]);
 
   const effectiveScale = scaleProp ?? scale;
 

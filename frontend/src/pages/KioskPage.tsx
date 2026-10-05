@@ -8,6 +8,8 @@ import { FloatingCodexPet } from '@/components/Kiosk/Pet/FloatingCodexPet';
 import { SharedBrowserPane } from '@/components/Kiosk/SharedBrowserPane';
 import { VoiceWaveform } from '@/components/Kiosk/VoiceWaveform';
 import { ScreensMonitorButton } from '@/components/Kiosk/ScreensMonitorButton';
+import { RemoteCameraButton } from '@/components/Kiosk/RemoteCameraButton';
+import { StackCaption } from '@/components/Kiosk/StackCaption';
 import { currentVoiceTurnRows } from '@/components/Chat/voiceTurnRows';
 import { useDraggableResizable } from '@/hooks/useDraggableResizable';
 import { useKioskState, type KioskState } from '@/hooks/useKioskState';
@@ -132,8 +134,7 @@ export function KioskPage() {
 
   const addMessage = useAppStore((state) => state.addMessage);
   const threadIdRef = useRef<string>('');
-  // ?camera=remote: this device's camera replaces the kiosk's C920 for Vision.
-  useRemoteCamera();
+  const remoteCamera = useRemoteCamera();
   const voice = usePipecatVoiceMode({
     onTurn: (message) => {
       if (threadIdRef.current) addMessage(threadIdRef.current, message);
@@ -323,6 +324,10 @@ export function KioskPage() {
   }, [endVoice, resetPresentation]);
 
   const rows = currentVoiceTurnRows({ ...voice, assistantText: voice.assistantCaptionText });
+  const speechRows = rows.filter((r) => r.role !== 'error');
+  const activeSpeechRow = voice.status === 'speaking' || voice.assistantCaptionText
+    ? (speechRows.find((r) => r.role === 'assistant') ?? speechRows[speechRows.length - 1])
+    : speechRows[speechRows.length - 1];
   const voiceStatusShimmers = shouldShimmerVoiceStatus(voice.status);
   const voicePetPosition = useMemo(() => {
     if (typeof window === 'undefined') return undefined;
@@ -335,8 +340,12 @@ export function KioskPage() {
     const paneWidth = horizontalSplit ? viewportWidth - paneStartX : viewportWidth;
     const paneStartY = verticalSplit ? viewportHeight * 0.65 : 0;
     const paneHeight = verticalSplit ? viewportHeight * 0.35 : viewportHeight;
+    const availableWidth = paneWidth - petSize;
+    const targetX = horizontalSplit
+      ? paneStartX + Math.max(16, Math.min(availableWidth - 28, Math.round(availableWidth * 0.82)))
+      : paneStartX + Math.round((paneWidth - petSize) / 2);
     return {
-      x: Math.round(paneStartX + (paneWidth - petSize) / 2),
+      x: targetX,
       y: Math.round(paneStartY + (paneHeight - petSize) / 2),
     };
   }, [browserMode, screenVisible, settings.petScale, splitRatio]);
@@ -397,7 +406,11 @@ export function KioskPage() {
           <FloatingCodexPet
             initialPosition={voicePetPosition}
             scale={settings.petScale}
-            storageKey="openjarvis_kiosk_pet_pos_center"
+            storageKey={
+              browserMode === 'split'
+                ? 'openjarvis_kiosk_pet_pos_split'
+                : 'openjarvis_kiosk_pet_pos_center'
+            }
             enableWandering={browserMode === 'floating'}
             voiceStatus={voice.status}
             activityDetail={voice.activityDetail}
@@ -425,15 +438,23 @@ export function KioskPage() {
           {(kioskState === 'active' || isVoiceActive) && (
             <>
               {settings.showCaptions && (
-                <div className="w-full max-w-2xl flex flex-col items-center gap-2 rounded-2xl bg-black/20 px-4 py-2 text-center backdrop-blur-sm">
-                  {rows.map((row) => (
+                <div className="w-full max-w-2xl flex flex-col items-center justify-end text-center min-h-[64px] mb-1">
+                  {rows.filter((r) => r.role === 'error').map((err) => (
                     <p
-                      key={row.role}
-                      className="text-sm leading-snug text-white/85"
+                      key="error"
+                      className="text-xs text-red-400 bg-red-950/60 border border-red-500/30 px-3 py-1 rounded-full mb-2"
                     >
-                      {row.text}
+                      {err.text}
                     </p>
                   ))}
+                  {activeSpeechRow && (
+                    <StackCaption
+                      key={activeSpeechRow.role}
+                      text={activeSpeechRow.text}
+                      role={activeSpeechRow.role}
+                      isFading={activeSpeechRow.role === 'assistant' && voice.assistantCaptionFading}
+                    />
+                  )}
                 </div>
               )}
               <div
@@ -459,6 +480,13 @@ export function KioskPage() {
               voiceStatus={voiceCollapsed ? 'idle' : voice.status}
               getFrequencyData={voice.getFrequencyData}
               onMicClick={isVoiceActive ? endVoice : startPolicyVoice}
+            />
+            <RemoteCameraButton
+              enabled={remoteCamera.enabled}
+              active={remoteCamera.active}
+              error={remoteCamera.error}
+              language={uiLanguage}
+              onToggle={remoteCamera.toggle}
             />
             <ScreensMonitorButton
               visible={screenVisible}

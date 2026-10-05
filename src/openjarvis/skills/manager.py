@@ -38,6 +38,7 @@ class SkillManager:
         self._capability_policy = capability_policy
         self._skills: Dict[str, SkillManifest] = {}
         self._tool_executor: Optional[ToolExecutor] = None
+        self._workflow_engine: Optional[Any] = None
         if overlay_dir is None:
             # Try to read from config first; fall back to the default
             # ~/.openjarvis/learning/skills/ if config can't be loaded.
@@ -175,7 +176,11 @@ class SkillManager:
             if manifest.disable_model_invocation:
                 continue
             real_executor = executor or _NullToolExecutor()
-            skill_exec = SkillExecutor(real_executor, bus=self._bus)
+            skill_exec = SkillExecutor(
+                real_executor,
+                bus=self._bus,
+                workflow_engine=self._workflow_engine,
+            )
 
             # Wire sub-skill resolver so nested skill_name steps can delegate back
             skill_exec.set_skill_resolver(self._make_resolver())
@@ -193,6 +198,7 @@ class SkillManager:
             skill_exec = SkillExecutor(
                 self._tool_executor or _NullToolExecutor(),
                 bus=self._bus,
+                workflow_engine=self._workflow_engine,
             )
             skill_exec.set_skill_resolver(_resolver)
             return skill_exec.run(manifest, initial_context=context)
@@ -362,6 +368,7 @@ class SkillManager:
         executor = SkillExecutor(
             self._tool_executor or _NullToolExecutor(),
             bus=self._bus,
+            workflow_engine=self._workflow_engine,
         )
         executor.set_skill_resolver(self._make_resolver())
         return executor.run(manifest, initial_context=context)
@@ -373,6 +380,10 @@ class SkillManager:
     def set_tool_executor(self, tool_executor: ToolExecutor) -> None:
         """Attach a :class:`ToolExecutor` for running tool steps in skill pipelines."""
         self._tool_executor = tool_executor
+
+    def set_workflow_engine(self, workflow_engine: Any) -> None:
+        """Let skill executors run independent read steps together."""
+        self._workflow_engine = workflow_engine
 
     # ------------------------------------------------------------------
     # Lifecycle

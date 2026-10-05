@@ -12,6 +12,9 @@ from websockets.asyncio.client import connect
 
 from openjarvis.kiosk.shared_browser import BrowserEndpoint
 
+_FRAME_FORMAT = "jpeg"
+_FRAME_QUALITY = 85
+
 
 class BrowserBridge:
     def __init__(self, endpoint: BrowserEndpoint) -> None:
@@ -74,8 +77,12 @@ class BrowserBridge:
         await self._command("Page.addScriptToEvaluateOnNewDocument", {"source": script})
         await self._command("Runtime.evaluate", {"expression": script})
         await self._refresh_state()
-        # Lossless frames keep menu text and thin UI edges sharp.
-        await self._command("Page.startScreencast", {"format": "png"})
+        # Keep shared-browser frames light enough for smooth interaction while
+        # retaining readable text at kiosk viewport sizes.
+        await self._command(
+            "Page.startScreencast",
+            {"format": _FRAME_FORMAT, "quality": _FRAME_QUALITY},
+        )
 
     async def close(self) -> None:
         self._closed.set()
@@ -259,6 +266,13 @@ class BrowserBridge:
             self._state["width"] = command["width"]
             self._state["height"] = command["height"]
             self._device_scale_factor = scale
+            # Refresh the screencast after viewport changes; Chrome can leave
+            # a stream started on the initial blank page without any frames.
+            await self._command("Page.stopScreencast")
+            await self._command(
+                "Page.startScreencast",
+                {"format": _FRAME_FORMAT, "quality": _FRAME_QUALITY},
+            )
         elif kind == "wheel":
             await self._command(
                 "Input.dispatchMouseEvent",
@@ -438,7 +452,7 @@ class BrowserBridge:
         self._publish(
             {
                 "type": "frame",
-                "format": "png",
+                "format": _FRAME_FORMAT,
                 "data": data,
                 **self.state(),
             }
@@ -451,7 +465,8 @@ class BrowserBridge:
                 screenshot = await self._command(
                     "Page.captureScreenshot",
                     {
-                        "format": "png",
+                        "format": _FRAME_FORMAT,
+                        "quality": _FRAME_QUALITY,
                         "fromSurface": True,
                         "captureBeyondViewport": False,
                     },

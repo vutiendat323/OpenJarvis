@@ -318,7 +318,7 @@ def serve(
         .event_bus(bus)
         .model(model_name)
         .scheduler(True)
-        .workflow(True)
+        .workflow(config.workflow.enabled)
         .sessions(True)
         .operators(True)
         .telemetry(config.telemetry.enabled)

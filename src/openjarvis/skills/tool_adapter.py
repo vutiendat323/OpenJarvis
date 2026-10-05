@@ -167,9 +167,10 @@ class SkillTool(BaseTool):
             properties["update_order_type"] = {
                 "type": "boolean",
                 "description": (
-                    "Only for a saved draft when this turn explicitly confirms "
-                    "switching to take-out and checking out now. Atomically clear "
-                    "its table while claiming the current cart revision."
+                    "Only for a saved draft when this turn states its dining "
+                    "choice and checks out now: take-out with an empty table, or "
+                    "at-table with the chosen table. Atomically applies it while "
+                    "claiming the current cart revision."
                 ),
             }
             if self._manifest.accepts_cart_lines:

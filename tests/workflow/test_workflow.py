@@ -150,3 +150,46 @@ class TestWorkflowEngine:
         event_types = {e.event_type for e in bus.history}
         assert EventType.WORKFLOW_START in event_types
         assert EventType.WORKFLOW_END in event_types
+
+
+class TestWorkflowEngineToolRunner:
+    def test_tool_runner_executes_tool_nodes_without_a_system(self):
+        from openjarvis.workflow.types import WorkflowStepResult
+
+        g = WorkflowGraph("runner")
+        g.add_node(WorkflowNode(id="a", node_type=NodeType.TOOL))
+        g.add_node(WorkflowNode(id="b", node_type=NodeType.TOOL))
+        g.add_edge(WorkflowEdge(source="a", target="b"))
+        seen: list[str] = []
+
+        def runner(node):
+            seen.append(node.id)
+            return WorkflowStepResult(node_id=node.id, output=node.id.upper())
+
+        result = WorkflowEngine().run(g, tool_runner=runner)
+
+        assert result.success
+        assert seen == ["a", "b"]
+        assert result.final_output == "B"
+
+    def test_parallel_stage_runs_concurrently_and_keeps_context(self):
+        import contextvars
+        import threading
+
+        from openjarvis.workflow.types import WorkflowStepResult
+
+        marker: contextvars.ContextVar[str] = contextvars.ContextVar("marker")
+        marker.set("turn-1")
+        both_started = threading.Barrier(2, timeout=2)
+        g = WorkflowGraph("fanout")
+        g.add_node(WorkflowNode(id="a", node_type=NodeType.TOOL))
+        g.add_node(WorkflowNode(id="b", node_type=NodeType.TOOL))
+
+        def runner(node):
+            both_started.wait()  # deadlocks unless a and b run at once
+            return WorkflowStepResult(node_id=node.id, output=marker.get(""))
+
+        result = WorkflowEngine().run(g, tool_runner=runner)
+
+        assert result.success
+        assert [step.output for step in result.steps] == ["turn-1", "turn-1"]

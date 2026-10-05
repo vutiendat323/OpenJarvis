@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import unicodedata
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolCall, ToolResult
 from openjarvis.skills.security import validate_capabilities
-from openjarvis.skills.types import SkillManifest
+from openjarvis.skills.step_graph import build_step_graph
+from openjarvis.skills.types import SkillManifest, SkillStep
 from openjarvis.tools._stubs import ToolExecutor
+
+if TYPE_CHECKING:
+    from openjarvis.workflow.engine import WorkflowEngine
+    from openjarvis.workflow.graph import WorkflowGraph
+    from openjarvis.workflow.types import WorkflowNode, WorkflowStepResult
 
 
 @dataclass(slots=True)
@@ -50,9 +57,7 @@ def _search_matches(text: object, terms: object) -> bool:
 
     text_tokens = set(_fold_search_text(text).split())
     exact_tokens = set(
-        re.sub(
-            r"[^\w]+", " ", unicodedata.normalize("NFKC", text).casefold()
-        ).split()
+        re.sub(r"[^\w]+", " ", unicodedata.normalize("NFKC", text).casefold()).split()
     )
     for term in terms:
         term_tokens = _fold_search_text(term).split()
@@ -101,6 +106,7 @@ class SkillExecutor:
         *,
         bus: Optional[EventBus] = None,
         allowed_capabilities: Optional[Set[str]] = None,
+        workflow_engine: Optional[WorkflowEngine] = None,
     ) -> None:
         self._tool_executor = tool_executor
         self._bus = bus
@@ -110,6 +116,9 @@ class SkillExecutor:
         # empty one) to enforce: skills whose required_capabilities are not a
         # subset of it are blocked before any step runs.
         self._allowed_capabilities: Optional[Set[str]] = allowed_capabilities
+        # None keeps every skill strictly sequential. With an engine, steps
+        # that build_step_graph proves independent reads share a stage.
+        self._workflow_engine = workflow_engine
 
     def set_skill_resolver(self, resolver: SkillResolver) -> None:
         """Register a callback used to delegate ``skill_name`` steps."""
@@ -218,116 +227,16 @@ class SkillExecutor:
                 {"skill": manifest.name, "steps": len(manifest.steps)},
             )
 
-        for i, step in enumerate(manifest.steps):
-            step_id = step.tool_name or step.skill_name
-
-            if manifest.checkout:
-                from openjarvis.core.conversation import turn_nonce_is_active
-
-                if not turn_nonce_is_active(ctx.get("turn_nonce", "")):
-                    all_results.append(
-                        ToolResult(
-                            tool_name=step_id,
-                            content="checkout turn expired",
-                            success=False,
-                        )
-                    )
-                    break
-
-            # Render template
-            try:
-                rendered = self._render_template(step.arguments_template, ctx)
-            except Exception as exc:
-                result = ToolResult(
-                    tool_name=step_id,
-                    content=f"Template rendering error: {exc}",
-                    success=False,
-                )
+        engine = self._workflow_engine
+        graph = build_step_graph(manifest) if engine is not None else None
+        if engine is None or graph is None:
+            for i, step in enumerate(manifest.steps):
+                result = self._run_step(manifest, i, step, ctx, recipe)
                 all_results.append(result)
-                break
-
-            if recipe is not None and step.tool_name == "http_request":
-                if not self._request_matches_recipe(
-                    step.arguments_template, rendered, recipe
-                ):
-                    all_results.append(
-                        ToolResult(
-                            tool_name=step_id,
-                            content="recipe_stale",
-                            success=False,
-                        )
-                    )
+                if not result.success:
                     break
-
-            if step.skill_name:
-                # Delegate to sub-skill resolver
-                result = self._run_sub_skill(
-                    step.skill_name, rendered, ctx, manifest.name, i
-                )
-            else:
-                # Execute via tool executor
-                request_method = ""
-                if step.tool_name == "http_request":
-                    try:
-                        request_method = json.loads(rendered).get("method", "").upper()
-                    except (AttributeError, json.JSONDecodeError):
-                        pass
-                    if manifest.checkout and request_method not in {
-                        "",
-                        "GET",
-                        "HEAD",
-                    }:
-                        ctx["_checkout_write_attempted"] = True
-                tool_call = ToolCall(
-                    id=f"skill_{manifest.name}_{i}",
-                    name=step.tool_name,
-                    arguments=rendered,
-                )
-                result = self._tool_executor.execute(tool_call)
-                if (
-                    manifest.checkout
-                    and step.tool_name == "http_request"
-                    and not result.success
-                    and result.content.startswith(
-                        ("Request timed out", "Request error")
-                    )
-                ):
-                    if request_method in {"GET", "HEAD"}:
-                        retry_call = ToolCall(
-                            id=f"skill_{manifest.name}_{i}_retry",
-                            name=step.tool_name,
-                            arguments=rendered,
-                        )
-                        result = self._tool_executor.execute(retry_call)
-
-            if recipe is not None and step.tool_name == "http_request":
-                recipe_error = self._recipe_response_error(result, recipe)
-                if recipe_error:
-                    result = ToolResult(
-                        tool_name=step_id,
-                        content=recipe_error,
-                        success=False,
-                        metadata=dict(result.metadata),
-                    )
-
-            all_results.append(result)
-
-            if not result.success:
-                break
-
-            # Store output in context
-            if step.output_key:
-                ctx[step.output_key] = result.content
-
-            try:
-                self._validate_assertions(step.assertions, ctx)
-            except (ValueError, TypeError) as exc:
-                all_results[-1] = ToolResult(
-                    tool_name=step_id,
-                    content=f"Response assertion failed at step {i}: {exc}",
-                    success=False,
-                )
-                break
+        else:
+            all_results = self._run_step_graph(engine, manifest, graph, ctx, recipe)
 
         success = all(r.success for r in all_results)
 
@@ -343,6 +252,162 @@ class SkillExecutor:
             step_results=all_results,
             context=ctx,
         )
+
+    def _run_step_graph(
+        self,
+        engine: WorkflowEngine,
+        manifest: SkillManifest,
+        graph: WorkflowGraph,
+        ctx: Dict[str, Any],
+        recipe: Any,
+    ) -> List[ToolResult]:
+        """Run the graph's stages; results keep manifest order up to a failure.
+
+        Each step works on its own copy of the context: assertions copy the
+        context while a parallel sibling may be adding its output to it.
+        """
+        from openjarvis.workflow.types import WorkflowStepResult
+
+        results: Dict[int, ToolResult] = {}
+        errors: List[BaseException] = []
+        ctx_lock = threading.Lock()
+
+        def run_node(node: WorkflowNode) -> WorkflowStepResult:
+            index = node.config["step_index"]
+            with ctx_lock:
+                step_ctx = dict(ctx)
+            try:
+                result = self._run_step(
+                    manifest, index, manifest.steps[index], step_ctx, recipe
+                )
+            except BaseException as exc:
+                errors.append(exc)
+                raise
+            finally:
+                with ctx_lock:
+                    ctx.update(step_ctx)
+            results[index] = result
+            return WorkflowStepResult(
+                node_id=node.id, success=result.success, output=result.content
+            )
+
+        engine.run(graph, tool_runner=run_node)
+        if errors:
+            # Same as the sequential path: a raising step propagates.
+            raise errors[0]
+        ordered: List[ToolResult] = []
+        for index in sorted(results):
+            ordered.append(results[index])
+            if not results[index].success:
+                break
+        return ordered
+
+    def _run_step(
+        self,
+        manifest: SkillManifest,
+        i: int,
+        step: SkillStep,
+        ctx: Dict[str, Any],
+        recipe: Any,
+    ) -> ToolResult:
+        """Run one step; on success its output and assertions update ``ctx``."""
+        step_id = step.tool_name or step.skill_name
+
+        if manifest.checkout:
+            from openjarvis.core.conversation import turn_nonce_is_active
+
+            if not turn_nonce_is_active(ctx.get("turn_nonce", "")):
+                return ToolResult(
+                    tool_name=step_id,
+                    content="checkout turn expired",
+                    success=False,
+                )
+
+        # Render template
+        try:
+            rendered = self._render_template(step.arguments_template, ctx)
+        except Exception as exc:
+            return ToolResult(
+                tool_name=step_id,
+                content=f"Template rendering error: {exc}",
+                success=False,
+            )
+
+        if recipe is not None and step.tool_name == "http_request":
+            if not self._request_matches_recipe(
+                step.arguments_template, rendered, recipe
+            ):
+                return ToolResult(
+                    tool_name=step_id,
+                    content="recipe_stale",
+                    success=False,
+                )
+
+        if step.skill_name:
+            # Delegate to sub-skill resolver
+            result = self._run_sub_skill(
+                step.skill_name, rendered, ctx, manifest.name, i
+            )
+        else:
+            # Execute via tool executor
+            request_method = ""
+            if step.tool_name == "http_request":
+                try:
+                    request_method = json.loads(rendered).get("method", "").upper()
+                except (AttributeError, json.JSONDecodeError):
+                    pass
+                if manifest.checkout and request_method not in {
+                    "",
+                    "GET",
+                    "HEAD",
+                }:
+                    ctx["_checkout_write_attempted"] = True
+            tool_call = ToolCall(
+                id=f"skill_{manifest.name}_{i}",
+                name=step.tool_name,
+                arguments=rendered,
+            )
+            result = self._tool_executor.execute(tool_call)
+            if (
+                manifest.checkout
+                and step.tool_name == "http_request"
+                and not result.success
+                and result.content.startswith(("Request timed out", "Request error"))
+            ):
+                if request_method in {"GET", "HEAD"}:
+                    retry_call = ToolCall(
+                        id=f"skill_{manifest.name}_{i}_retry",
+                        name=step.tool_name,
+                        arguments=rendered,
+                    )
+                    result = self._tool_executor.execute(retry_call)
+
+        if recipe is not None and step.tool_name == "http_request":
+            recipe_error = self._recipe_response_error(result, recipe)
+            if recipe_error:
+                result = ToolResult(
+                    tool_name=step_id,
+                    content=recipe_error,
+                    success=False,
+                    metadata=dict(result.metadata),
+                )
+
+        if not result.success:
+            return result
+
+        # Store output in context
+        if step.output_key:
+            ctx[step.output_key] = result.content
+
+        try:
+            self._validate_assertions(step.assertions, ctx)
+        except (ValueError, TypeError) as exc:
+            return ToolResult(
+                tool_name=step_id,
+                content=f"Response assertion failed at step {i}: {exc}",
+                success=False,
+            )
+        return result
 
     @staticmethod
     def _request_matches_recipe(

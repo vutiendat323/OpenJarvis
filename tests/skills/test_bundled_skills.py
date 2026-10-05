@@ -591,6 +591,37 @@ def test_workspace_checkout_applies_confirmed_take_out_before_write() -> None:
     assert len(display.calls) == 1
 
 
+def test_workspace_checkout_applies_confirmed_table_before_write() -> None:
+    _tool, result, http, bill, display = _run_checkout(
+        response_type="at-table",
+        requested_type="at-table",
+        requested_table="table-73",
+        saved_draft=True,
+        update_order_type=True,
+    )
+
+    assert result.success, result.content
+    assert [call["method"] for call in http.calls] == ["GET", "GET", "POST", "POST"]
+    created = json.loads(http.calls[2]["body"])
+    assert (created["type"], created["table"]) == ("at-table", "table-73")
+    assert len(bill.calls) == len(display.calls) == 1
+
+
+def test_workspace_checkout_rejects_a_confirmed_table_missing_from_the_fresh_read():
+    _tool, result, http, bill, display = _run_checkout(
+        response_type="at-table",
+        requested_type="at-table",
+        requested_table="table-404",
+        response_table="table-404",
+        saved_draft=True,
+        update_order_type=True,
+    )
+
+    assert result.success is False
+    assert [call["method"] for call in http.calls] == ["GET", "GET"]
+    assert bill.calls == display.calls == []
+
+
 def test_workspace_checkout_sends_selected_at_table_type_and_slug() -> None:
     _tool, result, http, bill, display = _run_checkout(response_type="at-table")
 

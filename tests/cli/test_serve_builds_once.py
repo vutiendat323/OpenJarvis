@@ -42,7 +42,7 @@ def test_serve_enables_every_subsystem_the_runtime_needs():
     source = _serve_source()
     for seam in (
         ".scheduler(True)",
-        ".workflow(True)",
+        ".workflow(config.workflow.enabled)",
         ".sessions(True)",
         ".operators(True)",
         ".telemetry(",

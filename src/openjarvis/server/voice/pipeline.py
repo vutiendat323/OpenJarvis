@@ -186,6 +186,7 @@ def build_voice_pipeline(
             tracker=tracker,
             speaker_settings=speaker,
             audio_enhancer=enhancer,
+            target_audio_monitor=getattr(stt, "target_audio_monitor", None),
             **({"vision_audio": vision_audio} if vision_audio is not None else {}),
         )
         if stt_delay:

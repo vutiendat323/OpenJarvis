@@ -80,7 +80,17 @@ class VisionAudioBridge:
                 raise ValueError("Voice console is unavailable")
             action = event.get("action")
             if action == "set":
-                result.update(self.console.tune(event.get("key"), event.get("value")))
+                if event.get("key") == "target_audio_monitor":
+                    result.update(
+                        await asyncio.to_thread(
+                            self.console.tune, event.get("key"), event.get("value"),
+                        )
+                    )
+                    self.console.publish(force=True)
+                else:
+                    result.update(
+                        self.console.tune(event.get("key"), event.get("value"))
+                    )
             elif action == "save":
                 from openjarvis.server.voice.speaker_console import save_speaker_values
 

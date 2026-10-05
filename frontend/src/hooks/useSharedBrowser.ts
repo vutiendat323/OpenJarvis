@@ -17,6 +17,30 @@ export interface BrowserViewState {
   error: string | null;
 }
 
+export interface BrowserFrameStore {
+  getSnapshot: () => string | null;
+  subscribe: (listener: () => void) => () => void;
+  publish: (frame: string) => void;
+}
+
+export function createBrowserFrameStore(initialFrame: string | null = null): BrowserFrameStore {
+  let frame = initialFrame;
+  const listeners = new Set<() => void>();
+
+  return {
+    getSnapshot: () => frame,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    publish: (nextFrame) => {
+      if (nextFrame === frame) return;
+      frame = nextFrame;
+      listeners.forEach((listener) => listener());
+    },
+  };
+}
+
 export const initialBrowserState: BrowserViewState = {
   status: 'connecting',
   url: 'about:blank',
@@ -82,6 +106,29 @@ export function reduceBrowserMessage(
   };
 }
 
+function sameBrowserState(left: BrowserViewState, right: BrowserViewState): boolean {
+  const sameFocus = left.focusedElement === right.focusedElement || (
+    left.focusedElement !== null
+    && right.focusedElement !== null
+    && left.focusedElement.tag === right.focusedElement.tag
+    && left.focusedElement.name === right.focusedElement.name
+    && left.focusedElement.type === right.focusedElement.type
+    && left.focusedElement.editable === right.focusedElement.editable
+  );
+
+  return left.status === right.status
+    && left.url === right.url
+    && left.title === right.title
+    && left.frame === right.frame
+    && left.width === right.width
+    && left.height === right.height
+    && left.loading === right.loading
+    && sameFocus
+    && left.targetId === right.targetId
+    && left.agentAction === right.agentAction
+    && left.error === right.error;
+}
+
 export function remotePoint(
   clientX: number,
   clientY: number,
@@ -103,14 +150,23 @@ function browserWsUrl(): string {
   return `${protocol}//${window.location.host}/api/kiosk/browser/ws`;
 }
 
-export function useSharedBrowser(): BrowserViewState & {
+export function useSharedBrowser(): Omit<BrowserViewState, 'frame'> & {
   send: (command: BrowserCommand) => void;
   hitTest: (x: number, y: number) => Promise<boolean>;
+  frameStore: BrowserFrameStore;
 } {
   const [state, setState] = useState<BrowserViewState>(initialBrowserState);
+  const stateRef = useRef(state);
+  const [frameStore] = useState(createBrowserFrameStore);
   const socketRef = useRef<WebSocket | null>(null);
   const nextProbeRef = useRef(0);
   const probesRef = useRef(new Map<number, (interactive: boolean) => void>());
+
+  const commitState = useCallback((next: BrowserViewState) => {
+    if (sameBrowserState(stateRef.current, next)) return;
+    stateRef.current = next;
+    setState(next);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -119,7 +175,7 @@ export function useSharedBrowser(): BrowserViewState & {
       if (disposed) return;
       const socket = new WebSocket(browserWsUrl(), buildWsProtocols());
       socketRef.current = socket;
-      socket.onopen = () => setState((current) => ({ ...current, status: 'connected' }));
+      socket.onopen = () => commitState({ ...stateRef.current, status: 'connected' });
       socket.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data) as BrowserMessage;
@@ -128,13 +184,21 @@ export function useSharedBrowser(): BrowserViewState & {
             probesRef.current.get(probe.request_id)?.(probe.interactive !== false);
             return;
           }
-          setState((current) => reduceBrowserMessage(current, message));
+          const current = stateRef.current;
+          const next = reduceBrowserMessage(current, message);
+          if (message.type === 'frame' && next.frame !== null) {
+            // Only the preview image subscribes to frames, keeping Kiosk state stable.
+            frameStore.publish(next.frame);
+            commitState({ ...next, frame: current.frame });
+          } else {
+            commitState(next);
+          }
         } catch { /* ignore malformed browser event */ }
       };
       socket.onclose = () => {
         for (const resolve of [...probesRef.current.values()]) resolve(true);
         if (!disposed) {
-          setState((current) => ({ ...current, status: 'disconnected' }));
+          commitState({ ...stateRef.current, status: 'disconnected' });
           timer = setTimeout(connect, 500);
         }
       };
@@ -147,7 +211,7 @@ export function useSharedBrowser(): BrowserViewState & {
       socketRef.current?.close();
       for (const resolve of [...probesRef.current.values()]) resolve(true);
     };
-  }, []);
+  }, [commitState, frameStore]);
 
   const send = useCallback((command: BrowserCommand) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -171,5 +235,5 @@ export function useSharedBrowser(): BrowserViewState & {
     });
   }, []);
 
-  return { ...state, send, hitTest };
+  return { ...state, send, hitTest, frameStore };
 }

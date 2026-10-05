@@ -83,10 +83,14 @@ def save_speaker_values(values: dict, config_path: str | None = None) -> None:
 
 
 class SpeakerConsole:
-    def __init__(self, processor, settings: SpeakerSettings, enhancer=None):
+    def __init__(
+        self, processor, settings: SpeakerSettings, enhancer=None,
+        target_audio_monitor=None,
+    ):
         self.processor = processor
         self.settings = settings
         self.enhancer = enhancer
+        self.target_audio_monitor = target_audio_monitor
         self._next_publish = 0.0
         self._levels = {"rms_dbfs": -96.0, "peak": 0.0, "waveform": []}
         self._wave: deque[float] = deque(maxlen=128)
@@ -95,6 +99,15 @@ class SpeakerConsole:
         self._audio_at = None
 
     def tune(self, key: str, value) -> dict:
+        if key == "target_audio_monitor":
+            if type(value) is not bool or self.target_audio_monitor is None:
+                raise ValueError(
+                    "Target audio monitor requires ON or OFF and an active session"
+                )
+            # This control is session-only; never part of values() or Save.
+            # The bridge calls it off-thread, then publishes on the event loop.
+            self.target_audio_monitor.set_enabled(value)
+            return {"key": key, "value": self.target_audio_monitor.enabled}
         bounds = LIVE_SPEAKER_KEYS.get(key)
         if bounds is None or type(value) not in (int, float):
             raise ValueError("Unsupported setting or non-numeric value")
@@ -154,6 +167,10 @@ class SpeakerConsole:
             audio["raw_rms_dbfs"] = getattr(enhancer, "raw_rms_dbfs", None)
         return {
             "ts": time.time(),
+            "target_audio_monitor": (
+                self.target_audio_monitor.snapshot()
+                if self.target_audio_monitor else None
+            ),
             "audio": audio,
             "enhancer_requested": self.settings.enhancer,
             "enhancer_effective": getattr(enhancer, "effective_name", "none"),

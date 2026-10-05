@@ -157,12 +157,12 @@ export function VoiceWaveform({
         onClick={onMicClick}
         disabled={!onMicClick}
         aria-label="Active microphone"
-        className={`flex h-[48px] w-[48px] items-center justify-center rounded-[13px] bg-[#263c43] text-white shadow-sm transition-transform ${
+        className={`flex h-[48px] w-[48px] items-center justify-center rounded-[13px] shadow-sm transition-all focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#7090ec] ${
           onMicClick ? 'cursor-pointer hover:scale-105 active:scale-95' : 'cursor-default'
-        }`}
+        } ${isActive ? 'bg-[#7090ec]/25 hover:bg-[#7090ec]/35' : 'bg-[#263c43] hover:bg-[#304b54]'}`}
         style={{ borderRadius: '13px' }}
       >
-        <Mic size={18} strokeWidth={2.2} className="text-white" />
+        <Mic size={18} strokeWidth={2.2} className={isActive ? 'text-[#a7bcff]' : 'text-white'} />
       </button>
     </div>
   );

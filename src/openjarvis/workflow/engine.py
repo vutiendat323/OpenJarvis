@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.workflow.graph import WorkflowGraph
@@ -43,8 +44,14 @@ class WorkflowEngine:
         *,
         initial_input: str = "",
         context: Optional[Dict[str, Any]] = None,
+        tool_runner: Optional[Callable[[WorkflowNode], WorkflowStepResult]] = None,
     ) -> WorkflowResult:
-        """Execute a workflow graph end-to-end."""
+        """Execute a workflow graph end-to-end.
+
+        ``tool_runner``, when given, executes every TOOL node in place of the
+        system's tool executor. Parallel nodes run in copies of the caller's
+        context, so context-scoped state (the active turn) stays visible.
+        """
         valid, msg = graph.validate()
         if not valid:
             return WorkflowResult(
@@ -76,6 +83,7 @@ class WorkflowEngine:
                     ctx,
                     system,
                     graph,
+                    tool_runner,
                 )
                 all_steps.append(step)
                 outputs[stage[0]] = step.output
@@ -89,12 +97,14 @@ class WorkflowEngine:
                 ) as pool:
                     futures = {
                         pool.submit(
+                            contextvars.copy_context().run,
                             self._execute_node,
                             graph.get_node(nid),
                             dict(outputs),
                             dict(ctx),
                             system,
                             graph,
+                            tool_runner,
                         ): nid
                         for nid in stage
                     }
@@ -143,6 +153,7 @@ class WorkflowEngine:
         ctx: Dict[str, Any],
         system: Any,
         graph: WorkflowGraph,
+        tool_runner: Optional[Callable[[WorkflowNode], WorkflowStepResult]] = None,
     ) -> WorkflowStepResult:
         """Execute a single workflow node."""
         if self._bus:
@@ -155,6 +166,8 @@ class WorkflowEngine:
         try:
             if node.node_type == NodeType.AGENT:
                 result = self._run_agent_node(node, outputs, system, graph)
+            elif node.node_type == NodeType.TOOL and tool_runner is not None:
+                result = tool_runner(node)
             elif node.node_type == NodeType.TOOL:
                 result = self._run_tool_node(node, outputs, system)
             elif node.node_type == NodeType.CONDITION:

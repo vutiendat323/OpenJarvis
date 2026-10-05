@@ -931,6 +931,56 @@ def test_checkout_claim_can_atomically_switch_confirmed_draft_to_take_out():
         assert tool.current_snapshot() == claimed
 
 
+def test_checkout_claim_can_atomically_select_the_confirmed_table():
+    """'Table 5, pay now' needs no separate set_table round before checkout."""
+    import pytest
+
+    from openjarvis.core.conversation import agent_turn_scope
+
+    tool, recorder = _wired(DisplayCartTool)
+    with conversation_scope("checkout-select-table"):
+        tool.execute(
+            action="add",
+            item={
+                "variant_id": "coffee",
+                "name": "Coffee",
+                "unit_price": 100,
+                "quantity": 1,
+            },
+        )
+        tool.execute(action="set_pickup_time", pickup_minutes=15)
+        before = tool.current_snapshot()
+        with agent_turn_scope() as nonce:
+            with pytest.raises(ValueError, match="requires a table"):
+                tool.begin_checkout(
+                    nonce,
+                    before["revision"],
+                    order_type="at-table",
+                    table="",
+                    update_order_type=True,
+                )
+        assert tool.current_snapshot() == before
+        with agent_turn_scope() as nonce:
+            claimed = tool.begin_checkout(
+                nonce,
+                before["revision"],
+                order_type="at-table",
+                table="table-5",
+                update_order_type=True,
+            )
+            assert tool.checkout_write_allowed()
+            assert claimed["order_type"] == "at-table"
+            assert claimed["table"] == "table-5"
+            assert claimed["pickup_minutes"] == 0
+            assert claimed["lines"] == before["lines"]
+            assert claimed["revision"] > before["revision"]
+            assert recorder.events[-1].data["order_type"] == "at-table"
+            assert recorder.events[-1].data["table"] == "table-5"
+            assert recorder.events[-1].data["navigate"] is False
+            tool.end_checkout()
+        assert tool.current_snapshot() == claimed
+
+
 def test_checkout_rejects_invalid_replacement_without_changing_the_draft():
     import pytest
 

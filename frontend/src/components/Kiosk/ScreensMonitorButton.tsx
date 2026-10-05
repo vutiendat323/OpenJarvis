@@ -20,18 +20,21 @@ export function ScreensMonitorButton({ visible, language, onToggle }: ScreensMon
       aria-pressed={visible}
       title={`Screens Monitor — ${action}`}
       onClick={onToggle}
-      className="flex h-[48px] w-[48px] shrink-0 cursor-pointer items-center justify-center rounded-[13px] bg-[#263c43] text-[#f1f3f9] shadow-sm transition-colors hover:bg-[#304b54] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#7090ec] active:bg-[#1d3036]"
+      className={`flex h-[48px] w-[48px] shrink-0 cursor-pointer items-center justify-center rounded-[13px] shadow-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#7090ec] active:bg-[#1d3036] ${
+        visible
+          ? 'bg-[#7090ec]/25 text-[#a7bcff] hover:bg-[#7090ec]/35'
+          : 'bg-[#263c43] text-[#f1f3f9] hover:bg-[#304b54]'
+      }`}
     >
       <svg
         aria-hidden="true"
         className="material-symbols-outlined notranslate ms-button-icon-symbol"
-        width="30"
-        height="30"
-        viewBox="0 0 24 24"
+        width="26"
+        height="26"
+        viewBox="0 -960 960 960"
         fill="currentColor"
       >
-        <path d="M20 3H4c-1.11 0-2 .89-2 2v12c0 1.1.89 2 2 2h4v2h8v-2h4c1.1 0 2-.9 2-2V5c0-1.11-.9-2-2-2zm0 14H4V5h16v12z" />
-        <path d="M6.5 7.5H9V6H5v4h1.5zM19 12h-1.5v2.5H15V16h4z" />
+        <path d="M610-326.15h143.85V-470h-47.7v96.15H610v47.7ZM206.15-570h47.7v-96.15H350v-47.7H206.15V-570ZM340-140v-80H172.31Q142-220 121-241q-21-21-21-51.31v-455.38Q100-778 121-799q21-21 51.31-21h615.38Q818-820 839-799q21 21 21 51.31v455.38Q860-262 839-241q-21 21-51.31 21H620v80H340ZM172.31-280h615.38q4.62 0 8.46-3.85 3.85-3.84 3.85-8.46v-455.38q0-4.62-3.85-8.46-3.84-3.85-8.46-3.85H172.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46v455.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85ZM160-280v-480 480Z" />
       </svg>
     </button>
   );

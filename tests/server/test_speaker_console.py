@@ -140,3 +140,71 @@ async def test_console_commands_return_gate_confirmation():
                      "request_id": "request", "ok": True,
                      "key": "voice_match", "value": 0.8}]
     assert console.processor._gate.lock._s.voice_match == 0.8
+
+
+@pytest.mark.asyncio
+async def test_monitor_toggle_round_trip_is_boolean_and_never_saved(tmp_path):
+    from openjarvis.server.voice.target_audio_monitor import LocalTargetAudioMonitor
+
+    console = _console()
+    console.target_audio_monitor = LocalTargetAudioMonitor()
+    bridge = console.processor._vision_audio
+    bridge._stream_id = "stream"
+    sent = []
+
+    async def send(payload):
+        sent.append(json.loads(payload))
+
+    before = console.settings
+    try:
+        for enabled in (True, False):
+            await bridge._console_command(SimpleNamespace(send=send), {
+                "request_id": "toggle", "action": "set",
+                "key": "target_audio_monitor", "value": enabled,
+            }, "stream")
+            assert sent[-1]["ok"] and sent[-1]["value"] is enabled
+            assert console.snapshot()["target_audio_monitor"]["enabled"] is enabled
+        assert console.settings is before
+        preset = tmp_path / "preset.toml"
+        preset.write_text("[voice.speaker]\nvoice_match = 0.65\n")
+        save_speaker_values(console.values(), str(preset))
+        assert "target_audio_monitor" not in preset.read_text()
+        for invalid in (0, 1, "true", None):
+            with pytest.raises(ValueError):
+                console.tune("target_audio_monitor", invalid)
+    finally:
+        console.target_audio_monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_slow_monitor_control_does_not_block_voice_event_loop(monkeypatch):
+    import asyncio
+    import time
+
+    from openjarvis.server.voice.target_audio_monitor import LocalTargetAudioMonitor
+
+    console = _console()
+    local = LocalTargetAudioMonitor()
+    console.target_audio_monitor = local
+    bridge = console.processor._vision_audio
+    bridge._stream_id = "stream"
+    original = local.set_enabled
+
+    def slow_control(enabled):
+        time.sleep(0.2)
+        original(enabled)
+
+    monkeypatch.setattr(local, "set_enabled", slow_control)
+
+    async def send(payload):
+        pass
+
+    task = asyncio.create_task(bridge._console_command(SimpleNamespace(send=send), {
+        "action": "set", "key": "target_audio_monitor", "value": True,
+    }, "stream"))
+    try:
+        await asyncio.sleep(0.03)
+        assert not task.done(), "Device control blocked the Voice event loop"
+        await task
+    finally:
+        local.close()

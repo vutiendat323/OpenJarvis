@@ -1,8 +1,23 @@
 import { useState } from 'react';
-import { PanelsTopLeft, AudioLines, Settings, X } from 'lucide-react';
+import { AudioLines, Settings, X } from 'lucide-react';
 import { VOICE_UI_TEXT } from '@/hooks/voiceUiText';
 import type { UiLanguage } from '@/hooks/useUiLanguage';
 import type { VisualizerSettings, VisualizerStyle, VisualizerTheme, VoiceStatus } from './types';
+
+function ScreenIcon({ size = 13, className }: { size?: number; className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      width={size}
+      height={size}
+      viewBox="0 -960 960 960"
+      fill="currentColor"
+    >
+      <path d="M610-326.15h143.85V-470h-47.7v96.15H610v47.7ZM206.15-570h47.7v-96.15H350v-47.7H206.15V-570ZM340-140v-80H172.31Q142-220 121-241q-21-21-21-51.31v-455.38Q100-778 121-799q21-21 51.31-21h615.38Q818-820 839-799q21 21 21 51.31v455.38Q860-262 839-241q-21 21-51.31 21H620v80H340ZM172.31-280h615.38q4.62 0 8.46-3.85 3.85-3.84 3.85-8.46v-455.38q0-4.62-3.85-8.46-3.84-3.85-8.46-3.85H172.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46v455.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85ZM160-280v-480 480Z" />
+    </svg>
+  );
+}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -14,8 +29,8 @@ const THEMES: { key: VisualizerTheme; label: string; gradient: string }[] = [
   { key: 'sunset', label: 'Sunset', gradient: 'linear-gradient(135deg,#ff0844,#ffb199)' },
 ];
 
-const displayOptions: { value: VisualizerStyle; label: string; icon: typeof PanelsTopLeft }[] = [
-  { value: 'screen', label: 'Compact', icon: PanelsTopLeft },
+const displayOptions: { value: VisualizerStyle; label: string; icon: React.ComponentType<{ size?: number; className?: string }> }[] = [
+  { value: 'screen', label: 'Screen', icon: ScreenIcon },
   { value: '3d', label: '3D Sphere', icon: AudioLines },
 ];
 
@@ -250,7 +265,7 @@ export function VisualizerControls({
           description={
             settings.style === '3d'
               ? '3D neon sphere reacts to audio'
-              : 'Compact voice display beside the browser'
+              : 'Screen voice display beside the browser'
           }
         >
           <div className="flex gap-1 p-0.5 rounded-lg shrink-0" style={{ background: 'var(--color-bg-secondary)' }}>
@@ -385,7 +400,7 @@ export function VisualizerControls({
           <input
             type="range"
             min={1}
-            max={4}
+            max={10}
             step={0.1}
             value={settings.petScale}
             onChange={(e) => set('petScale', parseFloat(e.target.value))}

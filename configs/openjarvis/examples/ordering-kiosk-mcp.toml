@@ -80,6 +80,13 @@ payment_trusted_origins = "https://trendcoffee.net"
 enabled = true
 active = "trendcoffee-menu,trendcoffee-tables,trendcoffee-add-to-cart,trendcoffee-checkout"
 
+[workflow]
+# Skills run their steps through WorkflowEngine: independent GET/HEAD reads
+# share a stage (checkout reads menu and tables together); every write and
+# display keeps its manifest order. No agent or LLM node is ever created.
+# false restores strictly sequential steps.
+enabled = true
+
 [learning]
 # A completed, verified transaction becomes a replayable skill in this same
 # process. `training_enabled` stays false: this preset learns procedures, it

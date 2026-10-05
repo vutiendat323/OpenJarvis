@@ -49,6 +49,22 @@ def test_preset_loads(preset_path: Path) -> None:
     assert cfg.agent.default_agent, f"{preset_path.stem}: agent.default_agent is empty"
 
 
+def test_kiosk_mcp_preset_schedules_skill_steps_through_the_workflow_engine() -> None:
+    cfg = load_config(path=PRESETS_DIR / "ordering-kiosk-mcp.toml")
+
+    assert cfg.workflow.enabled is True
+
+
+def test_kiosk_prompt_selects_a_named_table_inside_checkout() -> None:
+    """'Bàn 5 thanh toán ngay' must be one checkout call, not set_table first."""
+    prompt = (PRESETS_DIR.parent / "prompts" / "ordering-kiosk.md").read_text()
+    folded = " ".join(prompt.split()).casefold()
+
+    at_table = '`order_type="at-table"`, the table slug and `update_order_type=true`'
+    assert at_table in folded
+    assert "do not call `set_table` or `set_order_type` first" in folded
+
+
 def test_kiosk_mcp_preset_limits_agent_tool_surface() -> None:
     preset_path = PRESETS_DIR / "ordering-kiosk-mcp.toml"
     cfg = load_config(path=preset_path)

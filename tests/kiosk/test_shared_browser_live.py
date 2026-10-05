@@ -18,6 +18,44 @@ from openjarvis.mcp.transport import StdioTransport
 pytestmark = pytest.mark.live
 
 
+def _jpeg_dimensions(data: bytes) -> tuple[int, int]:
+    assert data.startswith(b"\xff\xd8")
+    start_of_frame = {
+        0xC0,
+        0xC1,
+        0xC2,
+        0xC3,
+        0xC5,
+        0xC6,
+        0xC7,
+        0xC9,
+        0xCA,
+        0xCB,
+        0xCD,
+        0xCE,
+        0xCF,
+    }
+    offset = 2
+    while offset + 4 < len(data):
+        if data[offset] != 0xFF:
+            offset += 1
+            continue
+        while offset < len(data) and data[offset] == 0xFF:
+            offset += 1
+        if offset >= len(data):
+            break
+        marker = data[offset]
+        offset += 1
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+            continue
+        segment_length = struct.unpack_from(">H", data, offset)[0]
+        if marker in start_of_frame:
+            height, width = struct.unpack_from(">HH", data, offset + 3)
+            return width, height
+        offset += segment_length
+    raise AssertionError("JPEG frame has no size marker")
+
+
 def test_mcp_navigation_uses_the_preexisting_chrome_page(tmp_path) -> None:
     browser = SharedBrowserProcess(profile_dir=tmp_path / "profile")
     client = None
@@ -61,7 +99,8 @@ def test_mcp_navigation_uses_the_preexisting_chrome_page(tmp_path) -> None:
         browser.close()
 
 
-def test_bridge_streams_a_real_chrome_frame(tmp_path) -> None:
+@pytest.mark.parametrize("device_scale_factor", [1, 2])
+def test_bridge_streams_a_real_chrome_frame(tmp_path, device_scale_factor) -> None:
     from openjarvis.kiosk.browser_bridge import BrowserBridge
 
     browser = SharedBrowserProcess(profile_dir=tmp_path / "profile")
@@ -76,7 +115,7 @@ def test_bridge_streams_a_real_chrome_frame(tmp_path) -> None:
                         "type": "resize",
                         "width": 640,
                         "height": 480,
-                        "device_scale_factor": 2,
+                        "device_scale_factor": device_scale_factor,
                     }
                 )
                 await bridge.handle(
@@ -92,13 +131,16 @@ def test_bridge_streams_a_real_chrome_frame(tmp_path) -> None:
                     async for message in bridge.subscribe():
                         if message["type"] == "frame":
                             pixels = base64.b64decode(message["data"])
-                            assert pixels.startswith(b"\x89PNG\r\n\x1a\n")
-                            if struct.unpack(">II", pixels[16:24]) == (1280, 960):
+                            assert pixels.startswith(b"\xff\xd8")
+                            if _jpeg_dimensions(pixels) == (
+                                640 * device_scale_factor,
+                                480 * device_scale_factor,
+                            ):
                                 return message
                     raise AssertionError("frame stream stopped")
 
                 frame = await asyncio.wait_for(read_frame(), timeout=3)
-                assert frame["format"] == "png"
+                assert frame["format"] == "jpeg"
                 assert frame["width"] == 640
                 assert frame["height"] == 480
                 assert frame["url"].startswith("data:text/html,")

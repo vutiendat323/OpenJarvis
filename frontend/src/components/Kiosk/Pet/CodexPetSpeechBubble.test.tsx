@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import {
   CodexPetSpeechBubble,
   formatSpeechText,
+  getBubblePath,
+  parseSpeechContent,
 } from './CodexPetSpeechBubble';
 
 describe('formatSpeechText', () => {
@@ -91,5 +93,92 @@ describe('CodexPetSpeechBubble component', () => {
     );
     expect(html).toContain('custom-bubble-class');
     expect(html).toContain('data-role="assistant"');
+  });
+
+  it('renders greeting as bold title and inquiry as body matching sample image', () => {
+    const html = renderToStaticMarkup(
+      <CodexPetSpeechBubble text="Hello! What would you like to order today?" />
+    );
+    expect(html).toContain('Hello!');
+    expect(html).toContain('What would you like to order today?');
+    expect(html).toContain('font-bold');
+    expect(html).toContain('data-testid="speech-bubble-tail"');
+  });
+
+  it('renders seamless SVG border with glowing cyan stroke, transparent background, and integrated tail', () => {
+    const html = renderToStaticMarkup(
+      <CodexPetSpeechBubble text="Xin chào bạn!" position="top" />
+    );
+    expect(html).toContain('data-testid="speech-bubble-border-svg"');
+    expect(html).toContain('data-testid="speech-bubble-tail"');
+    expect(html).toContain('stroke="#22d3ee"');
+    expect(html).toContain('fill="none"');
+    expect(html).toContain('background:transparent');
+  });
+
+  it('uses left-aligned tail path when position is top-right', () => {
+    const html = renderToStaticMarkup(
+      <CodexPetSpeechBubble text="Sample" position="top-right" />
+    );
+    expect(html).toContain('data-testid="speech-bubble-tail"');
+    expect(html).toContain('fill="none"');
+  });
+
+  it('defaults to position="left" (Bubble on left, Robot on right matching sample photo)', () => {
+    const html = renderToStaticMarkup(
+      <CodexPetSpeechBubble text="Hello" />
+    );
+    expect(html).toContain('data-position="left"');
+    expect(html).toContain('right-full');
+    expect(html).toContain('-mr-7');
+  });
+});
+
+describe('getBubblePath', () => {
+  it('generates a closed SVG path with tail at bottom-right for right position', () => {
+    const path = getBubblePath(260, 76, 24, 'right');
+    expect(path).toContain('M 24 0');
+    expect(path).toContain('Z');
+    expect(path).toContain('267 84');
+  });
+
+  it('generates a closed SVG path with tail at bottom-left for left position', () => {
+    const path = getBubblePath(260, 76, 24, 'left');
+    expect(path).toContain('M 24 0');
+    expect(path).toContain('Z');
+    expect(path).toContain('-7 84');
+  });
+});
+
+describe('parseSpeechContent', () => {
+  it('splits greeting and question into title and body', () => {
+    expect(parseSpeechContent('Hello! What would you like to order today?')).toEqual({
+      title: 'Hello!',
+      body: 'What would you like to order today?',
+    });
+    expect(parseSpeechContent('Xin chào! Tôi có thể giúp gì cho bạn?')).toEqual({
+      title: 'Xin chào!',
+      body: 'Tôi có thể giúp gì cho bạn?',
+    });
+    expect(parseSpeechContent('Xin chào bạn, mình có thể giúp gì ạ?')).toEqual({
+      title: 'Xin chào bạn,',
+      body: 'mình có thể giúp gì ạ?',
+    });
+  });
+
+  it('splits explicit newlines into title and body', () => {
+    expect(parseSpeechContent('Hello!\nWhat would you like to order today?')).toEqual({
+      title: 'Hello!',
+      body: 'What would you like to order today?',
+    });
+  });
+
+  it('handles single sentences without title', () => {
+    expect(parseSpeechContent('Chào bạn nhé!')).toEqual({
+      body: 'Chào bạn nhé!',
+    });
+    expect(parseSpeechContent('')).toEqual({
+      body: '',
+    });
   });
 });

@@ -217,6 +217,10 @@ SEPARATION_CONTEXT_SECS = 2.0
 # Room reverb keeps the bot audible briefly after playback ends.
 BOT_TAIL_SECS = 0.3
 _MAX_QUEUED_CHUNKS = 2
+# Sortformer scores the first 80-160 ms of an utterance below threshold (live
+# 2026-10-05: 0.01-0.47), so its first rows have no voice. A voiceless row this
+# close before ACCEPTed speech is that speech's onset and reaches STT.
+ONSET_ROWS = 2
 # A segment enrolls the customer's voiceprint only when this share of its rows
 # was ASD-confirmed on the locked face.
 TARGET_CONFIRMED_FRACTION = 0.8
@@ -300,6 +304,7 @@ class SpeakerAudioProcessor(FrameProcessor):
         tracker: Any | None = None,
         speaker_settings: Any | None = None,
         audio_enhancer: Any | None = None,
+        target_audio_monitor: Any | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -355,7 +360,9 @@ class SpeakerAudioProcessor(FrameProcessor):
         if speaker_settings is not None and hasattr(vision_audio, "offer_telemetry"):
             from openjarvis.server.voice.speaker_console import SpeakerConsole
 
-            self._console = SpeakerConsole(self, speaker_settings, audio_enhancer)
+            self._console = SpeakerConsole(
+                self, speaker_settings, audio_enhancer, target_audio_monitor,
+            )
             vision_audio.console = self._console
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
@@ -629,9 +636,40 @@ class SpeakerAudioProcessor(FrameProcessor):
                 self.stt_masked_no_verdict += 1
                 return True
             return False
-        return self._masked_values[i] or self._verdict_values[i] in (
-            Verdict.REJECT,
-            None,
+        if self._masked_values[i]:
+            return True
+        verdict = self._verdict_values[i]
+        if verdict is None and self._onset_of_accept(i):
+            return False
+        return verdict in (Verdict.REJECT, None)
+
+    def _rows_after(self, i: int) -> list[int]:
+        """Up to ONSET_ROWS decided rows directly following row ``i``."""
+        rows = []
+        for j in range(i + 1, min(i + 1 + ONSET_ROWS, len(self._verdict_starts))):
+            if (
+                self._verdict_starts[j]
+                > self._verdict_starts[j - 1] + self._diarizer.frame_secs + 1e-6
+            ):
+                break
+            rows.append(j)
+        return rows
+
+    def _onset_of_accept(self, i: int) -> bool:
+        return any(
+            self._verdict_values[j] is Verdict.ACCEPT for j in self._rows_after(i)
+        )
+
+    def _onset_undecided(self, t: float) -> bool:
+        """A voiceless row may still turn out to be the onset of ACCEPTed
+        speech until the rows after it are decided."""
+        i = self._frame_at(t)
+        return (
+            i is not None
+            and self._verdict_values[i] is None
+            and not self._masked_values[i]
+            and not self._onset_of_accept(i)
+            and len(self._rows_after(i)) < ONSET_ROWS
         )
 
     def _mask_row(self, verdict: Verdict | None) -> bool:
@@ -754,6 +792,7 @@ class SpeakerAudioProcessor(FrameProcessor):
                 if arrived > cutoff and (
                     self._fusion is None
                     or not self._verdict_covers(arrived - duration, arrived)
+                    or self._onset_undecided(t)
                 ):
                     break
                 self._stt_line.popleft()

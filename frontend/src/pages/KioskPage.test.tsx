@@ -102,6 +102,17 @@ vi.mock('@/components/Kiosk/SharedBrowserPane', () => ({
 }));
 
 describe('KioskPage', () => {
+  it('places the remote camera toggle between the microphone and screen monitor', () => {
+    const markup = renderToStaticMarkup(<MemoryRouter><KioskPage /></MemoryRouter>);
+    const mic = markup.indexOf('data-testid="active-mic-btn"');
+    const camera = markup.indexOf('data-testid="remote-camera-button"');
+    const monitor = markup.indexOf('data-testid="screens-monitor-button"');
+    expect(mic).toBeGreaterThan(-1);
+    expect(camera).toBeGreaterThan(mic);
+    expect(monitor).toBeGreaterThan(camera);
+    expect(markup).toContain('aria-pressed="false"');
+  });
+
   it('renders consent actions in Vietnamese when uiLanguage is vi', () => {
     mockUiLanguage = 'vi';
     const markup = renderToStaticMarkup(

@@ -40,7 +40,7 @@ describe('VisualizerControls', () => {
     expect(markup).toContain('Pet Size');
     expect(markup).toContain('2.5x');
     expect(markup).toContain('min="1"');
-    expect(markup).toContain('max="4"');
+    expect(markup).toContain('max="10"');
     expect(markup).toContain('step="0.1"');
   });
 
@@ -86,7 +86,7 @@ describe('VisualizerControls', () => {
 
     // Setting rows in Visualizer & Display
     expect(markup).toContain('Display mode');
-    expect(markup).toContain('Compact');
+    expect(markup).toContain('Screen');
     expect(markup).toContain('3D Sphere');
     expect(markup).toContain('Theme');
     expect(markup).toContain('Size');

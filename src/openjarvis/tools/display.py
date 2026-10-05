@@ -1063,7 +1063,7 @@ class DisplayCartTool(_DisplayTool):
                 raise ValueError("checkout order type is invalid")
             if update_order_type and (
                 type(update_order_type) is not bool
-                or normalized_order_type != "take-out"
+                or normalized_order_type is None
                 or replacement_lines is not None
             ):
                 raise ValueError("checkout order type update is invalid")
@@ -1124,19 +1124,37 @@ class DisplayCartTool(_DisplayTool):
                 raise ValueError("cart revision already consumed")
             if not claim_turn_nonce(nonce):
                 raise ValueError("turn nonce is stale or consumed")
-            if update_order_type and snapshot["order_type"] != "take-out":
+            # The turn confirmed take-out (no table) or one table: apply it in
+            # the same lock that claims the revision, so no set_order_type or
+            # set_table round has to run first. The recipe still rechecks the
+            # table against a fresh read before any write.
+            updated_table = normalized_table or ""
+            if update_order_type and (
+                snapshot["order_type"] != normalized_order_type
+                or snapshot["table"] != updated_table
+            ):
+                table_name = (
+                    snapshot["table_name"] if snapshot["table"] == updated_table else ""
+                )
+                pickup_minutes = (
+                    snapshot["pickup_minutes"]
+                    if normalized_order_type == "take-out"
+                    else 0
+                )
                 self._revision_sequence += 1
                 revision = self._revision_sequence
                 self._cart_revisions[owner] = revision
-                self._order_types[owner] = "take-out"
-                self._tables[owner] = ""
-                self._table_names[owner] = ""
+                self._order_types[owner] = normalized_order_type
+                self._tables[owner] = updated_table
+                self._table_names[owner] = table_name
+                self._pickup_minutes[owner] = pickup_minutes
                 snapshot = {
                     **snapshot,
                     "revision": revision,
-                    "order_type": "take-out",
-                    "table": "",
-                    "table_name": "",
+                    "order_type": normalized_order_type,
+                    "table": updated_table,
+                    "table_name": table_name,
+                    "pickup_minutes": pickup_minutes,
                 }
                 if self._bus is not None:
                     self._publish(
@@ -1148,10 +1166,10 @@ class DisplayCartTool(_DisplayTool):
                             ],
                             "total": snapshot["total"],
                             "order_note": snapshot["order_note"],
-                            "order_type": "take-out",
-                            "table": "",
-                            "table_name": "",
-                            "pickup_minutes": snapshot["pickup_minutes"],
+                            "order_type": normalized_order_type,
+                            "table": updated_table,
+                            "table_name": table_name,
+                            "pickup_minutes": pickup_minutes,
                             "navigate": False,
                         }
                     )

@@ -1,13 +1,12 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 import { authHeaders, getBase } from '@/lib/api';
 
 /**
  * Send this device's camera to Vision in place of the kiosk's C920.
  *
- * Only a page opened with ``?camera=remote`` does this, and it starts at page
- * load -- not with the voice session -- so Vision's presence detection sees
- * this camera and the kiosk FSM starts a session for someone standing at it.
+ * The dock toggle starts this independently of voice; ``?camera=remote``
+ * remains an optional page-load opt-in so presence can start before voice.
  *
  * Transport is a WebRTC peer connection carrying one send-only video track:
  * the browser's own (hardware) encoder, congestion control and pacing, which
@@ -33,35 +32,59 @@ export function remoteCameraOfferUrl(
 }
 
 /** Non-trickle signalling: the offer is posted once with every candidate. */
-function iceGathered(pc: RTCPeerConnection): Promise<void> {
-  if (pc.iceGatheringState === 'complete') return Promise.resolve();
+function iceGathered(pc: RTCPeerConnection, signal: AbortSignal): Promise<void> {
+  if (pc.iceGatheringState === 'complete' || signal.aborted) return Promise.resolve();
   return new Promise((resolve) => {
     const done = () => {
+      clearTimeout(timeout);
       pc.removeEventListener('icegatheringstatechange', onChange);
+      signal.removeEventListener('abort', done);
       resolve();
     };
     const onChange = () => {
       if (pc.iceGatheringState === 'complete') done();
     };
+    const timeout = setTimeout(done, ICE_GATHER_TIMEOUT_MS);
     pc.addEventListener('icegatheringstatechange', onChange);
-    setTimeout(done, ICE_GATHER_TIMEOUT_MS);
+    signal.addEventListener('abort', done, { once: true });
   });
 }
 
-export function useRemoteCamera(): void {
+export function useRemoteCamera() {
+  const [enabled, setEnabled] = useState(() =>
+    typeof window !== 'undefined' && remoteCameraRequested(window.location.search));
+  const [active, setActive] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   useEffect(() => {
-    if (!remoteCameraRequested(window.location.search)) return;
-    if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === 'undefined') return;
+    setActive(false);
+    if (!enabled) return;
+    setError(null);
+    if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === 'undefined') {
+      setError('Camera sharing is unavailable in this browser.');
+      setEnabled(false);
+      return;
+    }
     let closed = false;
     let stream: MediaStream | null = null;
     let pc: RTCPeerConnection | null = null;
     let retry: ReturnType<typeof setTimeout> | null = null;
     let attempts = 0;
+    const abort = new AbortController();
+
+    const closePeer = () => {
+      const peer = pc;
+      pc = null;
+      if (peer) {
+        peer.onconnectionstatechange = null;
+        peer.close();
+      }
+    };
 
     const reconnect = () => {
       if (closed || retry) return;
-      pc?.close();
-      pc = null;
+      setActive(false);
+      closePeer();
       retry = setTimeout(() => {
         retry = null;
         void connect();
@@ -77,23 +100,33 @@ export function useRemoteCamera(): void {
         peer.addTransceiver(track, { direction: 'sendonly', streams: [stream] });
       }
       peer.onconnectionstatechange = () => {
-        if (peer.connectionState === 'connected') attempts = 0;
+        if (closed || peer !== pc) return;
+        if (peer.connectionState === 'connected') {
+          attempts = 0;
+          setActive(true);
+          setError(null);
+        }
         if (['failed', 'disconnected', 'closed'].includes(peer.connectionState)) reconnect();
       };
       try {
         await peer.setLocalDescription(await peer.createOffer());
-        await iceGathered(peer);
+        if (closed || peer !== pc) return;
+        await iceGathered(peer, abort.signal);
         const local = peer.localDescription;
-        if (!local || closed) return;
+        if (!local || closed || peer !== pc) return;
         const response = await fetch(remoteCameraOfferUrl(window.location, getBase()), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({ sdp: local.sdp, type: local.type }),
+          signal: abort.signal,
         });
         if (!response.ok) throw new Error(`remote camera offer refused: ${response.status}`);
-        await peer.setRemoteDescription(await response.json());
+        const answer = await response.json();
+        if (closed || peer !== pc) return;
+        await peer.setRemoteDescription(answer);
       } catch (error) {
-        console.error('Remote camera connection failed:', error);
+        if (closed || peer !== pc) return;
+        setError(error instanceof Error ? error.message : 'Camera connection failed.');
         reconnect();
       }
     };
@@ -109,15 +142,30 @@ export function useRemoteCamera(): void {
           return;
         }
         stream = media;
+        media.getVideoTracks().forEach((track) => {
+          track.onended = () => {
+            if (!closed) setEnabled(false);
+          };
+        });
         void connect();
       })
-      .catch((error) => console.error('Remote camera unavailable:', error));
+      .catch((error) => {
+        if (closed) return;
+        setError(error instanceof Error ? error.message : 'Camera unavailable.');
+        setEnabled(false);
+      });
 
     return () => {
       closed = true;
+      abort.abort();
       if (retry) clearTimeout(retry);
-      pc?.close();
-      stream?.getTracks().forEach((track) => track.stop());
+      closePeer();
+      stream?.getTracks().forEach((track) => {
+        track.onended = null;
+        track.stop();
+      });
     };
-  }, []);
+  }, [enabled]);
+
+  return { enabled, active: enabled && active, error, toggle: () => setEnabled((value) => !value) };
 }

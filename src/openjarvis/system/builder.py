@@ -262,6 +262,8 @@ class SystemBuilder:
             else None
         )
 
+        # Skills schedule their steps through it, so it exists before them.
+        workflow_engine = self._setup_workflow(config, bus)
         skill_manager = None
         skill_manage_tool = None
         skill_few_shot_examples: List[str] = []
@@ -286,6 +288,7 @@ class SystemBuilder:
                 skill_manager.discover(paths=skill_paths)
                 if tool_executor:
                     skill_manager.set_tool_executor(tool_executor)
+                skill_manager.set_workflow_engine(workflow_engine)
                 for tool in tool_list:
                     if tool.spec.name == "skill_manage" and hasattr(
                         tool, "bind_runtime"
@@ -328,7 +331,6 @@ class SystemBuilder:
         agent_name = self._agent_name or config.agent.default_agent
         container_runner = self._setup_sandbox(config)
         scheduler_store, task_scheduler = self._setup_scheduler(config, bus)
-        workflow_engine = self._setup_workflow(config, bus)
         session_store = self._setup_sessions(config)
 
         trace_store = None

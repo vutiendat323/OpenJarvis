@@ -25,6 +25,7 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.google.gemini_live.stt import GeminiSTTService
 
 from openjarvis.server.voice.stt_capture import capture_from_environment
+from openjarvis.server.voice.target_audio_monitor import LocalTargetAudioMonitor
 
 DEFAULT_LANGUAGE_CODES = ("vi-VN", "en-US")
 DEFAULT_TRANSCRIPTION_MODE = AudioTranscriptionConfigMode.VERBATIM
@@ -119,6 +120,7 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
         self._capture = capture_from_environment()
         self._heard_bytes = 0
         self._heard_peak = 0
+        self.target_audio_monitor = LocalTargetAudioMonitor()
         super().__init__(**kwargs)
 
     def enable_masked_feed(
@@ -152,6 +154,13 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
             self._capture = None
 
     async def run_stt(self, audio: bytes):
+        # This is the final (possibly masked/separated) PCM sent to Gemini.
+        # Playback only offers bytes; device work belongs to its own worker.
+        if self.target_audio_monitor.enabled:
+            try:
+                self.target_audio_monitor.offer(audio, self.sample_rate)
+            except Exception:
+                self.target_audio_monitor.fail("Monitor enqueue failed")
         # Per-utterance level of what Gemini is sent: a turn that comes back
         # with no transcript is then either silenced upstream (peak ~0) or
         # real speech Gemini dropped.
@@ -231,6 +240,7 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
     async def cleanup(self) -> None:
         if self._finalize_task is not None:
             self._finalize_task.cancel()
+        await asyncio.to_thread(self.target_audio_monitor.close)
         if self._capture is not None:
             self._capture.close()
             self._capture = None

@@ -975,6 +975,8 @@ async def test_fusion_releases_decided_audio_before_the_stt_deadline(
 ):
     processor, pushed = _fusion_processor(_fusion_gate(), stt_delay_secs=0.7)
     processor._remember_verdict(100.0, verdict, mask=masked)
+    processor._remember_verdict(100.08, None)
+    processor._remember_verdict(100.16, None)
     _unverdicted(processor, 100.08)
 
     # Now is 100.42: the row is decided after 340 ms, before its 700 ms cap.
@@ -1025,6 +1027,55 @@ async def test_fusion_does_not_release_a_frame_with_only_partial_verdict_coverag
     processor._remember_verdict(100.08, Verdict.ACCEPT)
     await processor._release_stt(99.9)
     assert [int(p[0]) for p in pushed] == [1000]
+
+
+@pytest.mark.anyio
+async def test_the_voiceless_onset_of_accepted_speech_reaches_gemini():
+    """Live 2026-10-05: Sortformer scores the first 80-160 ms of an utterance
+    below threshold, so the first syllable ("Thêm", "Trà") was silenced and
+    Gemini misheard the rest ("mang đi" -> "Mandy")."""
+    processor, pushed = _fusion_processor(_fusion_gate(), stt_delay_secs=0.7)
+    processor._remember_verdict(100.0, None)
+    processor._remember_verdict(100.08, None)
+    processor._remember_verdict(100.16, Verdict.ACCEPT)
+    _unverdicted(processor, 100.08)
+    _unverdicted(processor, 100.16, level=2000)
+    _unverdicted(processor, 100.24, level=3000)
+
+    await processor._release_stt(99.9)
+
+    assert [int(p[0]) for p in pushed] == [1000, 2000, 3000]
+
+
+@pytest.mark.anyio
+async def test_a_voiceless_row_waits_for_what_follows_before_it_is_silenced():
+    processor, pushed = _fusion_processor(_fusion_gate(), stt_delay_secs=0.7)
+    processor._remember_verdict(100.0, None)
+    _unverdicted(processor, 100.08)
+
+    await processor._release_stt(99.9)
+    assert pushed == []  # Could still be the onset of the customer's speech.
+
+    processor._remember_verdict(100.08, Verdict.ACCEPT)
+    await processor._release_stt(99.9)
+    assert [int(p[0]) for p in pushed] == [1000]
+
+
+@pytest.mark.anyio
+async def test_voiceless_sound_never_followed_by_accepted_speech_stays_silenced():
+    """A quiet phone video: no ACCEPT follows, so Gemini still hears nothing,
+    including at the deadline when the following rows never arrived."""
+    processor, pushed = _fusion_processor(_fusion_gate(), stt_delay_secs=0.7)
+    processor._remember_verdict(100.0, None)
+    processor._remember_verdict(100.08, None)
+    processor._remember_verdict(100.16, Verdict.REJECT)
+    processor._remember_verdict(100.24, None)
+    _unverdicted(processor, 100.08)
+    _unverdicted(processor, 100.32, level=2000)
+
+    await processor._release_stt(100.32)
+
+    assert [int(p[0]) for p in pushed] == [0, 0]
 
 
 @pytest.mark.anyio
