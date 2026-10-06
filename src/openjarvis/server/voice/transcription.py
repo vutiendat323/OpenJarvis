@@ -20,6 +20,7 @@ from pipecat.frames.frames import (
     InputAudioRawFrame,
     SystemFrame,
     TranscriptionFrame,
+    VADUserStartedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.google.gemini_live.stt import GeminiSTTService
@@ -32,6 +33,12 @@ DEFAULT_TRANSCRIPTION_MODE = AudioTranscriptionConfigMode.VERBATIM
 MAX_CUSTOM_VOCABULARY_TERMS = 1_000
 # Longest the final transcript waits for held-back overlap to be separated.
 DRAIN_TIMEOUT_SECS = 1.0
+# Silence held after the VAD stop (0.2 s) before Gemini closes the utterance.
+# Finalizing at every VAD stop cut one sentence at each breath (live
+# 2026-10-06: pauses inside a sentence p50 0.3 s, p90 1.0 s; between sentences
+# at least 1.19 s), and Gemini transcribed the pieces without context. A turn
+# still needs 1.5 s of silence, so this costs little turn latency.
+FINALIZE_HOLD_SECS = 0.6
 
 
 @dataclass(frozen=True)
@@ -107,6 +114,10 @@ class SttAudioFrame(SystemFrame):
     audio: bytes = b""
     sample_rate: int = 16_000
     num_channels: int = 1
+    # The speaker gate's verdict for this audio and why it was kept or
+    # silenced, for the opt-in STT capture.
+    verdict: str = ""
+    reason: str = ""
 
 
 class OpenJarvisGeminiSTTService(GeminiSTTService):
@@ -117,11 +128,16 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
         self._masked_delay = 0.0
         self._drain: Callable[[], Awaitable[None]] | None = None
         self._finalize_task: asyncio.Task | None = None
+        # True while the finalize task is still inside its silence hold.
+        self._finalize_held = False
         self._capture = capture_from_environment()
         self._heard_bytes = 0
         self._heard_peak = 0
         self.target_audio_monitor = LocalTargetAudioMonitor()
         super().__init__(**kwargs)
+        # The final transcript lands FINALIZE_HOLD_SECS later: the turn-stop
+        # safety timer downstream must wait that much longer.
+        self._ttfs_p99_latency = (self._ttfs_p99_latency or 0.0) + FINALIZE_HOLD_SECS
 
     def enable_masked_feed(
         self,
@@ -143,12 +159,12 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
         extra = delay_secs + (DRAIN_TIMEOUT_SECS if drain is not None else 0.0)
         self._ttfs_p99_latency = (self._ttfs_p99_latency or 0.0) + extra
 
-    def _record(self, name: str, audio: bytes, sample_rate: int) -> None:
+    def _record(self, name: str, audio: bytes, sample_rate: int, **meta: str) -> None:
         """Review recording must never be able to break a live session."""
         if self._capture is None:
             return
         try:
-            getattr(self._capture, name)(audio, sample_rate)
+            getattr(self._capture, name)(audio, sample_rate, **meta)
         except Exception:
             logger.exception(f"{self}: STT capture failed; recording stopped")
             self._capture = None
@@ -181,12 +197,20 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
         self._heard_peak = 0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            self._cancel_held_finalize()
         if isinstance(frame, InputAudioRawFrame):
             self._record("raw", frame.audio, frame.sample_rate)
             if not self._masked_delay:
                 self._record("heard", frame.audio, frame.sample_rate)
         elif isinstance(frame, SttAudioFrame):
-            self._record("heard", frame.audio, frame.sample_rate)
+            self._record(
+                "heard",
+                frame.audio,
+                frame.sample_rate,
+                verdict=frame.verdict,
+                reason=frame.reason,
+            )
         if self._masked_delay:
             if isinstance(frame, SttAudioFrame):
                 await self.process_audio_frame(
@@ -218,17 +242,31 @@ class OpenJarvisGeminiSTTService(GeminiSTTService):
         await super().push_frame(frame, direction)
 
     async def _send_finalization_signal(self):
-        if not self._masked_delay:
+        hold = FINALIZE_HOLD_SECS
+        if not hold and not self._masked_delay:
             self._log_heard()
             await super()._send_finalization_signal()
             return
-        # The utterance's last audio is still in the delay line: flush it first.
         if self._finalize_task is not None:
             self._finalize_task.cancel()
-        self._finalize_task = asyncio.create_task(self._finalize_after_delay())
+        self._finalize_held = hold > 0
+        self._finalize_task = asyncio.create_task(self._finalize_after_delay(hold))
 
-    async def _finalize_after_delay(self) -> None:
-        await asyncio.sleep(self._masked_delay + 0.05)
+    def _cancel_held_finalize(self) -> None:
+        """Speech resumed inside the hold: the utterance is still going."""
+        if self._finalize_task is not None and self._finalize_held:
+            self._finalize_task.cancel()
+            self._finalize_task = None
+            self._finalize_held = False
+
+    async def _finalize_after_delay(self, hold: float = 0.0) -> None:
+        if hold:
+            await asyncio.sleep(hold)
+        # Past the hold the utterance is over; new speech no longer cancels it.
+        self._finalize_held = False
+        if self._masked_delay:
+            # The utterance's last audio is still in the delay line: flush it.
+            await asyncio.sleep(self._masked_delay + 0.05)
         if self._drain is not None:
             try:
                 await asyncio.wait_for(self._drain(), DRAIN_TIMEOUT_SECS)

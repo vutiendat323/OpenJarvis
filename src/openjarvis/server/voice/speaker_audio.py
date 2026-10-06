@@ -601,7 +601,10 @@ class SpeakerAudioProcessor(FrameProcessor):
 
     def _frame_at(self, t: float) -> int | None:
         i = bisect.bisect_right(self._verdict_starts, t) - 1
-        if i >= 0 and t < self._verdict_starts[i] + self._diarizer.frame_secs:
+        # Rows of different chunks are stamped from different chunk ends, so a
+        # boundary carries float error: a time exactly on it must still match
+        # (same tolerance as _verdict_covers). A missing row is still a gap.
+        if i >= 0 and t < self._verdict_starts[i] + self._diarizer.frame_secs + 1e-6:
             return i
         return None
 
@@ -621,8 +624,13 @@ class SpeakerAudioProcessor(FrameProcessor):
         )
 
     def _silenced(self, t: float) -> bool:
-        """Rejected speech, sound the diarizer heard no voice in, or -- once a
-        customer is locked -- anything not confirmed as them.
+        return self._stt_decision(t)[1].startswith("silenced")
+
+    def _stt_decision(self, t: float) -> tuple[str, str]:
+        """(verdict, reason) for the mic audio at ``t``: why Gemini hears it or not.
+
+        Rejected speech, sound the diarizer heard no voice in, or -- once a
+        customer is locked -- anything not confirmed as them is silenced.
 
         The 2026-09-26 live test: a quiet phone video tripped the VAD but not
         Sortformer, and Gemini transcribed it into turns with no speaker
@@ -634,14 +642,19 @@ class SpeakerAudioProcessor(FrameProcessor):
         if i is None:
             if self._fusion is not None and self._fusion.locked:
                 self.stt_masked_no_verdict += 1
-                return True
-            return False
-        if self._masked_values[i]:
-            return True
+                return "unknown", "silenced_no_verdict_locked"
+            return "unknown", "kept"
         verdict = self._verdict_values[i]
-        if verdict is None and self._onset_of_accept(i):
-            return False
-        return verdict in (Verdict.REJECT, None)
+        name = verdict.value if verdict is not None else "None"
+        if self._masked_values[i]:
+            return name, "silenced_masked"
+        if verdict is None:
+            if self._onset_of_accept(i):
+                return name, "kept_onset"
+            return name, "silenced_no_voice"
+        if verdict is Verdict.REJECT:
+            return name, "silenced_reject"
+        return name, "kept"
 
     def _rows_after(self, i: int) -> list[int]:
         """Up to ONSET_ROWS decided rows directly following row ``i``."""
@@ -802,8 +815,14 @@ class SpeakerAudioProcessor(FrameProcessor):
                         await self._flush_held(separate=separate)
                     continue
                 await self._flush_held(separate=separate)
+                verdict, reason = self._stt_decision(t)
                 await self._push_stt(
-                    frame, bytes(len(frame.audio)) if self._silenced(t) else frame.audio
+                    frame,
+                    bytes(len(frame.audio))
+                    if reason.startswith("silenced")
+                    else frame.audio,
+                    verdict,
+                    reason,
                 )
             if not math.isfinite(cutoff):
                 await self._flush_held(separate=separate)
@@ -819,7 +838,13 @@ class SpeakerAudioProcessor(FrameProcessor):
     def _held_samples(self) -> int:
         return sum(frame.num_frames for _, frame in self._held)
 
-    async def _push_stt(self, frame: InputAudioRawFrame, audio: bytes) -> None:
+    async def _push_stt(
+        self,
+        frame: InputAudioRawFrame,
+        audio: bytes,
+        verdict: str = "",
+        reason: str = "",
+    ) -> None:
         if self._separator is not None:
             self._remember_context(np.frombuffer(audio, np.int16) / 32768.0)
         await self.push_frame(
@@ -827,6 +852,8 @@ class SpeakerAudioProcessor(FrameProcessor):
                 audio=audio,
                 sample_rate=frame.sample_rate,
                 num_channels=frame.num_channels,
+                verdict=verdict,
+                reason=reason,
             )
         )
 
@@ -842,9 +869,14 @@ class SpeakerAudioProcessor(FrameProcessor):
             audio = frame.audio if target is None else target[start:end].tobytes()
             # The separator saw the whole mix, but a REJECTed frame is the
             # other voice alone: TSE output of it still carried a video live.
-            if self._silenced(arrived - frame.num_frames / frame.sample_rate / 2):
+            verdict, reason = self._stt_decision(
+                arrived - frame.num_frames / frame.sample_rate / 2
+            )
+            if reason.startswith("silenced"):
                 audio = bytes(len(frame.audio))
-            await self._push_stt(frame, audio)
+            elif target is not None:
+                reason = "separated"
+            await self._push_stt(frame, audio, verdict, reason)
             start = end
 
     async def _separate(

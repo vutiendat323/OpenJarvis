@@ -47,6 +47,7 @@ from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
 )
 from pipecat.utils.asyncio.task_manager import TaskManager
 
+import openjarvis.server.voice.transcription as transcription
 from openjarvis.server.voice.gate import (
     DEFAULT_GEMINI_LIVE_MODEL,
     GEMINI_LIVE_MODEL_ENV,
@@ -57,6 +58,7 @@ from openjarvis.server.voice.pipeline import (
     VAD_STOP_SECS,
 )
 from openjarvis.server.voice.routes import _transcriber
+from openjarvis.server.voice.transcription import FINALIZE_HOLD_SECS
 
 
 class _SequencedTurnAnalyzer(BaseTurnAnalyzer):
@@ -196,7 +198,7 @@ def test_transcriber_waits_for_the_live_final_transcript(monkeypatch):
 
     metadata = _transcriber().service_metadata_frame()
 
-    assert metadata.ttfs_p99_latency == 1.6
+    assert metadata.ttfs_p99_latency == pytest.approx(1.6 + FINALIZE_HOLD_SECS)
     assert metadata.ttfs_p99_latency > 1.34
 
 
@@ -570,7 +572,9 @@ def test_masked_feed_extends_the_final_transcript_wait(monkeypatch):
     stt = _transcriber()
     stt.enable_masked_feed(0.5)
 
-    assert stt.service_metadata_frame().ttfs_p99_latency == pytest.approx(2.1)
+    assert stt.service_metadata_frame().ttfs_p99_latency == pytest.approx(
+        2.1 + FINALIZE_HOLD_SECS
+    )
 
 
 @pytest.mark.anyio
@@ -578,6 +582,7 @@ async def test_masked_feed_finalizes_after_the_delayed_audio(monkeypatch):
     import time
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(transcription, "FINALIZE_HOLD_SECS", 0.0)
     stt = _transcriber()
     stt.enable_masked_feed(0.05)
     calls = []
@@ -592,6 +597,62 @@ async def test_masked_feed_finalizes_after_the_delayed_audio(monkeypatch):
     assert calls == []
     await asyncio.sleep(0.15)
     assert calls and calls[0] - started >= 0.05
+
+
+def _finalize_spy(monkeypatch, hold):
+    """A transcriber whose Gemini finalize calls are recorded, with ``hold``."""
+    import openjarvis.server.voice.transcription as transcription
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(transcription, "FINALIZE_HOLD_SECS", hold)
+    calls = []
+
+    async def fake_finalize(self):
+        calls.append("finalized")
+
+    monkeypatch.setattr(GeminiSTTService, "_send_finalization_signal", fake_finalize)
+    return _transcriber(), calls
+
+
+@pytest.mark.anyio
+async def test_a_short_pause_inside_a_sentence_does_not_finalize_it(monkeypatch):
+    """Live 2026-10-06: finalizing at every 0.2 s VAD stop cut one sentence at
+    each breath, and Gemini transcribed the pieces without context ("đặc
+    trưng" -> "nước cốt | đặt chân"). Speech resuming inside the hold keeps
+    the utterance open."""
+    stt, calls = _finalize_spy(monkeypatch, hold=0.1)
+
+    await stt._send_finalization_signal()
+    await stt.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    await asyncio.sleep(0.2)
+
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_a_real_pause_finalizes_after_the_hold(monkeypatch):
+    stt, calls = _finalize_spy(monkeypatch, hold=0.1)
+
+    await stt._send_finalization_signal()
+    await asyncio.sleep(0.05)
+    assert calls == []
+    await asyncio.sleep(0.15)
+
+    assert calls == ["finalized"]
+
+
+@pytest.mark.anyio
+async def test_speech_after_the_hold_still_finalizes_the_delayed_audio(monkeypatch):
+    """Past the hold the utterance is over: its masked tail must still close."""
+    stt, calls = _finalize_spy(monkeypatch, hold=0.05)
+    stt.enable_masked_feed(0.1)
+
+    await stt._send_finalization_signal()
+    await asyncio.sleep(0.08)
+    await stt.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    await asyncio.sleep(0.2)
+
+    assert calls == ["finalized"]
 
 
 @pytest.mark.anyio
@@ -626,6 +687,7 @@ async def test_final_transcripts_are_logged(monkeypatch):
 async def test_finalization_waits_for_held_overlap_to_drain(monkeypatch):
     """Separated overlap must reach Gemini before the utterance is closed."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(transcription, "FINALIZE_HOLD_SECS", 0.0)
     stt = _transcriber()
     events = []
 

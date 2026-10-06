@@ -7,6 +7,9 @@ Set ``OPENJARVIS_STT_CAPTURE_DIR`` to record each voice session under it:
                  delay and separation; identical to ``raw.wav`` when unmasked)
 * ``transcripts.jsonl``  each final transcript with how many seconds of each
                  stream existed when it arrived, to find the audio to listen to
+* ``verdicts.jsonl``  the speaker gate's verdict and why that audio was kept or
+                 silenced, one line each time it changes, with the second of
+                 ``heard.wav`` where it starts
 
 The recordings are customers' voices: they stay on this machine, are readable
 only by the current user, and are never written unless the variable is set.
@@ -85,12 +88,13 @@ class SttCapture:
         self._dir.mkdir(parents=True, mode=0o700, exist_ok=True)
         self._dir.chmod(0o700)
         self._streams: dict[str, _WavStream] = {}
-        self._transcripts = os.fdopen(
-            os.open(
-                self._dir / "transcripts.jsonl",
-                os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                0o600,
-            ),
+        self._transcripts = self._open("transcripts.jsonl")
+        self._verdicts = self._open("verdicts.jsonl")
+        self._last_decision: tuple[str, str] | None = None
+
+    def _open(self, name: str):
+        return os.fdopen(
+            os.open(self._dir / name, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600),
             "a",
             encoding="utf-8",
         )
@@ -106,8 +110,25 @@ class SttCapture:
     def raw(self, audio: bytes, sample_rate: int) -> None:
         self._write("raw", audio, sample_rate)
 
-    def heard(self, audio: bytes, sample_rate: int) -> None:
+    def heard(
+        self, audio: bytes, sample_rate: int, *, verdict: str = "", reason: str = ""
+    ) -> None:
+        if verdict or reason:
+            self._decision(verdict, reason)
         self._write("heard", audio, sample_rate)
+
+    def _decision(self, verdict: str, reason: str) -> None:
+        if (verdict, reason) == self._last_decision:
+            return
+        self._last_decision = (verdict, reason)
+        stream = self._streams.get("heard")
+        line = {
+            "heard_s": round(stream.seconds if stream else 0.0, 3),
+            "verdict": verdict,
+            "reason": reason,
+        }
+        self._verdicts.write(json.dumps(line, ensure_ascii=False) + "\n")
+        self._verdicts.flush()
 
     def transcript(self, text: str) -> None:
         seconds = {
@@ -124,6 +145,7 @@ class SttCapture:
         for stream in self._streams.values():
             stream.close()
         self._transcripts.close()
+        self._verdicts.close()
 
 
 def capture_from_environment() -> SttCapture | None:

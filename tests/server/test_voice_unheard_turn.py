@@ -61,7 +61,10 @@ async def test_a_turn_with_words_is_left_to_be_answered():
 @pytest.mark.anyio
 async def test_finalization_logs_how_much_audio_gemini_heard(monkeypatch):
     """Tells a silenced (masked) utterance apart from one Gemini dropped."""
+    import openjarvis.server.voice.transcription as transcription
+
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(transcription, "FINALIZE_HOLD_SECS", 0.0)
     stt = _transcriber()
     logged = []
 

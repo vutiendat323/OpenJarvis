@@ -46,6 +46,23 @@ def test_capture_writes_readable_wavs_and_timestamped_transcripts(tmp_path):
     assert entry["heard_s"] == pytest.approx(0.5)
 
 
+def test_capture_records_why_each_stretch_of_audio_was_kept_or_silenced(tmp_path):
+    """verdicts.jsonl turns 'a word went missing' into 'this row, this verdict'."""
+    capture = SttCapture(tmp_path)
+    second = b"\x01\x00" * 16_000
+    capture.heard(second, 16_000, verdict="ACCEPT", reason="kept")
+    capture.heard(second, 16_000, verdict="ACCEPT", reason="kept")
+    capture.heard(second, 16_000, verdict="None", reason="silenced_no_voice")
+    capture.heard(second, 16_000)  # a caller that knows no verdict adds no line
+    capture.close()
+
+    lines = (_session(tmp_path) / "verdicts.jsonl").read_text().splitlines()
+    assert [json.loads(line) for line in lines] == [
+        {"heard_s": 0.0, "verdict": "ACCEPT", "reason": "kept"},
+        {"heard_s": 2.0, "verdict": "None", "reason": "silenced_no_voice"},
+    ]
+
+
 def test_capture_wav_is_readable_before_close(tmp_path):
     """A killed process (launcher restart) must not lose the recording."""
     capture = SttCapture(tmp_path)
@@ -108,6 +125,38 @@ async def test_service_records_what_the_mic_heard_and_what_gemini_heard(
     assert _read(session / "heard.wav")[2] == gated.audio
     entry = json.loads((session / "transcripts.jsonl").read_text())
     assert entry["text"] == "Wallet menu."
+
+
+@pytest.mark.anyio
+async def test_service_records_the_gate_decision_carried_by_the_audio(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv(CAPTURE_DIR_ENV, str(tmp_path))
+    stt = _transcriber()
+    stt.enable_masked_feed(0.5)
+
+    async def feed(frame, direction):
+        pass
+
+    monkeypatch.setattr(stt, "process_audio_frame", feed)
+    gated = SttAudioFrame(
+        audio=b"\x00\x00" * 160,
+        sample_rate=16000,
+        num_channels=1,
+        verdict="None",
+        reason="silenced_no_voice",
+    )
+
+    await stt.process_frame(gated, FrameDirection.DOWNSTREAM)
+    await stt.cleanup()
+
+    [line] = (_session(tmp_path) / "verdicts.jsonl").read_text().splitlines()
+    assert json.loads(line) == {
+        "heard_s": 0.0,
+        "verdict": "None",
+        "reason": "silenced_no_voice",
+    }
 
 
 @pytest.mark.anyio

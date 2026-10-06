@@ -1078,6 +1078,74 @@ async def test_voiceless_sound_never_followed_by_accepted_speech_stays_silenced(
     assert [int(p[0]) for p in pushed] == [0, 0]
 
 
+def _decisions(processor):
+    """(verdict, reason) carried by every SttAudioFrame the processor releases."""
+    sent = []
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        if isinstance(frame, SttAudioFrame):
+            sent.append((frame.verdict, frame.reason))
+
+    processor.push_frame = push
+    return sent
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("rows, expected", [
+    ([Verdict.ACCEPT], ("ACCEPT", "kept")),
+    ([Verdict.REJECT], ("REJECT", "silenced_reject")),
+    ([None], ("None", "silenced_no_voice")),
+    ([None, Verdict.ACCEPT], ("None", "kept_onset")),
+])
+async def test_released_audio_names_the_verdict_and_why_it_was_kept(rows, expected):
+    processor, _ = _fusion_processor(_fusion_gate(), stt_delay_secs=0.7)
+    sent = _decisions(processor)
+    for i, verdict in enumerate(rows):
+        processor._remember_verdict(100.0 + i * 0.08, verdict)
+    for i in range(len(rows), 3):
+        processor._remember_verdict(100.0 + i * 0.08, None)
+    _unverdicted(processor, 100.08)
+
+    await processor._release_stt(200.0)
+
+    assert sent == [expected]
+
+
+@pytest.mark.anyio
+async def test_audio_with_no_verdict_after_the_lock_says_so():
+    processor, _ = _fusion_processor(_fusion_gate(), stt_delay_secs=0.7)
+    sent = _decisions(processor)
+    _unverdicted(processor, 100.5)
+
+    await processor._release_stt(200.0)
+
+    assert sent == [("unknown", "silenced_no_verdict_locked")]
+    assert processor.stt_masked_no_verdict == 1
+
+
+def test_audio_centred_on_a_row_boundary_still_finds_its_verdict():
+    """Live 2026-10-06: mic frames ran 10 ms off the 80 ms row grid, so every
+    fourth frame's centre fell exactly on a row boundary. Float rounding of the
+    chunk timestamps left a ~1e-10 s gap there; after the lock one 20 ms frame
+    per chunk had "no verdict" and was silenced inside the customer's words."""
+    processor, _ = _fusion_processor(_fusion_gate(), stt_delay_secs=0.7)
+    origin = 1791275740.4137  # a real Unix-time sample clock origin
+    for chunk in range(50):
+        ended = origin + 3840 * 2 * (chunk + 1) / (16000 * 2)
+        for i in range(3):
+            row_end = ended - (2 - i) * 0.08
+            processor._remember_verdict(row_end - 0.08, Verdict.ACCEPT)
+
+    missing, samples = [], 160  # first frame is half length: frames run 10 ms off
+    while samples + 320 < 50 * 3840:
+        samples += 320
+        centre = origin + samples / 16000 - 0.01
+        if processor._frame_at(centre) is None:
+            missing.append(round(centre - origin, 3))
+
+    assert missing == []
+
+
 @pytest.mark.anyio
 async def test_after_the_lock_audio_without_a_verdict_is_silenced():
     processor, pushed = _fusion_processor(_fusion_gate())
