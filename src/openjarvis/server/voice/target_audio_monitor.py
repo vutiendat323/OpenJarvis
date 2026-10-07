@@ -17,7 +17,11 @@ from collections import deque
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
-BUFFER_SECS = 0.2
+PLAYBACK_GRACE_SECS = 0.2
+# TSE's model window is 8 s; it releases held audio in bursts, as does the
+# 240 ms diarizer. Queue capacity is audio duration, not permitted lateness.
+MAX_BUFFER_SECS = 8.0
+MAX_PENDING_FRAMES = 512
 WRITE_TIMEOUT_SECS = 0.2
 
 
@@ -113,16 +117,19 @@ class LocalTargetAudioMonitor:
                 self.fail("Audio rate changed during local playback")
                 return
             run.rate = sample_rate
-            limit = int(sample_rate * 2 * BUFFER_SECS)
+            limit = int(sample_rate * 2 * MAX_BUFFER_SECS)
             if len(audio) > limit:
                 self._dropped += 1
                 return
             while run.pending and (
-                run.queued_bytes + len(audio) > limit or len(run.pending) >= 32
+                run.queued_bytes + len(audio) > limit
+                or len(run.pending) >= MAX_PENDING_FRAMES
             ):
                 run.queued_bytes -= len(run.pending.popleft()[1])
                 self._dropped += 1
-            run.pending.append((time.monotonic(), audio))
+            # Waiting behind earlier PCM is normal playback time, not a stall.
+            play_at = time.monotonic() + run.queued_bytes / (sample_rate * 2)
+            run.pending.append((play_at, audio))
             run.queued_bytes += len(audio)
         finally:
             run.lock.release()
@@ -192,8 +199,8 @@ class LocalTargetAudioMonitor:
                 if packet is None:
                     run.stop.wait(0.01)
                     continue
-                offered_at, audio = packet
-                if time.monotonic() - offered_at > BUFFER_SECS:
+                play_at, audio = packet
+                if time.monotonic() - play_at > PLAYBACK_GRACE_SECS:
                     self._dropped += 1
                     continue
                 if run.process is None:
@@ -203,7 +210,7 @@ class LocalTargetAudioMonitor:
                     import fcntl
 
                     fcntl.fcntl(run.process.stdin, fcntl.F_SETPIPE_SZ, 4096)
-                if time.monotonic() - offered_at > BUFFER_SECS:
+                if time.monotonic() - play_at > PLAYBACK_GRACE_SECS:
                     self._dropped += 1
                     continue
                 view = memoryview(audio)

@@ -255,6 +255,7 @@ def test_workspace_batch_add_reads_once_and_mutates_the_cart_once() -> None:
     }
     assert "open_cart" in tool.spec.parameters["required"]
     assert result.success
+    assert result.metadata["customer_message"] == "Đã thêm vào giỏ."
     assert len(http.calls) == 1
     assert http.calls[0]["method"] == "GET"
     assert snapshot is not None
@@ -1418,5 +1419,3 @@ def test_menu_recipe_asserts_completeness_and_identity_before_display(
     assert len(http.calls) == 1
     assert result.success is False
     assert display.calls == []
-
-

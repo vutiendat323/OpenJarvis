@@ -10,6 +10,28 @@ from openjarvis.kiosk.evaluate import evaluate_state
 from openjarvis.kiosk.events import EventHistory
 
 
+def test_timeout_speaks_before_publishing_microphone_shutdown() -> None:
+    order = []
+    bus = EventBus()
+    bus.subscribe(EventType.KIOSK_STATE_CHANGED, lambda _: order.append("mic-off"))
+
+    async def speech(_):
+        await asyncio.sleep(0)
+        order.append("goodbye-finished")
+
+    state, effects = evaluate_state(
+        EventHistory(),
+        now=600,
+        current_state="active",
+        user_response=None,
+        session_start=0,
+        prompting_started_at=None,
+    )
+    assert state == "cleanup"
+    asyncio.run(run_side_effects(effects, KioskDependencies(bus=bus, tts=speech)))
+    assert order == ["goodbye-finished", "mic-off"]
+
+
 def test_publish_state_emits_kiosk_state_event() -> None:
     bus = EventBus(record_history=True)
 

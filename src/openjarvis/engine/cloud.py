@@ -58,6 +58,7 @@ PRICING: Dict[str, tuple[float, float]] = {
     "MiniMax-M2.5": (0.30, 1.20),
     "MiniMax-M2.5-highspeed": (0.60, 2.40),
     "deepseek-v4-flash": (0.27, 1.10),
+    "deepseek-flash": (0.30, 1.20),  # V4.1 Flash: peak, uncached estimate
     "deepseek-v4-pro": (0.55, 2.19),
 }
 
@@ -98,7 +99,7 @@ _MINIMAX_MODELS = [
 ]
 _DEEPSEEK_MODELS = [
     "deepseek-chat",
-    "deepseek-v4-flash",
+    "deepseek-flash",
     "deepseek-v4-pro",
 ]
 

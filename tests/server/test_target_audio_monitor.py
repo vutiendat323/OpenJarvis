@@ -93,6 +93,48 @@ def test_on_plays_the_exact_pcm_and_off_stops_the_player(monitor):
     assert output.read_bytes()[len(PCM) * 2 :] == b"\x78\x56" * 320
 
 
+@pytest.mark.parametrize("frames", [12, 200], ids=["diarizer", "tse"])
+def test_burst_audio_is_played_in_full_at_its_sample_rate(monitor, monkeypatch, frames):
+    from openjarvis.server.voice import target_audio_monitor as module
+
+    local, output, _, _ = monitor
+    ready = threading.Event()
+    play = local._play
+    clock = [100.0]
+    write = module.os.write
+
+    def paced_write(fd, audio):
+        written = write(fd, audio)
+        clock[0] += written / 32000
+        return written
+
+    def wait_for_burst(run):
+        assert ready.wait(3)
+        play(run)
+
+    # The device consumes PCM at 16 kHz even when the diarizer/TSE releases
+    # an entire chunk at once. Advance audio time without wall-clock sleeps.
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(
+        module,
+        "os",
+        SimpleNamespace(set_blocking=module.os.set_blocking, write=paced_write),
+    )
+    monkeypatch.setattr(local, "_play", wait_for_burst)
+    packets = [(i + 1).to_bytes(2, "little") * 320 for i in range(frames)]
+    local.set_enabled(True)
+    try:
+        for packet in packets:
+            local.offer(packet, 16000)
+        assert local.snapshot()["dropped_frames"] == 0
+    finally:
+        ready.set()
+    expected = b"".join(packets)
+    wait_for(lambda: output.exists() and output.stat().st_size == len(expected))
+    assert output.read_bytes() == expected
+    assert local.snapshot()["dropped_frames"] == 0
+
+
 def test_missing_device_disables_monitor_and_can_be_retried(monitor, monkeypatch):
     from openjarvis.server.voice import target_audio_monitor as module
 
@@ -136,7 +178,7 @@ def test_stalled_player_has_bounded_memory_and_teardown(monitor, monkeypatch):
     wait_for(lambda: bool(processes))
     for _ in range(1000):
         local.offer(PCM, 16000)
-        assert local.snapshot()["queued_ms"] <= 200
+        assert local.snapshot()["queued_ms"] <= 8000
     assert local.snapshot()["dropped_frames"] > 0
     local.set_enabled(False)
     assert processes[0].poll() is not None

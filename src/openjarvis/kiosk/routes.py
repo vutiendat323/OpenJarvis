@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from typing import Annotated, Any, Literal, Union
 
 from fastapi import APIRouter, HTTPException, Request
@@ -27,6 +28,58 @@ class EnsurePresentationRequest(BaseModel):
 
 class KioskLanguageRequest(BaseModel):
     language: str
+
+
+class KioskTransitionSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    approach_threshold_m: float = Field(ge=0.1, le=6)
+    approach_entry_debounce: float = Field(ge=0.1, le=10)
+    approach_sustain_seconds: float = Field(ge=0.1, le=30)
+    leave_sustain_seconds_prompting: float = Field(ge=0.1, le=60)
+    leave_sustain_seconds_active: float = Field(ge=0.1, le=120)
+    session_max_seconds: float = Field(ge=120, le=3600)
+    popup_timeout: float = Field(ge=1, le=120)
+    decline_cooldown_seconds: float = Field(ge=0, le=120)
+
+
+@router.get("/api/kiosk/settings")
+async def get_transition_settings():
+    from openjarvis.kiosk.evaluate import get_config
+    from openjarvis.kiosk.operator_config import transition_values
+
+    return transition_values(get_config())
+
+
+@router.put("/api/kiosk/settings")
+async def save_transition_settings(body: KioskTransitionSettings, request: Request):
+    from openjarvis.kiosk.evaluate import get_config, set_config
+    from openjarvis.kiosk.operator_config import save_kiosk_config, transition_values
+    from openjarvis.kiosk.runtime import current_state
+
+    voice_task = getattr(request.app.state, "pipecat_voice_task", None)
+    if current_state() == "active" or (
+        isinstance(voice_task, asyncio.Future) and not voice_task.done()
+    ):
+        raise HTTPException(status_code=409, detail="kiosk_session_active")
+    config = replace(
+        get_config(),
+        **body.model_dump(),
+        session_warning_seconds=body.session_max_seconds - 60,
+    )
+    try:
+        # A small local atomic write followed by the live update without yielding:
+        # no new session can start between the session check and these operations.
+        save_kiosk_config(config)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        logger.exception("Cannot save kiosk transition settings")
+        raise HTTPException(
+            status_code=500, detail="kiosk_settings_save_failed"
+        ) from exc
+    set_config(config)
+    return transition_values(config)
 
 
 class ResetPresentationRequest(BaseModel):

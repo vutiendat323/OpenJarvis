@@ -569,12 +569,17 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
             # natural path's own call is harmless.
             def finished(_t):
                 sessions.end_session(session.voice_session_id, reason="task_done")
+                if getattr(request.app.state, "pipecat_voice_task", None) is _t:
+                    request.app.state.pipecat_voice_lifecycle = None
                 if vision_audio is not None:
                     asyncio.create_task(vision_audio.close())
 
             task.add_done_callback(finished)
             request.app.state.pipecat_voice_generation = generation
             request.app.state.pipecat_voice_task = task
+            request.app.state.pipecat_voice_lifecycle = getattr(
+                worker, "kiosk_lifecycle", None
+            )
         except BaseException:
             if vision_audio is not None:
                 await vision_audio.close()

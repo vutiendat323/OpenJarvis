@@ -18,6 +18,7 @@ releases the lease and saves the conversation.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Callable
 
@@ -28,6 +29,7 @@ from pipecat.frames.frames import (
     EndFrame,
     EndWorkerFrame,
     Frame,
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     TTSSpeakFrame,
@@ -36,7 +38,12 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-GREETING = "Mình bắt đầu gọi món nhé."
+logger = logging.getLogger(__name__)
+
+GREETING = (
+    "Chào bạn, mình sẵn sàng hỗ trợ gọi món. "
+    "Bạn muốn xem menu hay chọn món yêu thích trước ạ?"
+)
 IDLE_PROMPT = "Bạn muốn đặt món hay xem menu ạ?"
 WARNING = "Phiên gọi món còn một phút nữa ạ."
 GOODBYE = "Cảm ơn bạn đã ghé quán, hẹn gặp lại nhé!"
@@ -66,6 +73,8 @@ class VoiceSessionLifecycle(FrameProcessor):
         self._responding = False
         self._nudged = False
         self._ending = False
+        self._warned = False
+        self._started = False
         self._pending: list[str] = []
         self._idle: asyncio.Task | None = None
         self._timers: list[asyncio.Task] = []
@@ -74,6 +83,9 @@ class VoiceSessionLifecycle(FrameProcessor):
 
     async def start_session(self) -> None:
         """The kiosk accepted a customer and the voice session is connected."""
+        if self._started:
+            return
+        self._started = True
         await self._speak(GREETING)
         self._timers = [
             asyncio.create_task(self._after(self._warning_after, self._warn)),
@@ -103,6 +115,15 @@ class VoiceSessionLifecycle(FrameProcessor):
             self._cancel_idle()
         elif isinstance(frame, LLMFullResponseEndFrame):
             self._responding = False
+            await self.push_frame(frame, direction)
+            await self._flush()
+            self._arm_idle()
+            return
+        elif isinstance(frame, InterruptionFrame):
+            # Cancelled Agent responses deliberately have no response-end frame.
+            self._responding = False
+            self._bot_speaking = False
+            self._arm_idle()
         elif isinstance(frame, (EndFrame, CancelFrame)):
             self.stop_timers()
         await self.push_frame(frame, direction)
@@ -110,7 +131,8 @@ class VoiceSessionLifecycle(FrameProcessor):
     def stop_timers(self) -> None:
         self._cancel_idle()
         for task in self._timers:
-            task.cancel()
+            if task is not asyncio.current_task():
+                task.cancel()
         self._timers = []
 
     # -- timers ---------------------------------------------------------------
@@ -132,12 +154,21 @@ class VoiceSessionLifecycle(FrameProcessor):
         await action()
 
     async def _nudge(self) -> None:
-        if self._ending or self._bot_speaking or self._user_speaking:
+        if (
+            self._ending
+            or self._bot_speaking
+            or self._user_speaking
+            or self._responding
+        ):
             return
         self._nudged = True
         await self._speak(IDLE_PROMPT)
 
     async def _warn(self) -> None:
+        if self._warned or self._ending:
+            return
+        self._warned = True
+        logger.info("Kiosk voice: warning boundary reached")
         self._pending.append(WARNING)
         await self._flush()
 
@@ -172,10 +203,21 @@ class VoiceSessionLifecycle(FrameProcessor):
         if self._ending:
             return
         self._ending = True
+        logger.info("Kiosk voice: end boundary reached; queuing goodbye")
         self._pending.clear()
         self.stop_timers()
         await self._speak(GOODBYE)
         await self.push_frame(EndWorkerFrame(), FrameDirection.UPSTREAM)
+
+    async def request_warning(self) -> None:
+        await self._warn()
+
+    async def end_session(self) -> None:
+        await self._end()
+
+    async def cleanup(self) -> None:
+        self.stop_timers()
+        await super().cleanup()
 
 
 __all__ = [

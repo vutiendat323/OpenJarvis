@@ -770,8 +770,8 @@ def test_display_cart_can_save_an_add_without_leaving_the_current_screen():
         True,
         True,
     ]
-    assert stay.metadata["continue_agent"] is False
-    assert buy.metadata["continue_agent"] is False
+    assert stay.metadata["continue_agent"] is True
+    assert buy.metadata["continue_agent"] is True
     assert recorder.events[0].data["lines"][0]["quantity"] == 1
     assert snapshot["lines"][0]["quantity"] == 3
     assert json.loads(stay.content)["shown"] == "cart_badge"
@@ -856,6 +856,7 @@ def test_standalone_cart_edit_finishes_with_verified_summary_only_after_success(
             },
             finish_turn=True,
             open_cart=False,
+            customer_message="Your own cart confirmation.",
         )
         failed = tool.execute(
             action="update", line_id="missing", quantity=3, finish_turn=True
@@ -863,9 +864,76 @@ def test_standalone_cart_edit_finishes_with_verified_summary_only_after_success(
 
     assert result.success
     assert result.metadata["continue_agent"] is False
-    assert "102.000đ" in result.metadata["customer_message"]
+    assert result.metadata["customer_message"] == "Your own cart confirmation."
+    assert json.loads(result.content)["cart"]["total"] == 102_000
     assert not failed.success
     assert "customer_message" not in failed.metadata
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Bạn muốn thêm món khác hay chọn cách dùng ạ?",
+        "Would you like another drink before checkout?",
+    ],
+)
+def test_cart_emits_the_agents_own_message_without_templates(message):
+    tool, _ = _wired(DisplayCartTool)
+    with conversation_scope("agent-cart-speech"):
+        result = tool.execute(
+            action="add",
+            item={
+                "variant_id": "coffee",
+                "name": "Cà phê",
+                "unit_price": 55_000,
+                "quantity": 1,
+            },
+            customer_message=message,
+        )
+    assert result.success
+    assert result.metadata["customer_message"] == message
+    assert result.metadata["continue_agent"] is False
+    assert json.loads(result.content)["cart"]["total"] == 55_000
+
+
+def test_cart_without_agent_speech_returns_verified_data_for_a_final_reply():
+    tool, _ = _wired(DisplayCartTool)
+    with conversation_scope("cart-no-canned-speech"):
+        result = tool.execute(action="view")
+    assert result.success
+    assert result.metadata["continue_agent"] is True
+    assert "customer_message" not in result.metadata
+
+
+@pytest.mark.parametrize("message", [" ", 123, False])
+def test_invalid_agent_cart_speech_is_rejected_before_mutation(message):
+    tool, recorder = _wired(DisplayCartTool)
+    with conversation_scope("invalid-agent-cart-speech"):
+        result = tool.execute(action="clear", customer_message=message)
+        snapshot = tool.current_snapshot()
+    assert not result.success
+    assert "customer_message" not in result.metadata
+    assert not recorder.events
+    assert snapshot["revision"] == 0
+
+
+def test_compound_cart_update_does_not_speak_mid_checkout():
+    tool, _ = _wired(DisplayCartTool)
+    with conversation_scope("compound-cart-next-step"):
+        result = tool.execute(
+            action="add",
+            item={
+                "variant_id": "coffee",
+                "name": "Cà phê",
+                "unit_price": 60_000,
+                "quantity": 1,
+            },
+            finish_turn=False,
+            customer_message="Agent composed this for a completed turn.",
+        )
+    assert result.success
+    assert result.metadata["continue_agent"] is True
+    assert "customer_message" not in result.metadata
 
 
 def test_checkout_claim_rejects_stale_revision_replay_and_concurrent_edit():

@@ -129,42 +129,25 @@ def _setup_kiosk(app: FastAPI, bus, channel_bridge) -> None:
     import asyncio
     import os
 
-    from openjarvis.kiosk.config import KioskConfig
     from openjarvis.kiosk.effects import KioskDependencies
-    from openjarvis.kiosk.operator_config import load_approach_threshold
+    from openjarvis.kiosk.operator_config import load_kiosk_config
     from openjarvis.kiosk.routes import router as kiosk_router
     from openjarvis.kiosk.runtime import kiosk_main
     from openjarvis.kiosk.vision_client import VisionClient
 
-    config = KioskConfig(
-        approach_threshold_m=load_approach_threshold(),
-        approach_entry_debounce=float(
-            os.environ.get("KIOSK_APPROACH_ENTRY_DEBOUNCE", "0.4")
-        ),
-        approach_sustain_seconds=float(
-            os.environ.get("KIOSK_APPROACH_SUSTAIN_SECONDS", "2.0")
-        ),
-        leave_sustain_seconds_prompting=float(
-            os.environ.get("KIOSK_LEAVE_SUSTAIN_PROMPTING", "5.0")
-        ),
-        leave_sustain_seconds_active=float(
-            os.environ.get("KIOSK_LEAVE_SUSTAIN_ACTIVE", "10.0")
-        ),
-        session_max_seconds=float(os.environ.get("KIOSK_SESSION_MINUTES", "10")) * 60,
-        session_warning_seconds=float(os.environ.get("KIOSK_SESSION_MINUTES", "10"))
-        * 60
-        - 60,
-        popup_timeout=float(os.environ.get("KIOSK_POPUP_TIMEOUT", "30")),
-    )
+    config = load_kiosk_config()
 
     vision_url = os.environ.get("KIOSK_VISION_URL", "ws://127.0.0.1:9876")
 
-    # The kiosk only watches vision and gates the microphone; everything
-    # spoken goes through the Pipecat voice pipeline, so it needs no TTS of
-    # its own.
+    from openjarvis.server.voice.pipeline import speak_kiosk_boundary
+
+    async def voice_boundary(kind: str) -> None:
+        await speak_kiosk_boundary(app.state, kind)
+
     deps = KioskDependencies(
         bus=bus,
         presentation=app.state.presentation_session_manager,
+        voice_boundary=voice_boundary,
     )
 
     # Launch vision client

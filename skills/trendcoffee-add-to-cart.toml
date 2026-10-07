@@ -52,6 +52,7 @@ arguments_template = '''
   "action":"add",
   "open_cart":"{open_cart}",
   "finish_turn":"{finish_turn}",
+  "customer_message":"{customer_message}",
   "items":{
     "$map":"{items}",
     "as":"request",

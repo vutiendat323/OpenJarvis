@@ -31,6 +31,7 @@ _CLOUD_API_KEY_NAMES = (
     "GOOGLE_API_KEY",
     "OPENROUTER_API_KEY",
     "MINIMAX_API_KEY",
+    "DEEPSEEK_API_KEY",
 )
 
 _OPENAI_PREFIXES = ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")
@@ -76,6 +77,7 @@ def get_cloud_key_status() -> dict[str, bool]:
         ),
         "OPENROUTER_API_KEY": bool(keys.get("OPENROUTER_API_KEY")),
         "MINIMAX_API_KEY": bool(keys.get("MINIMAX_API_KEY")),
+        "DEEPSEEK_API_KEY": bool(keys.get("DEEPSEEK_API_KEY")),
     }
 
 
@@ -89,6 +91,8 @@ def get_provider(model: str) -> str | None:
         return "google"
     if any(model.startswith(p) for p in _MINIMAX_PREFIXES):
         return "minimax"
+    if model in ("deepseek-flash", "deepseek-chat", "deepseek-v4-flash", "deepseek-v4-pro"):
+        return "deepseek"
     if any(model.startswith(org) for org in _LOCAL_HF_ORGS):
         return None  # local model, never route to cloud
     if "/" in model:  # openrouter format: "meta-llama/llama-3-8b"
@@ -413,6 +417,17 @@ async def stream_cloud(
             max_tokens,
             base_url="https://openrouter.ai/api/v1",
             api_key_name="OPENROUTER_API_KEY",
+        ):
+            yield token
+
+    elif provider == "deepseek":
+        async for token in _stream_openai(
+            model,
+            messages,
+            temperature,
+            max_tokens,
+            base_url="https://api.deepseek.com/v1",
+            api_key_name="DEEPSEEK_API_KEY",
         ):
             yield token
 

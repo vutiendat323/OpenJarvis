@@ -535,8 +535,9 @@ class DisplayCartTool(_DisplayTool):
                 "(line_id alone edits a single line). Save the whole-order "
                 "note, at-table/take-out choice, a verified table selection, and "
                 "a take-out pickup time separately. Adding does not place "
-                "an order or start payment. A view is fresh state for the agent to "
-                "act on, so it never ends the agent turn by itself. Resolve item "
+                "an order or start payment. Supply your own customer_message "
+                "for standalone operations; without one, return verified state "
+                "for the agent to write its reply. Resolve item "
                 "facts from fresh menu evidence; do not invent them."
             ),
             parameters={
@@ -602,6 +603,16 @@ class DisplayCartTool(_DisplayTool):
                             "Finish after a standalone verified cart update. "
                             "Defaults to true for standalone edits and views; "
                             "pass false when more work follows in this turn."
+                        ),
+                    },
+                    "customer_message": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "Your own brief customer-facing confirmation and next "
+                            "question, based on the conversation and verified cart "
+                            "state. Spoken only after a successful standalone "
+                            "operation. Do not predict a changed total."
                         ),
                     },
                     "lines": {
@@ -687,6 +698,15 @@ class DisplayCartTool(_DisplayTool):
             return ToolResult(
                 tool_name=self.spec.name,
                 content="invalid_finish_turn",
+                success=False,
+            )
+        customer_message = params.get("customer_message")
+        if customer_message is not None and (
+            not isinstance(customer_message, str) or not customer_message.strip()
+        ):
+            return ToolResult(
+                tool_name=self.spec.name,
+                content="invalid_customer_message",
                 success=False,
             )
 
@@ -979,25 +999,11 @@ class DisplayCartTool(_DisplayTool):
                 "pickup_minutes": pickup_minutes,
             }
             metadata["cart_revision"] = revision
-            metadata["continue_agent"] = not (display and finish_turn)
-            if display and finish_turn:
-                if action == "clear" or not lines:
-                    message = "Giỏ hàng đang trống."
-                elif action == "view":
-                    message = "Giỏ hàng đã hiển thị."
-                elif action == "set_order_type":
-                    message = (
-                        "Đã chọn mang về."
-                        if order_type == "take-out"
-                        else "Đã chọn dùng tại bàn."
-                    )
-                elif action == "set_table":
-                    message = f"Đã chọn bàn {table_name}."
-                else:
-                    message = "Đã cập nhật giỏ hàng."
-                if lines:
-                    message += f" Tổng hiện tại {total:,}đ.".replace(",", ".")
-                metadata["customer_message"] = message
+            metadata["continue_agent"] = not (
+                display and finish_turn and customer_message
+            )
+            if display and finish_turn and customer_message:
+                metadata["customer_message"] = customer_message.strip()
             return ToolResult(
                 tool_name=self.spec.name,
                 content=json.dumps(

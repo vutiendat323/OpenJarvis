@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from openjarvis.kiosk.config import KioskConfig
+from openjarvis.kiosk.config import PRESENCE_HISTORY_SECONDS, KioskConfig
 from openjarvis.kiosk.effects import SideEffect
 from openjarvis.kiosk.events import EventHistory
 
@@ -193,7 +193,7 @@ def _in_zone(event) -> bool:
 
 def _consecutive_absent_duration(history: EventHistory, now: float) -> float:
     """How long has the customer been away (no face and no body in the zone)?"""
-    events = history.events_in_window(60.0, now)
+    events = history.events_in_window(PRESENCE_HISTORY_SECONDS, now)
     if not events:
         return 0.0
     # Walk backward: find the most recent "present" event
@@ -226,8 +226,8 @@ def _evaluate_active(
             return (
                 "cleanup",
                 [
-                    _publish_state("cleanup"),
                     SideEffect("tts_goodbye"),
+                    _publish_state("cleanup"),
                 ],
             )
 
@@ -244,8 +244,8 @@ def _evaluate_active(
             return (
                 "cleanup",
                 [
-                    _publish_state("cleanup"),
                     SideEffect("tts_goodbye"),
+                    _publish_state("cleanup"),
                 ],
             )
 

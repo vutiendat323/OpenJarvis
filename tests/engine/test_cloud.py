@@ -974,6 +974,7 @@ class TestCloudEngineDeepSeek:
     """PR #504: DeepSeek as a first-class cloud provider (OpenAI-compatible)."""
 
     def test_is_deepseek_model_predicate(self) -> None:
+        assert _is_deepseek_model("deepseek-flash") is True
         assert _is_deepseek_model("deepseek-v4-flash") is True
         assert _is_deepseek_model("deepseek-v4-pro") is True
         assert _is_deepseek_model("DeepSeek-V4-Pro") is True  # case-insensitive
@@ -985,6 +986,9 @@ class TestCloudEngineDeepSeek:
         assert _is_openai_model("deepseek-v4-pro") is False
 
     def test_pricing_entries_present(self) -> None:
+        assert estimate_cost("deepseek-flash", 1_000_000, 1_000_000) == (
+            pytest.approx(1.50)
+        )
         assert estimate_cost("deepseek-v4-flash", 1_000_000, 1_000_000) == (
             pytest.approx(1.37)  # 0.27 + 1.10
         )
@@ -1024,12 +1028,13 @@ class TestCloudEngineDeepSeek:
         assert engine.health() is True
         models = engine.list_models()
         assert "deepseek-chat" in models
-        assert "deepseek-v4-flash" in models
+        assert "deepseek-flash" in models
         assert "deepseek-v4-pro" in models
         # can_serve must agree with list_models (regression for the missing
         # _client_for_model deepseek branch flagged by the #504 verifier).
         assert engine.can_serve("deepseek-v4-pro") is True
         assert engine.can_serve("deepseek-v4-flash") is True
+        assert engine.can_serve("deepseek-flash") is True
 
     def test_generate_routes_to_deepseek_client(
         self, monkeypatch: pytest.MonkeyPatch

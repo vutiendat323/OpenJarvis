@@ -33,6 +33,23 @@ afterEach(() => {
 });
 
 describe('setModels', () => {
+  it('clears a missing local DeepSeek selection', async () => {
+    const { useAppStore } = await import('./store');
+    useAppStore.getState().setSelectedModel('deepseek-r1:7b');
+    useAppStore.getState().setModels([model('other-model')]);
+    expect(useAppStore.getState().selectedModel).toBe('other-model');
+  });
+  it.each(['deepseek-v4-flash', 'deepseek|deepseek-v4-flash'])(
+    'migrates saved %s to V4.1 Flash and retains it during model discovery',
+    async (saved) => {
+      localStorage.setItem('openjarvis-selected-model', saved);
+      const { useAppStore } = await import('./store');
+      expect(useAppStore.getState().selectedModel).toBe('deepseek-flash');
+      expect(localStorage.getItem('openjarvis-selected-model')).toBe('deepseek-flash');
+      useAppStore.getState().setModels([model('other-model')]);
+      expect(useAppStore.getState().selectedModel).toBe('deepseek-flash');
+    },
+  );
   it('migrates a saved direct OpenAI Luna selection to GPT-6', async () => {
     localStorage.setItem('openjarvis-selected-model', 'gpt-5.6-luna');
     const { useAppStore } = await import('./store');

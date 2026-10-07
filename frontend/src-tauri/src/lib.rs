@@ -1950,6 +1950,7 @@ const MANAGED_CLOUD_KEY_NAMES: &[&str] = &[
     "GOOGLE_API_KEY",
     "OPENROUTER_API_KEY",
     "MINIMAX_API_KEY",
+    "DEEPSEEK_API_KEY",
     "TAVILY_API_KEY",
 ];
 

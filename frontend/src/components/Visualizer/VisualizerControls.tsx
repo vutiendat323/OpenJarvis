@@ -1,8 +1,11 @@
+import { Section, SettingRow } from '@/components/Settings/SettingsFields';
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AudioLines, Settings, X } from 'lucide-react';
 import { VOICE_UI_TEXT } from '@/hooks/voiceUiText';
 import type { UiLanguage } from '@/hooks/useUiLanguage';
 import type { VisualizerSettings, VisualizerStyle, VisualizerTheme, VoiceStatus } from './types';
+import { KioskTransitionSettings } from './KioskTransitionSettings';
 
 function ScreenIcon({ size = 13, className }: { size?: number; className?: string }) {
   return (
@@ -35,81 +38,6 @@ const displayOptions: { value: VisualizerStyle; label: string; icon: React.Compo
 ];
 
 // ── Card & Row Components (matching SettingsPage card template) ─────────────
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div
-      className="rounded-xl p-3.5 sm:p-4 flex flex-col"
-      style={{
-        background: 'var(--color-surface)',
-        border: '1px solid var(--color-border)',
-      }}
-    >
-      <h3 className="text-xs sm:text-sm font-semibold mb-1" style={{ color: 'var(--color-text)' }}>
-        {title}
-      </h3>
-      <div className="flex flex-col">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function SettingRow({
-  label,
-  description,
-  children,
-  last = false,
-  vertical = false,
-}: {
-  label: string;
-  description?: React.ReactNode;
-  children: React.ReactNode;
-  last?: boolean;
-  vertical?: boolean;
-}) {
-  if (vertical) {
-    return (
-      <div
-        className="py-2.5 flex flex-col gap-2"
-        style={{ borderBottom: last ? 'none' : '1px solid var(--color-border-subtle)' }}
-      >
-        <div>
-          <div className="text-xs sm:text-sm font-medium leading-snug" style={{ color: 'var(--color-text)' }}>
-            {label}
-          </div>
-          {description && (
-            <div className="text-[11px] mt-0.5 leading-normal" style={{ color: 'var(--color-text-tertiary)' }}>
-              {description}
-            </div>
-          )}
-        </div>
-        <div>{children}</div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="flex items-center justify-between py-2.5 gap-3"
-      style={{ borderBottom: last ? 'none' : '1px solid var(--color-border-subtle)' }}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="text-xs sm:text-sm font-medium leading-snug" style={{ color: 'var(--color-text)' }}>
-          {label}
-        </div>
-        {description && (
-          <div className="text-[11px] mt-0.5 leading-normal" style={{ color: 'var(--color-text-tertiary)' }}>
-            {description}
-          </div>
-        )}
-      </div>
-      <div className="shrink-0 flex items-center">
-        {children}
-      </div>
-    </div>
-  );
-}
 
 function SettingToggle({
   checked,
@@ -189,9 +117,9 @@ export function VisualizerControls({
     );
   }
 
-  return (
+  const panel = (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 dark:bg-black/60 backdrop-blur-sm"
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 dark:bg-black/60 backdrop-blur-sm"
       onClick={(e) => {
         if (e.target === e.currentTarget) setCollapsed(true);
       }}
@@ -233,8 +161,8 @@ export function VisualizerControls({
         </div>
 
       {/* Card 1: Language */}
-      <Section title="Language">
-        <SettingRow
+      <Section compact title="Language">
+        <SettingRow compact
           label="Language"
           description={VOICE_UI_TEXT[uiLanguage].languageHelper}
           last
@@ -259,8 +187,8 @@ export function VisualizerControls({
       </Section>
 
       {/* Card 2: Visualizer & Display */}
-      <Section title="Visualizer & Display">
-        <SettingRow
+      <Section compact title="Visualizer & Display">
+        <SettingRow compact
           label="Display mode"
           description={
             settings.style === '3d'
@@ -290,7 +218,7 @@ export function VisualizerControls({
           </div>
         </SettingRow>
 
-        <SettingRow
+        <SettingRow compact
           label="Theme"
           description={THEMES.find((t) => t.key === settings.theme)?.label ?? 'Theme'}
         >
@@ -315,7 +243,7 @@ export function VisualizerControls({
           </div>
         </SettingRow>
 
-        <SettingRow label="Size" description={`${Math.round(settings.size)}px`}>
+        <SettingRow compact label="Size" description={`${Math.round(settings.size)}px`}>
           <input
             type="range"
             min={70}
@@ -328,7 +256,7 @@ export function VisualizerControls({
           />
         </SettingRow>
 
-        <SettingRow label="Gain" description={`${settings.gain.toFixed(1)}x`}>
+        <SettingRow compact label="Gain" description={`${settings.gain.toFixed(1)}x`}>
           <input
             type="range"
             min={0.2}
@@ -341,7 +269,7 @@ export function VisualizerControls({
           />
         </SettingRow>
 
-        <SettingRow label="Speed" description={`${settings.speed.toFixed(1)}x`}>
+        <SettingRow compact label="Speed" description={`${settings.speed.toFixed(1)}x`}>
           <input
             type="range"
             min={0.1}
@@ -354,7 +282,7 @@ export function VisualizerControls({
           />
         </SettingRow>
 
-        <SettingRow label="Glow" description={`${Math.round(settings.glow)}px`} last>
+        <SettingRow compact label="Glow" description={`${Math.round(settings.glow)}px`} last>
           <input
             type="range"
             min={0}
@@ -368,9 +296,13 @@ export function VisualizerControls({
         </SettingRow>
       </Section>
 
+      <Section compact title={uiLanguage === 'vi' ? 'Chuyển trạng thái' : 'State transitions'}>
+        <KioskTransitionSettings uiLanguage={uiLanguage} />
+      </Section>
+
       {/* Card 3: Mascot & Captions */}
-      <Section title="Mascot & Captions">
-        <SettingRow
+      <Section compact title="Mascot & Captions">
+        <SettingRow compact
           label="Show Captions"
           description="Display live speech transcription"
         >
@@ -381,7 +313,7 @@ export function VisualizerControls({
           />
         </SettingRow>
 
-        <SettingRow
+        <SettingRow compact
           label="Show Mascot"
           description="Floating Codex Pet companion on kiosk"
         >
@@ -392,7 +324,7 @@ export function VisualizerControls({
           />
         </SettingRow>
 
-        <SettingRow
+        <SettingRow compact
           label="Pet Size"
           description={`${settings.petScale.toFixed(1)}x`}
           last
@@ -412,4 +344,5 @@ export function VisualizerControls({
       </div>
     </div>
   );
+  return typeof document === 'undefined' ? panel : createPortal(panel, document.body);
 }

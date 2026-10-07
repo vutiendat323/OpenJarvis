@@ -1,3 +1,4 @@
+import { Section, SettingInput, SettingRow } from '@/components/Settings/SettingsFields';
 import { useState, useEffect, useCallback } from 'react';
 import {
   Palette,
@@ -141,15 +142,13 @@ function ApiKeyInput({
 
   return (
     <div className="flex items-center gap-2">
-      <input
+      <SettingInput
         type="password"
         value={value}
         onChange={e => setValue(e.target.value)}
         onBlur={() => { if (value.trim()) void save(value); }}
         placeholder={hasKey ? (desktopKeyStorage ? 'Saved in secure storage' : 'Saved by local server') : placeholder}
-        disabled={!canManage}
-        className="w-48 px-2 py-1 rounded text-xs"
-        style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)', color: 'var(--color-text)' }} />
+        disabled={!canManage} />
       {hasKey && (
         <button
           onClick={() => void remove()}
@@ -196,34 +195,6 @@ function CloudProviderStatus({ label, keyName }: { label: string; keyName: strin
       }} />
       {label}
     </span>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div
-      className="rounded-xl p-5"
-      style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
-    >
-      <h3 className="text-sm font-semibold mb-4" style={{ color: 'var(--color-text)' }}>
-        {title}
-      </h3>
-      {children}
-    </div>
-  );
-}
-
-function SettingRow({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center justify-between py-3" style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-      <div>
-        <div className="text-sm" style={{ color: 'var(--color-text)' }}>{label}</div>
-        {description && (
-          <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>{description}</div>
-        )}
-      </div>
-      <div>{children}</div>
-    </div>
   );
 }
 

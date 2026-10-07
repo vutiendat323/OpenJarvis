@@ -7,7 +7,7 @@ import logging
 import time
 from dataclasses import dataclass
 
-from openjarvis.kiosk.config import KioskConfig
+from openjarvis.kiosk.config import PRESENCE_HISTORY_SECONDS, KioskConfig
 from openjarvis.kiosk.effects import KioskDependencies, run_side_effects
 from openjarvis.kiosk.evaluate import KioskState, UserResponse, evaluate_state
 from openjarvis.kiosk.events import EventHistory
@@ -56,7 +56,7 @@ async def kiosk_main(
         set_config(config)
 
     runtime = KioskRuntime(
-        history=EventHistory(max_age_seconds=60.0),
+        history=EventHistory(max_age_seconds=PRESENCE_HISTORY_SECONDS),
         current_state="idle",
         session_start=None,
         prompting_started_at=None,

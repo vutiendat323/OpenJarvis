@@ -645,6 +645,7 @@ class TestOrchestratorAgent:
         assert result.content == "Đơn đã được tạo và QR đã hiển thị."
 
     def test_standalone_cart_edit_finishes_after_verified_update(self) -> None:
+        agent_message = "Hai ly đã vào giỏ. Bạn dùng tại quán hay mang đi?"
         cart = DisplayCartTool()
         cart._bus = EventBus()
         engine = MagicMock()
@@ -668,6 +669,7 @@ class TestOrchestratorAgent:
                             },
                             "open_cart": False,
                             "finish_turn": True,
+                            "customer_message": agent_message,
                         }
                     ),
                 }
@@ -681,7 +683,7 @@ class TestOrchestratorAgent:
 
         assert engine.generate.call_count == 1
         assert result.turns == 1
-        assert result.content == "Đã cập nhật giỏ hàng. Tổng hiện tại 102.000đ."
+        assert result.content == agent_message
         assert result.tool_results[0].success
 
     def test_cart_mutation_with_preamble_continues_to_compound_checkout(

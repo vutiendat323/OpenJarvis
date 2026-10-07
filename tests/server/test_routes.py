@@ -1178,6 +1178,7 @@ class TestModelsEndpoint:
         configured = {
             "OPENAI_API_KEY": "sk-secret-value",
             "GEMINI_API_KEY": "google-secret-value",
+            "DEEPSEEK_API_KEY": "deepseek-secret-value",
         }
         with patch(
             "openjarvis.server.cloud_router._load_keys",
@@ -1192,6 +1193,7 @@ class TestModelsEndpoint:
             "GEMINI_API_KEY": True,
             "OPENROUTER_API_KEY": False,
             "MINIMAX_API_KEY": False,
+            "DEEPSEEK_API_KEY": True,
         }
         assert "sk-secret-value" not in resp.text
         assert "google-secret-value" not in resp.text

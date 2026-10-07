@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+PRESENCE_HISTORY_SECONDS = 180.0
+
 
 @dataclass
 class KioskConfig:

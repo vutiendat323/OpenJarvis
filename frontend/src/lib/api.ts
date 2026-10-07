@@ -224,7 +224,8 @@ export async function deleteModel(modelName: string): Promise<void> {
 const _CLOUD_PREFIXES = ['gpt-', 'o1-', 'o3-', 'o4-', 'claude-', 'gemini-', 'openrouter/'];
 
 export function isCloudModel(modelName: string): boolean {
-  return _CLOUD_PREFIXES.some(p => modelName.startsWith(p));
+  return ['deepseek-flash', 'deepseek-chat', 'deepseek-v4-flash', 'deepseek-v4-pro']
+    .includes(modelName) || _CLOUD_PREFIXES.some(p => modelName.startsWith(p));
 }
 
 export async function preloadModel(modelName: string, owner?: string): Promise<void> {

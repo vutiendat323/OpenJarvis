@@ -39,13 +39,18 @@ const SELECTED_MODEL_KEY = 'openjarvis-selected-model';
 
 function loadSelectedModel(): string {
   const selected = localStorage.getItem(SELECTED_MODEL_KEY) || '';
-  if (selected !== 'gpt-5.6-luna') return selected;
+  const upgraded = selected === 'gpt-5.6-luna'
+    ? 'gpt-6-luna'
+    : ['deepseek-v4-flash', 'deepseek|deepseek-v4-flash'].includes(selected)
+      ? 'deepseek-flash'
+      : selected;
+  if (upgraded === selected) return selected;
   try {
-    localStorage.setItem(SELECTED_MODEL_KEY, 'gpt-6-luna');
+    localStorage.setItem(SELECTED_MODEL_KEY, upgraded);
   } catch {
     // Keep the upgraded selection usable even if storage is read-only.
   }
-  return 'gpt-6-luna';
+  return upgraded;
 }
 const OPTIN_KEY = 'openjarvis-optin';
 const OPTIN_NAME_KEY = 'openjarvis-display-name';

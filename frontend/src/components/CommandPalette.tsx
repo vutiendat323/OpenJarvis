@@ -31,10 +31,21 @@ const CATALOGUE_MODELS = [
 interface CloudProvider {
   name: string;
   envKey: string;
-  models: Array<{ id: string; desc: string }>;
+  models: Array<{ id: string; name?: string; desc: string }>;
 }
 
 export const CLOUD_PROVIDERS: CloudProvider[] = [
+  {
+    name: 'DeepSeek',
+    envKey: 'DEEPSEEK_API_KEY',
+    models: [
+      {
+        id: 'deepseek-flash',
+        name: 'DeepSeek V4.1 Flash',
+        desc: 'DeepSeek V4.1 Flash: ultra cost-efficient, extremely cheap caching, ideal for high-volume workloads.',
+      },
+    ],
+  },
   {
     name: 'OpenAI',
     envKey: 'OPENAI_API_KEY',
@@ -530,7 +541,7 @@ export function CommandPalette() {
                               <Cloud size={12} style={{ color: isActive ? 'var(--color-accent)' : 'var(--color-text-tertiary)' }} />
                               <div className="flex-1 min-w-0">
                                 <div className="text-xs truncate" style={{ color: isActive ? 'var(--color-accent)' : 'var(--color-text)', fontWeight: isActive ? 500 : 400 }}>
-                                  {model.id}
+                                  {model.name ?? model.id}
                                 </div>
                                 <div className="text-[10px] truncate" style={{ color: 'var(--color-text-tertiary)' }}>
                                   {model.desc}

@@ -53,6 +53,7 @@ class KioskDependencies:
     bus: Any | None = None  # has .publish(event_type, data)
     tts: Callable[[str], Awaitable[None]] | None = None  # async text-to-speech
     presentation: Any | None = None  # has .publish(payload)
+    voice_boundary: Callable[[str], Awaitable[None]] | None = None
 
 
 # -- Runner -----------------------------------------------------------
@@ -74,6 +75,9 @@ async def run_side_effects(
 
             elif fx.kind == "load_initial_display" and deps.presentation is not None:
                 deps.presentation.load_initial_display()
+
+            elif fx.kind in _TTS_MAP and deps.voice_boundary is not None:
+                await deps.voice_boundary(fx.kind)
 
             elif fx.kind in _TTS_MAP and deps.tts is not None:
                 text = fx.data.get("text", _TTS_MAP[fx.kind])

@@ -191,7 +191,22 @@ separator = "tse"
 # they look away, and nobody else's speech reaches STT, opens a turn or
 # barges in. Thresholds are starting values, tuned from live-trial logs.
 identity = "fusion"
+anchor_max_m = 1.5
+mouth_active = 0.5
+voice_match = 0.85
+voice_reject = 0.45
+bot_match = 0.7
 
 [tools.mcp]
 enabled = true
 servers = '''[{"name": "playwright", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.79", "--browser", "chromium", "--user-data-dir", ".openjarvis/ordering-kiosk/browser-profile", "--sandbox", "--caps=testing", "--snapshot-mode", "none"], "presentation_only": true}]'''
+
+[kiosk]
+approach_threshold_m = 1.0
+approach_entry_debounce = 0.4
+approach_sustain_seconds = 2.0
+leave_sustain_seconds_prompting = 5.0
+leave_sustain_seconds_active = 10.0
+session_max_seconds = 600.0
+popup_timeout = 30.0
+decline_cooldown_seconds = 10.0

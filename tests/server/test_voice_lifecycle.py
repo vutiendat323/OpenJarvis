@@ -17,6 +17,7 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     EndWorkerFrame,
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     TTSSpeakFrame,
@@ -89,7 +90,15 @@ async def test_accept_greets_with_hard_tts(harness):
 
     await proc.start_session()
 
-    assert _spoken(pushed) == [lc.GREETING] == ["Mình bắt đầu gọi món nhé."]
+    assert (
+        _spoken(pushed)
+        == [lc.GREETING]
+        == [
+            "Chào bạn, mình sẵn sàng hỗ trợ gọi món. "
+            "Bạn muốn xem menu hay chọn món yêu thích trước ạ?"
+        ]
+    )
+    assert 15 <= len(lc.GREETING.split()) <= 20
     assert pushed[0][1] is FrameDirection.DOWNSTREAM
 
 
@@ -157,6 +166,55 @@ async def test_warning_waits_for_active_speech_and_never_interrupts(harness):
     assert lc.WARNING not in _spoken(pushed)  # customer talking: still queued
 
     await proc.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    assert _spoken(pushed).count(lc.WARNING) == 1
+
+
+@pytest.mark.anyio
+async def test_interrupted_response_does_not_hold_warning_forever(harness):
+    proc, pushed, _ = harness
+    await proc.start_session()
+    await proc.process_frame(LLMFullResponseStartFrame(), FrameDirection.DOWNSTREAM)
+    await proc.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await proc._warn()
+    assert lc.WARNING not in _spoken(pushed)
+    await proc.process_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
+    await proc.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    assert _spoken(pushed).count(lc.WARNING) == 1
+
+
+@pytest.mark.anyio
+async def test_limit_timer_can_yield_while_sending_goodbye(harness, monkeypatch):
+    proc, pushed, _ = harness
+
+    async def yielding_push(frame, direction=FrameDirection.DOWNSTREAM):
+        await asyncio.sleep(0)
+        pushed.append((frame, direction))
+
+    monkeypatch.setattr(proc, "push_frame", yielding_push)
+    timer = asyncio.create_task(proc._after(0, proc._end))
+    proc._timers = [timer]
+    results = await asyncio.gather(timer, return_exceptions=True)
+    assert results == [None]
+    assert _spoken(pushed) == [lc.GOODBYE]
+    assert len(_ended(pushed)) == 1
+
+
+@pytest.mark.anyio
+async def test_empty_agent_response_rearms_idle_nudge(harness):
+    proc, pushed, _ = harness
+    await proc.start_session()
+    await proc.process_frame(LLMFullResponseStartFrame(), FrameDirection.DOWNSTREAM)
+    await proc.process_frame(LLMFullResponseEndFrame(), FrameDirection.DOWNSTREAM)
+    await asyncio.sleep(IDLE + 0.05)
+    assert _spoken(pushed).count(lc.IDLE_PROMPT) == 1
+
+
+@pytest.mark.anyio
+async def test_fsm_warning_and_voice_timer_speak_once(harness):
+    proc, pushed, _ = harness
+    await proc.start_session()
+    await proc.request_warning()
+    await asyncio.sleep(WARN + 0.05)
     assert _spoken(pushed).count(lc.WARNING) == 1
 
 
@@ -255,12 +313,22 @@ async def test_other_frames_pass_through_unchanged(harness):
     assert pushed == [(frame, FrameDirection.DOWNSTREAM)]
 
 
-def test_pipeline_puts_the_lifecycle_between_the_agent_and_tts():
+def test_pipeline_puts_the_lifecycle_between_the_agent_and_tts(monkeypatch):
     from unittest.mock import MagicMock
 
+    from openjarvis.kiosk.config import KioskConfig
     from openjarvis.server.voice.llm import OpenJarvisLLMService
     from openjarvis.server.voice.pipeline import build_voice_pipeline
     from openjarvis.server.voice.tts import VieNeuTTSService
+
+    monkeypatch.setattr(
+        "openjarvis.kiosk.evaluate.get_config",
+        lambda: KioskConfig(
+            session_max_seconds=180,
+            session_warning_seconds=120,
+            leave_sustain_seconds_active=4,
+        ),
+    )
 
     stt = FrameProcessor()
     build_voice_pipeline(
@@ -273,6 +341,9 @@ def test_pipeline_puts_the_lifecycle_between_the_agent_and_tts():
     kinds = [type(n) for n in chain]
     i = kinds.index(VoiceSessionLifecycle)
     assert kinds[i - 1] is OpenJarvisLLMService and kinds[i + 1] is VieNeuTTSService
+    assert chain[i]._limit == 180
+    assert chain[i]._warning_after == 120
+    assert chain[i]._absence_secs == 4
 
 
 def test_kiosk_runtime_reports_customer_presence_from_vision():

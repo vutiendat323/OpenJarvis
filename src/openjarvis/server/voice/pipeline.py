@@ -2,7 +2,36 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+async def speak_kiosk_boundary(
+    state: Any, kind: str, *, grace_secs: float = 30
+) -> None:
+    """Route FSM cues to the current voice, keeping WebRTC open through goodbye."""
+    lifecycle = getattr(state, "pipecat_voice_lifecycle", None)
+    task = getattr(state, "pipecat_voice_task", None)
+    if lifecycle is None or not isinstance(task, asyncio.Future) or task.done():
+        return
+    if kind == "tts_warning":
+        await lifecycle.request_warning()
+    elif kind == "tts_goodbye":
+        await lifecycle.end_session()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=grace_secs)
+        except asyncio.TimeoutError:
+            logger.warning("Kiosk voice: goodbye did not finish within shutdown grace")
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        except asyncio.CancelledError:
+            # A departed peer can cancel its voice task without cancelling the FSM.
+            if asyncio.current_task().cancelling():
+                raise
+
 
 # What VieNeu renders. The pipeline is told the same rate, and the output
 # transport resamples from there if the peer negotiated something else.
@@ -260,7 +289,15 @@ def build_voice_pipeline(
     # Greeting, idle nudge, time limit and absence goodbye: fixed event -> TTS,
     # never through the Agent. The session starts once the client connects,
     # which only happens after the kiosk FSM accepted a customer.
-    lifecycle = VoiceSessionLifecycle(presence=customer_present)
+    from openjarvis.kiosk.evaluate import get_config
+
+    kiosk_config = get_config()
+    lifecycle = VoiceSessionLifecycle(
+        presence=customer_present,
+        warning_after_secs=kiosk_config.session_warning_seconds,
+        limit_secs=kiosk_config.session_max_seconds,
+        absence_secs=kiosk_config.leave_sustain_seconds_active,
+    )
 
     @transport.event_handler("on_client_connected")
     async def _start_lifecycle(_transport: Any, _client: Any) -> None:
@@ -289,4 +326,5 @@ def build_voice_pipeline(
             audio_out_sample_rate=VIENEU_SAMPLE_RATE_HZ,
         ),
     )
+    worker.kiosk_lifecycle = lifecycle
     return worker, context

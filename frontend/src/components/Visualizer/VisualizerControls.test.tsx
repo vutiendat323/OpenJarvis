@@ -79,6 +79,7 @@ describe('VisualizerControls', () => {
     expect(markup).toContain('Language');
     expect(markup).toContain('Visualizer &amp; Display');
     expect(markup).toContain('Mascot &amp; Captions');
+    expect(markup).toContain('Chuyển trạng thái');
 
     // Setting rows in Language
     expect(markup).not.toContain('Voice status');

@@ -193,31 +193,36 @@ def test_kiosk_mcp_prompt_uses_prepared_reads_and_verified_cart() -> None:
     ):
         assert name in folded
     assert "runtime_context.displayed_menu" in folded
-    assert "do not also call `skill_trendcoffee-add-to-cart`" in folded
+    assert "never also call the add skill" in folded
     assert "display_menu(item_indices=[...])" in folded
-    assert "do not call a menu skill or any http tool for this refinement" in folded
-    assert "even without the words “trong danh sách này”" in folded
-    assert "for a new topic, ingredient or category" in folded
-    assert "more than one item" in folded
-    assert "single isolated item" in folded
-    assert "treat its `visible_items` as the active screen" in folded
-    assert "shortest ingredient or product noun" in folded
-    assert "minprice=maxprice" in folded
-    assert "never put prices or currency words in `itemterms`" in folded
-    assert "leave `categoryterms` empty unless the customer explicitly asks" in folded
+    assert "do not fetch the menu again" in folded
+    assert "even without “trong danh sách”" in folded
+    assert "once for a new ingredient, product, category, price query" in folded
+    assert "multiple rows are shown" in folded
+    assert "empty or single-item screen requires a fresh search" in folded
+    assert (
+        "the active screen is `runtime_context.customer_screen_search.visible_items`"
+        in folded
+    )
+    assert "use short ingredient or product nouns" in folded
+    assert "exact price sets both bounds equally" in folded
+    assert "put amounts only in `minprice`/`maxprice`, never in terms" in folded
+    assert "use `categoryterms` only for category requests" in folded
     assert "runtime_context.customer_screen_search.visible_items" in folded
-    assert "one atomic cart publication" in folded
+    assert "atomic resolution must match every name uniquely" in folded
     assert "line_id" in folded
     assert "cart_revision" in folded
     assert "turn_nonce" in folded
     assert "update_order_type=true" in folded
-    assert "call checkout in this same turn" in folded
-    assert "if an item is missing or ambiguous, stop and ask before checkout" in folded
+    assert "then checkout that exact resulting revision" in folded
+    assert "missing/ambiguous names must stop before checkout" in folded
     assert "pending" in folded
-    assert "does not mean the bank received money" in folded
+    assert "never paid" in folded
     assert "status" in folded and "available" in folded
-    assert "never navigate to `trendcoffee.net`" in folded
-    assert "do not list/load learned skills or probe endpoints" in folded
+    assert (
+        "do not probe http endpoints, load learned skills, inspect web assets "
+        "or browse `trendcoffee.net`"
+    ) in folded
     assert "browser_network_requests" not in folded
     assert "browser_navigate" not in folded
     assert "http_request(" not in folded
