@@ -1,12 +1,17 @@
+// @vitest-environment jsdom
+
+import { cleanup, fireEvent, render } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { KioskState } from '@/hooks/useKioskState';
 
 import { KioskPage, computeEdgeGlowShadow } from './KioskPage';
 import type { LocalVoiceStatus } from '@/hooks/voiceStatus';
 
 const storageMap = new Map<string, string>();
 let mockUiLanguage = 'vi';
+let mockKioskState: KioskState = 'prompting';
 
 let mockVoiceState = {
   enabled: true,
@@ -34,6 +39,8 @@ const mockLifecycle = {
 
 
 beforeEach(() => {
+  mockKioskState = 'prompting';
+  mockUiLanguage = 'vi';
   storageMap.clear();
   globalThis.localStorage = {
     getItem: (k: string) => storageMap.get(k) ?? null,
@@ -62,8 +69,10 @@ beforeEach(() => {
   mockLifecycle.endVoiceThenReset.mockClear();
 });
 
+afterEach(cleanup);
+
 vi.mock('@/hooks/useKioskState', () => ({
-  useKioskState: () => ({ state: 'prompting', micEnabled: false, respond: vi.fn() }),
+  useKioskState: () => ({ state: mockKioskState, micEnabled: mockKioskState === 'active', respond: vi.fn() }),
 }));
 vi.mock('@/hooks/usePipecatVoiceMode', () => ({
   usePipecatVoiceMode: () => mockVoiceState,
@@ -85,7 +94,7 @@ vi.mock('@/lib/store', () => ({
 }));
 vi.mock('@/lib/kioskPresentation', () => ({
   createKioskPresentationLifecycle: () => mockLifecycle,
-  ensurePresentationSession: vi.fn(),
+  ensurePresentationSession: vi.fn().mockResolvedValue('display-123'),
   shouldEnsurePresentationSession: vi.fn(() => false),
 }));
 vi.mock('@/components/Visualizer/AudioVisualizer', () => ({
@@ -102,6 +111,51 @@ vi.mock('@/components/Kiosk/SharedBrowserPane', () => ({
 }));
 
 describe('KioskPage', () => {
+  it.each(['idle', 'approaching', 'prompting', 'cleanup'] as const)(
+    'keeps the shared screen hidden and the robot full width in %s',
+    (state) => {
+      mockKioskState = state;
+      const { getByTestId, getByLabelText, queryByTestId } = render(
+        <MemoryRouter><KioskPage /></MemoryRouter>,
+      );
+
+      expect(getByTestId('customer-display-pane-container').hidden).toBe(true);
+      expect(getByLabelText('Voice assistant').style.width).toBe('');
+      expect(queryByTestId('kiosk-pane-resizer')).toBeNull();
+      expect(getByTestId('screens-monitor-button').getAttribute('aria-pressed')).toBe('false');
+      expect(getByTestId('active-mic-btn').hasAttribute('disabled')).toBe(true);
+      fireEvent.click(getByTestId('active-mic-btn'));
+      expect(mockVoiceState.start).not.toHaveBeenCalled();
+      fireEvent.click(getByTestId('screens-monitor-button'));
+      expect(getByTestId('customer-display-pane-container').hidden).toBe(true);
+    },
+  );
+
+  it.each(['split', 'floating'])(
+    'shows the menu after acceptance and resets screen visibility for the next guest in %s mode',
+    (mode) => {
+      localStorage.setItem('openjarvis_kiosk_browser_mode', mode);
+      const view = <MemoryRouter><KioskPage /></MemoryRouter>;
+      const { getByTestId, rerender } = render(view);
+      const screenId = mode === 'split' ? 'customer-display-pane-container' : 'floating-browser-container';
+
+      expect(getByTestId(screenId).hidden).toBe(true);
+      mockKioskState = 'active';
+      rerender(<MemoryRouter><KioskPage /></MemoryRouter>);
+      expect(getByTestId(screenId).hidden).toBe(false);
+      expect(getByTestId('active-mic-btn').hasAttribute('disabled')).toBe(false);
+      fireEvent.click(getByTestId('screens-monitor-button'));
+      expect(getByTestId(screenId).hidden).toBe(true);
+
+      mockKioskState = 'cleanup';
+      rerender(<MemoryRouter><KioskPage /></MemoryRouter>);
+      expect(getByTestId(screenId).hidden).toBe(true);
+      mockKioskState = 'active';
+      rerender(<MemoryRouter><KioskPage /></MemoryRouter>);
+      expect(getByTestId(screenId).hidden).toBe(false);
+    },
+  );
+
   it('places the remote camera toggle between the microphone and screen monitor', () => {
     const markup = renderToStaticMarkup(<MemoryRouter><KioskPage /></MemoryRouter>);
     const mic = markup.indexOf('data-testid="active-mic-btn"');
@@ -122,10 +176,10 @@ describe('KioskPage', () => {
     );
 
     expect(markup).toContain('data-testid="kiosk-prompting-overlay"');
-    expect(markup).toContain('Sẵn sàng trò chuyện?');
-    expect(markup).toContain('Bắt đầu trò chuyện');
+    expect(markup).toContain('Sẵn sàng gọi món chưa?');
+    expect(markup).toContain('Bắt đầu gọi món');
     expect(markup).toContain('Không phải bây giờ');
-    expect(markup).toContain('Cho phép trợ lý bật microphone để nhận yêu cầu của bạn.');
+    expect(markup).toContain('trợ lý bán hàng');
     expect(markup).not.toContain('Ready to chat?');
     expect(markup).not.toContain('Start chatting');
   });
@@ -139,12 +193,12 @@ describe('KioskPage', () => {
     );
 
     expect(markup).toContain('data-testid="kiosk-prompting-overlay"');
-    expect(markup).toContain('Ready to chat?');
-    expect(markup).toContain('Start chatting');
+    expect(markup).toContain('Ready to order?');
+    expect(markup).toContain('Start ordering');
     expect(markup).toContain('Not now');
-    expect(markup).toContain('Allow the assistant to enable the microphone to hear your requests.');
-    expect(markup).not.toContain('Sẵn sàng trò chuyện?');
-    expect(markup).not.toContain('Bắt đầu trò chuyện');
+    expect(markup).toContain('ordering assistant');
+    expect(markup).not.toContain('Sẵn sàng gọi món chưa?');
+    expect(markup).not.toContain('Bắt đầu gọi món');
   });
 
   it('hides the consent prompt while a voice session is active', () => {
@@ -158,8 +212,8 @@ describe('KioskPage', () => {
     );
 
     expect(markup).not.toContain('data-testid="kiosk-prompting-overlay"');
-    expect(markup).not.toContain('Sẵn sàng trò chuyện?');
-    expect(markup).not.toContain('Bắt đầu trò chuyện');
+    expect(markup).not.toContain('Sẵn sàng gọi món chưa?');
+    expect(markup).not.toContain('Bắt đầu gọi món');
   });
 
   it('shows live transcription when the microphone starts a session before kiosk policy is active', () => {
@@ -243,6 +297,7 @@ describe('KioskPage', () => {
   });
 
   it('renders 7:3 split layout with fullscreen customer display on the left and seamless voice assistant on the right', () => {
+    mockKioskState = 'active';
     const markup = renderToStaticMarkup(<MemoryRouter><KioskPage /></MemoryRouter>);
     expect(markup).toContain('data-testid="customer-display-pane-container"');
     expect(markup).toContain('width:70%');

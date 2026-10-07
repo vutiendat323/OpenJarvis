@@ -2,11 +2,12 @@ import type { UiLanguage } from '@/hooks/useUiLanguage';
 
 interface ScreensMonitorButtonProps {
   visible: boolean;
+  disabled?: boolean;
   language: UiLanguage;
   onToggle: () => void;
 }
 
-export function ScreensMonitorButton({ visible, language, onToggle }: ScreensMonitorButtonProps) {
+export function ScreensMonitorButton({ visible, disabled = false, language, onToggle }: ScreensMonitorButtonProps) {
   const action = language === 'vi'
     ? `${visible ? 'Ẩn' : 'Hiện'} màn hình chia sẻ`
     : `${visible ? 'Hide' : 'Show'} shared screen`;
@@ -18,9 +19,10 @@ export function ScreensMonitorButton({ visible, language, onToggle }: ScreensMon
       aria-label={`Screens Monitor — ${action}`}
       aria-controls="kiosk-shared-screen"
       aria-pressed={visible}
+      disabled={disabled}
       title={`Screens Monitor — ${action}`}
       onClick={onToggle}
-      className={`flex h-[48px] w-[48px] shrink-0 cursor-pointer items-center justify-center rounded-[13px] shadow-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#7090ec] active:bg-[#1d3036] ${
+      className={`flex h-[48px] w-[48px] shrink-0 cursor-pointer items-center justify-center rounded-[13px] shadow-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#7090ec] active:bg-[#1d3036] disabled:cursor-default disabled:opacity-50 ${
         visible
           ? 'bg-[#7090ec]/25 text-[#a7bcff] hover:bg-[#7090ec]/35'
           : 'bg-[#263c43] text-[#f1f3f9] hover:bg-[#304b54]'

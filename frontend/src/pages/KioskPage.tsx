@@ -147,7 +147,11 @@ export function KioskPage() {
   );
   const { state: kioskState, micEnabled, respond } = useKioskState();
   const browser = useSharedBrowser();
-  const [screenVisible, setScreenVisible] = useState(true);
+  const [screenRequested, setScreenRequested] = useState(true);
+  const screenVisible = kioskState === 'active' && screenRequested;
+  useEffect(() => {
+    if (kioskState !== 'active') setScreenRequested(true);
+  }, [kioskState]);
   const [voiceCollapsed, setVoiceCollapsed] = useState(false);
   const [browserMode, setBrowserMode] = useState<'split' | 'floating'>(() => {
     try {
@@ -479,7 +483,7 @@ export function KioskPage() {
               listening={voice.status === 'listening' && !voiceCollapsed}
               voiceStatus={voiceCollapsed ? 'idle' : voice.status}
               getFrequencyData={voice.getFrequencyData}
-              onMicClick={isVoiceActive ? endVoice : startPolicyVoice}
+              onMicClick={isVoiceActive ? endVoice : kioskState === 'active' ? startPolicyVoice : undefined}
             />
             <RemoteCameraButton
               enabled={remoteCamera.enabled}
@@ -490,8 +494,9 @@ export function KioskPage() {
             />
             <ScreensMonitorButton
               visible={screenVisible}
+              disabled={kioskState !== 'active'}
               language={uiLanguage}
-              onToggle={() => setScreenVisible((visible) => !visible)}
+              onToggle={() => setScreenRequested((visible) => !visible)}
             />
           </div>
         </div>
@@ -670,23 +675,23 @@ export function KioskPage() {
           >
             <div className="mb-4 text-4xl">🤖</div>
             <h2 className="mb-2 text-xl font-semibold" style={{ color: 'var(--color-text)' }}>
-              {uiLanguage === 'vi' ? 'Sẵn sàng trò chuyện?' : 'Ready to chat?'}
+              {uiLanguage === 'vi' ? 'Sẵn sàng gọi món chưa?' : 'Ready to order?'}
             </h2>
             <p className="mb-6 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
               {uiLanguage === 'vi'
-                ? 'Cho phép trợ lý bật microphone để nhận yêu cầu của bạn.'
-                : 'Allow the assistant to enable the microphone to hear your requests.'}
+                ? 'Chạm Bắt đầu gọi món để trò chuyện với trợ lý bán hàng và chọn món.'
+                : 'Chat with your ordering assistant to explore the menu and choose your items.'}
             </p>
-            <div className="flex justify-center gap-3">
+            <div className="flex flex-wrap justify-center gap-3">
               <button
                 onClick={() => void respond(true)}
-                className="cursor-pointer rounded-xl bg-[var(--color-accent)] px-6 py-2.5 text-sm font-semibold text-white transition-transform hover:scale-105"
+                className="cursor-pointer rounded-xl bg-[var(--color-accent)] px-4 py-2.5 text-sm font-semibold text-white transition-transform hover:scale-105"
               >
-                {uiLanguage === 'vi' ? 'Bắt đầu trò chuyện' : 'Start chatting'}
+                {uiLanguage === 'vi' ? 'Bắt đầu gọi món' : 'Start ordering'}
               </button>
               <button
                 onClick={() => void respond(false)}
-                className="cursor-pointer rounded-xl px-6 py-2.5 text-sm font-semibold transition-transform hover:scale-105"
+                className="cursor-pointer rounded-xl px-4 py-2.5 text-sm font-semibold transition-transform hover:scale-105"
                 style={{
                   background: 'var(--color-bg-secondary)',
                   border: '1px solid var(--color-border)',
