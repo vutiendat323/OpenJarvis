@@ -189,6 +189,7 @@ class QueryOrchestrator:
             agent_name=agent_name,
             engine=s.engine,
             model=s.model,
+            intent_normalization=s.config.agent.intent_normalization,
             extra_kwargs=agent_kwargs,
         )
 

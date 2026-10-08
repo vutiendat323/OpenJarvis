@@ -1,0 +1,330 @@
+{
+  "database": "/home/metek/.openjarvis/trendcoffee-rag.db",
+  "documents": 7,
+  "sqlite_open_ms": 0.7705399984843098,
+  "configuration": {
+    "top_k": 3,
+    "max_context_tokens": 800
+  },
+  "cases": [
+    {
+      "query": "Hotline hỗ trợ là gì?",
+      "expected": "02-lien-he",
+      "ranking": [
+        "02-lien-he",
+        "01-gioi-thieu",
+        "03-dat-tiec"
+      ],
+      "first_context_ms": 0.9913969988701865,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Số điện thoại hỗ trợ là gì?",
+      "expected": "02-lien-he",
+      "ranking": [
+        "02-lien-he",
+        "01-gioi-thieu",
+        "03-dat-tiec"
+      ],
+      "first_context_ms": 0.6040070002200082,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "toi muon xin hotline ho tro",
+      "expected": "02-lien-he",
+      "ranking": [
+        "05-ho-tro-thanh-toan",
+        "02-lien-he",
+        "03-dat-tiec"
+      ],
+      "first_context_ms": 0.3432240046095103,
+      "top1_pass": false,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Email của quán?",
+      "expected": "02-lien-he",
+      "ranking": [
+        "02-lien-he",
+        "07-tai-khoan-quyen-rieng-tu",
+        "01-gioi-thieu"
+      ],
+      "first_context_ms": 0.28924499929416925,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Quán ở đâu?",
+      "expected": "02-lien-he",
+      "ranking": [
+        "04-huong-dan-dat-hang",
+        "03-dat-tiec",
+        "02-lien-he"
+      ],
+      "first_context_ms": 0.2211739993072115,
+      "top1_pass": false,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "dia chi duong Nguyen Cong Tru",
+      "expected": "02-lien-he",
+      "ranking": [
+        "02-lien-he",
+        "04-huong-dan-dat-hang",
+        "05-ho-tro-thanh-toan"
+      ],
+      "first_context_ms": 0.2581100052339025,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Giờ mở cửa quán?",
+      "expected": "02-lien-he",
+      "boundary": "support_hours_not_opening_hours",
+      "ranking": [
+        "02-lien-he",
+        "01-gioi-thieu",
+        "06-yeu-cau-hoan-tien"
+      ],
+      "first_context_ms": 0.21811799524584785,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Quán có nhận đặt tiệc không?",
+      "expected": "03-dat-tiec",
+      "ranking": [
+        "03-dat-tiec",
+        "01-gioi-thieu",
+        "02-lien-he"
+      ],
+      "first_context_ms": 0.2517140019335784,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "dat tiec workshop",
+      "expected": "03-dat-tiec",
+      "ranking": [
+        "03-dat-tiec",
+        "01-gioi-thieu",
+        "04-huong-dan-dat-hang"
+      ],
+      "first_context_ms": 0.1933719977387227,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Hotline đặt tiệc?",
+      "expected": "03-dat-tiec",
+      "ranking": [
+        "03-dat-tiec",
+        "02-lien-he",
+        "01-gioi-thieu"
+      ],
+      "first_context_ms": 0.21195600129431114,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Có tiệc cho hai người không?",
+      "expected": "03-dat-tiec",
+      "ranking": [
+        "03-dat-tiec",
+        "01-gioi-thieu",
+        "04-huong-dan-dat-hang"
+      ],
+      "first_context_ms": 0.26653399982023984,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Trend Coffee có gì?",
+      "expected": "01-gioi-thieu",
+      "ranking": [
+        "01-gioi-thieu",
+        "02-lien-he",
+        "03-dat-tiec"
+      ],
+      "first_context_ms": 0.21784399723401293,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Quán có wifi không?",
+      "expected": "01-gioi-thieu",
+      "boundary": "not_confirmed",
+      "ranking": [
+        "01-gioi-thieu",
+        "04-huong-dan-dat-hang",
+        "07-tai-khoan-quyen-rieng-tu"
+      ],
+      "first_context_ms": 0.2264299982925877,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Làm sao đặt hàng trên website?",
+      "expected": "04-huong-dan-dat-hang",
+      "ranking": [
+        "04-huong-dan-dat-hang",
+        "06-yeu-cau-hoan-tien",
+        "05-ho-tro-thanh-toan"
+      ],
+      "first_context_ms": 0.2522470022086054,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "sua huy don chua thanh toan",
+      "expected": "04-huong-dan-dat-hang",
+      "ranking": [
+        "04-huong-dan-dat-hang",
+        "03-dat-tiec",
+        "05-ho-tro-thanh-toan"
+      ],
+      "first_context_ms": 0.24561400641687214,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Đã trừ tiền nhưng đơn chưa cập nhật",
+      "expected": "05-ho-tro-thanh-toan",
+      "ranking": [
+        "05-ho-tro-thanh-toan",
+        "06-yeu-cau-hoan-tien",
+        "04-huong-dan-dat-hang"
+      ],
+      "first_context_ms": 0.31717300589662045,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Thanh toán bằng QR thế nào?",
+      "expected": "05-ho-tro-thanh-toan",
+      "ranking": [
+        "05-ho-tro-thanh-toan",
+        "04-huong-dan-dat-hang",
+        "07-tai-khoan-quyen-rieng-tu"
+      ],
+      "first_context_ms": 0.27869699988514185,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "mat ket noi tiep tuc thanh toan",
+      "expected": "05-ho-tro-thanh-toan",
+      "ranking": [
+        "05-ho-tro-thanh-toan",
+        "04-huong-dan-dat-hang",
+        "07-tai-khoan-quyen-rieng-tu"
+      ],
+      "first_context_ms": 0.2755879977485165,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Giao sai món có hoàn tiền không?",
+      "expected": "06-yeu-cau-hoan-tien",
+      "ranking": [
+        "06-yeu-cau-hoan-tien",
+        "05-ho-tro-thanh-toan",
+        "07-tai-khoan-quyen-rieng-tu"
+      ],
+      "first_context_ms": 0.26441900263307616,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "san pham loi hoan tien",
+      "expected": "06-yeu-cau-hoan-tien",
+      "ranking": [
+        "06-yeu-cau-hoan-tien",
+        "07-tai-khoan-quyen-rieng-tu",
+        "03-dat-tiec"
+      ],
+      "first_context_ms": 0.24574200506322086,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "xoa tai khoan",
+      "expected": "07-tai-khoan-quyen-rieng-tu",
+      "ranking": [
+        "07-tai-khoan-quyen-rieng-tu",
+        "06-yeu-cau-hoan-tien",
+        "01-gioi-thieu"
+      ],
+      "first_context_ms": 0.21456599642988294,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Ngừng nhận tiếp thị?",
+      "expected": "07-tai-khoan-quyen-rieng-tu",
+      "ranking": [
+        "07-tai-khoan-quyen-rieng-tu",
+        "05-ho-tro-thanh-toan",
+        "06-yeu-cau-hoan-tien"
+      ],
+      "first_context_ms": 0.2291370037710294,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "Số điện thoại đó?",
+      "previous": "đặt tiệc workshop",
+      "expected": "03-dat-tiec",
+      "ranking": [
+        "03-dat-tiec",
+        "02-lien-he",
+        "07-tai-khoan-quyen-rieng-tu"
+      ],
+      "first_context_ms": 0.25893199926940724,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    },
+    {
+      "query": "quantum supercollider",
+      "expected": null,
+      "ranking": [],
+      "first_context_ms": 0.05169100040802732,
+      "top1_pass": true,
+      "top3_pass": true,
+      "context_pass": true
+    }
+  ],
+  "top1_pass": 22,
+  "top3_pass": 24,
+  "context_pass": 24,
+  "first_context_p95_ms": 0.6040070002200082,
+  "warm_context_p50_ms": 0.23827000404708087,
+  "warm_context_p95_ms": 0.5485349975060672,
+  "warm_context_samples": 456,
+  "limits": "Fixed synthetic retrieval cases; no model answer, STT/TTS or full voice latency measurement. First samples follow a ranking read, so are not cold-cache disk measurements."
+}

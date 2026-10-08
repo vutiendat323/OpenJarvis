@@ -78,6 +78,21 @@ def test_retrieve_no_results(tmp_path: Path):
     backend.close()
 
 
+def test_literal_names_and_phrases_are_not_removed_from_queries(tmp_path):
+    backend = _make_backend(tmp_path)
+    backend.store("Địa điểm có tên La Gi", source="place")
+    backend.store("Tên riêng Vui Long", source="person")
+    assert backend.retrieve("La Gi")[0].source == "place"
+    assert backend.retrieve("Vui Long")[0].source == "person"
+
+
+def test_retrieval_preserves_names_and_single_word_searches(tmp_path):
+    backend = _make_backend(tmp_path)
+    backend.store("Long is our technical contact", source="person")
+    assert backend.retrieve("Long")[0].source == "person"
+    assert backend.retrieve("technical contact")[0].source == "person"
+
+
 def test_retrieve_query_with_apostrophe(tmp_path: Path):
     """Regression: an internal apostrophe (e.g. "user's") previously produced
     an unescaped quote in the FTS5 MATCH string, which silently returned zero

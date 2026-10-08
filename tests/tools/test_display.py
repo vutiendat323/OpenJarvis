@@ -62,7 +62,12 @@ def test_display_tools_are_neither_mutations_nor_observations():
         DisplayClearTool,
     ):
         metadata = cls().spec.metadata
-        assert metadata == {"displays": True}
+        assert metadata.get("displays") is True
+        assert not metadata.get("mutation") and not metadata.get("observation")
+        if cls is DisplayCartTool:
+            assert metadata["continuation_arguments"] == {"finish_turn": False}
+        else:
+            assert metadata == {"displays": True}
         assert cls().spec.category == "display"
 
 

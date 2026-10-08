@@ -1,0 +1,167 @@
+[
+  {
+    "variant": "display-ack-fast-finish",
+    "repeat": 0,
+    "flow": "menu",
+    "query": "Cho xem các món latte",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 3,
+    "tool_names": [
+      "skill_trendcoffee-menu"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-menu",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "itemTerms": [
+            "latte"
+          ],
+          "categoryTerms": [],
+          "minPrice": 0,
+          "maxPrice": 1000000000,
+          "displayMode": "filtered"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 4.214,
+    "time_to_final_response_s": 4.2194,
+    "spoken_words": 19,
+    "speech": "Mình mở các món latte để bạn xem trên màn hình nhé. Bạn muốn chọn món nào sau đó?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [
+      "latte",
+      "matcha-latte"
+    ],
+    "cart_lines": [],
+    "cart_order_type": "",
+    "order_lines": [],
+    "order_type": null,
+    "checkout_done": false,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4998,
+    "completion_tokens": 242,
+    "normalized_intent": "NONE",
+    "intent_satisfied": false,
+    "execution_path": [
+      "skill_trendcoffee-menu"
+    ],
+    "terminal_reason": "ANSWER"
+  },
+  {
+    "variant": "display-ack-fast-finish",
+    "repeat": 1,
+    "flow": "menu",
+    "query": "Cho xem các món latte",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 3,
+    "tool_names": [
+      "skill_trendcoffee-menu"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-menu",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "itemTerms": [
+            "latte"
+          ],
+          "categoryTerms": [],
+          "minPrice": 0,
+          "maxPrice": 1000000000,
+          "displayMode": "filtered"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 4.0258,
+    "time_to_final_response_s": 4.033,
+    "spoken_words": 23,
+    "speech": "Mình đã lọc các món latte cho bạn; xem danh sách trên màn hình nhé, rồi cho mình biết món bạn muốn chọn.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [
+      "latte",
+      "matcha-latte"
+    ],
+    "cart_lines": [],
+    "cart_order_type": "",
+    "order_lines": [],
+    "order_type": null,
+    "checkout_done": false,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4996,
+    "completion_tokens": 149,
+    "normalized_intent": "NONE",
+    "intent_satisfied": false,
+    "execution_path": [
+      "skill_trendcoffee-menu"
+    ],
+    "terminal_reason": "ANSWER"
+  },
+  {
+    "variant": "display-ack-fast-finish",
+    "repeat": 2,
+    "flow": "menu",
+    "query": "Cho xem các món latte",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 3,
+    "tool_names": [
+      "skill_trendcoffee-menu"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-menu",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "itemTerms": [
+            "latte"
+          ],
+          "categoryTerms": [],
+          "minPrice": 0,
+          "maxPrice": 1000000000,
+          "displayMode": "filtered"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 10.9111,
+    "time_to_final_response_s": 10.9181,
+    "spoken_words": 18,
+    "speech": "Mình sẽ lọc các món latte để bạn xem trên màn hình rồi chọn món phù hợp nhé.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [
+      "latte",
+      "matcha-latte"
+    ],
+    "cart_lines": [],
+    "cart_order_type": "",
+    "order_lines": [],
+    "order_type": null,
+    "checkout_done": false,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 5000,
+    "completion_tokens": 182,
+    "normalized_intent": "NONE",
+    "intent_satisfied": false,
+    "execution_path": [
+      "skill_trendcoffee-menu"
+    ],
+    "terminal_reason": "ANSWER"
+  }
+]

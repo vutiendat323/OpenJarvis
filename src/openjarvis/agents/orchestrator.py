@@ -79,6 +79,7 @@ class OrchestratorAgent(ToolUsingAgent):
         max_tokens: Optional[int] = None,
         mode: str = "function_calling",
         system_prompt: Optional[str] = None,
+        intent_normalization: bool = False,
         prompt_builder: Optional[Any] = None,
         parallel_tools: bool = True,
         interactive: bool = False,
@@ -86,6 +87,8 @@ class OrchestratorAgent(ToolUsingAgent):
         loop_guard_config: Optional[Any] = None,
         capability_policy: Any = None,
     ) -> None:
+        if intent_normalization and mode != "function_calling":
+            raise ValueError("intent_normalization requires function_calling mode")
         super().__init__(
             engine,
             model,
@@ -103,6 +106,16 @@ class OrchestratorAgent(ToolUsingAgent):
         self._mode = mode
         self._system_prompt = system_prompt
         self._parallel_tools = parallel_tools
+        self._intent_normalization = intent_normalization
+
+    def _intent_state(self, messages):
+        if not self._intent_normalization:
+            return None
+        from openjarvis.agents.intent import IntentState
+
+        state = IntentState(self._tools)
+        messages.insert(0, Message(role=Role.SYSTEM, content=state.instruction()))
+        return state
 
     def run(
         self,
@@ -185,7 +198,10 @@ class OrchestratorAgent(ToolUsingAgent):
             system_prompt=self._system_prompt,
         )
         runtime_message = None
+        intent_state = self._intent_state(messages)
         openai_tools = self._executor.get_openai_tools() if self._tools else []
+        if intent_state is not None:
+            openai_tools = intent_state.schemas(openai_tools)
         all_tool_results: list[ToolResult] = []
         total_prompt_tokens = 0
         total_completion_tokens = 0
@@ -193,7 +209,9 @@ class OrchestratorAgent(ToolUsingAgent):
         for turns in range(1, self._max_turns + 1):
             if loop_guard:
                 messages = loop_guard.compress_context(messages)
-            runtime_message = self._inject_runtime_context(messages, runtime_message)
+            runtime_message = self._inject_runtime_context(
+                messages, runtime_message, intent_state
+            )
 
             gen_kwargs: dict[str, Any] = {}
             if openai_tools:
@@ -232,7 +250,7 @@ class OrchestratorAgent(ToolUsingAgent):
                                 # Tools may still arrive in later chunks. Hold
                                 # speech until the decision resolves; without
                                 # tools, preserve immediate text streaming.
-                                if not openai_tools:
+                                if not openai_tools and intent_state is None:
                                     yield AgentTextDelta(visible)
                         if chunk.finish_reason:
                             finish_reason = chunk.finish_reason
@@ -243,7 +261,7 @@ class OrchestratorAgent(ToolUsingAgent):
 
                 for trailing_visible in visible_text_filter.finish():
                     visible_parts.append(trailing_visible)
-                    if not openai_tools:
+                    if not openai_tools and intent_state is None:
                         yield AgentTextDelta(trailing_visible)
 
                 self._emit_stream_inference_end(
@@ -297,6 +315,7 @@ class OrchestratorAgent(ToolUsingAgent):
                     tool_calls,
                     all_tool_results,
                     loop_guard,
+                    intent_state,
                 )
                 new_tool_results = all_tool_results[previous_tool_results:]
                 for tool_result in new_tool_results:
@@ -311,7 +330,12 @@ class OrchestratorAgent(ToolUsingAgent):
                     yield AgentRunCompleted(
                         AgentResult(
                             content="",
-                            metadata={"pending_approval": True},
+                            tool_results=all_tool_results if intent_state else [],
+                            turns=turns if intent_state else 0,
+                            metadata={
+                                "pending_approval": True,
+                                **(intent_state.metadata() if intent_state else {}),
+                            },
                         )
                     )
                     return
@@ -326,6 +350,7 @@ class OrchestratorAgent(ToolUsingAgent):
                         "prompt_tokens": total_prompt_tokens,
                         "completion_tokens": total_completion_tokens,
                         "total_tokens": total_prompt_tokens + total_completion_tokens,
+                        **(intent_state.metadata() if intent_state else {}),
                     }
                     self._emit_turn_end(turns=turns, content_length=len(content))
                     yield AgentRunCompleted(
@@ -340,12 +365,21 @@ class OrchestratorAgent(ToolUsingAgent):
                 continue
 
             content = "".join(visible_parts)
-            if openai_tools and content:
+            if intent_state is not None:
+                resolved = intent_state.finish(content)
+                if resolved is None:
+                    messages.append(
+                        Message(role=Role.SYSTEM, content=intent_state.instruction())
+                    )
+                    continue
+                content = resolved
+            if (openai_tools or intent_state is not None) and content:
                 yield AgentTextDelta(content)
             metadata = {
                 "prompt_tokens": total_prompt_tokens,
                 "completion_tokens": total_completion_tokens,
                 "total_tokens": total_prompt_tokens + total_completion_tokens,
+                **(intent_state.metadata() if intent_state else {}),
             }
             self._emit_turn_end(turns=turns, content_length=len(content))
             yield AgentRunCompleted(
@@ -362,6 +396,7 @@ class OrchestratorAgent(ToolUsingAgent):
             "prompt_tokens": total_prompt_tokens,
             "completion_tokens": total_completion_tokens,
             "total_tokens": total_prompt_tokens + total_completion_tokens,
+            **(intent_state.metadata() if intent_state else {}),
         }
         result = self._max_turns_result(
             all_tool_results,
@@ -627,9 +662,12 @@ class OrchestratorAgent(ToolUsingAgent):
             system_prompt=self._system_prompt,
         )
         runtime_message = None
+        intent_state = self._intent_state(messages)
 
         # Get OpenAI-format tool definitions
         openai_tools = self._executor.get_openai_tools() if self._tools else []
+        if intent_state is not None:
+            openai_tools = intent_state.schemas(openai_tools)
         all_tool_results: list[ToolResult] = []
         turns = 0
         total_prompt_tokens = 0
@@ -640,7 +678,9 @@ class OrchestratorAgent(ToolUsingAgent):
 
             if loop_guard:
                 messages = loop_guard.compress_context(messages)
-            runtime_message = self._inject_runtime_context(messages, runtime_message)
+            runtime_message = self._inject_runtime_context(
+                messages, runtime_message, intent_state
+            )
 
             # Build generate kwargs
             gen_kwargs: dict[str, Any] = {}
@@ -661,10 +701,21 @@ class OrchestratorAgent(ToolUsingAgent):
             if not raw_tool_calls:
                 content = self._check_continuation(result, messages)
                 content = self._strip_think_tags(content)
+                if intent_state is not None:
+                    resolved = intent_state.finish(content)
+                    if resolved is None:
+                        messages.append(
+                            Message(
+                                role=Role.SYSTEM, content=intent_state.instruction()
+                            )
+                        )
+                        continue
+                    content = resolved
                 metadata = {
                     "prompt_tokens": total_prompt_tokens,
                     "completion_tokens": total_completion_tokens,
                     "total_tokens": total_prompt_tokens + total_completion_tokens,
+                    **(intent_state.metadata() if intent_state else {}),
                 }
                 self._emit_turn_end(turns=turns, content_length=len(content))
                 return AgentResult(
@@ -702,6 +753,7 @@ class OrchestratorAgent(ToolUsingAgent):
                 tool_calls,
                 all_tool_results,
                 loop_guard,
+                intent_state,
             )
             new_tool_results = all_tool_results[previous_tool_results:]
             final_content = self._strip_think_tags(content)
@@ -713,6 +765,7 @@ class OrchestratorAgent(ToolUsingAgent):
                     "prompt_tokens": total_prompt_tokens,
                     "completion_tokens": total_completion_tokens,
                     "total_tokens": total_prompt_tokens + total_completion_tokens,
+                    **(intent_state.metadata() if intent_state else {}),
                 }
                 self._emit_turn_end(turns=turns, content_length=len(final_content))
                 return AgentResult(
@@ -723,11 +776,14 @@ class OrchestratorAgent(ToolUsingAgent):
                 )
         # Max turns exceeded
         final_content = self._strip_think_tags(content) if content else ""
+        if intent_state is not None and not intent_state.reached:
+            final_content = ""
         metadata = {
             "max_turns_exceeded": True,
             "prompt_tokens": total_prompt_tokens,
             "completion_tokens": total_completion_tokens,
             "total_tokens": total_prompt_tokens + total_completion_tokens,
+            **(intent_state.metadata() if intent_state else {}),
         }
         self._emit_turn_end(turns=turns, max_turns_exceeded=True)
         return AgentResult(
@@ -741,6 +797,7 @@ class OrchestratorAgent(ToolUsingAgent):
         self,
         messages: list[Message],
         previous: Message | None = None,
+        intent_state: Any | None = None,
     ) -> Message | None:
         """Expose compact tool-owned state needed before the first tool call."""
         if previous is not None:
@@ -756,14 +813,15 @@ class OrchestratorAgent(ToolUsingAgent):
         if not runtime_context:
             return
         runtime_context["turn_nonce"] = current_turn_nonce()
+        if intent_state is not None:
+            intent_state.runtime_context = runtime_context
         message = Message(
             role=Role.SYSTEM,
             content=(
-                "Current runtime state. For a checkout skill, copy turn_nonce "
-                "and draft_cart.revision as cart_revision into its arguments "
-                "(or skill_manage.context when using run). "
-                "They are validated by code and expire when this turn or cart "
-                "changes.\n<runtime_context>"
+                "Current tool-owned runtime state. Copy verified identifiers, "
+                "revisions and turn_nonce into arguments where a tool contract "
+                "requires them. They are validated by code and may expire when "
+                "this turn or the tool-owned state changes.\n<runtime_context>"
                 + json.dumps(runtime_context, ensure_ascii=False, separators=(",", ":"))
                 + "</runtime_context>"
             ),
@@ -785,8 +843,11 @@ class OrchestratorAgent(ToolUsingAgent):
         tool_calls: list[ToolCall],
         all_tool_results: list[ToolResult],
         loop_guard: Any | None,
+        intent_state: Any | None = None,
     ) -> None:
-        ordered_results = self._collect_function_tool_results(tool_calls, loop_guard)
+        ordered_results = self._collect_function_tool_results(
+            tool_calls, loop_guard, intent_state
+        )
         self._append_function_tool_results(
             messages,
             all_tool_results,
@@ -799,11 +860,13 @@ class OrchestratorAgent(ToolUsingAgent):
         tool_calls: list[ToolCall],
         all_tool_results: list[ToolResult],
         loop_guard: Any | None,
+        intent_state: Any | None = None,
     ) -> None:
         ordered_results = await run_agent_sync_worker(
             self._collect_function_tool_results,
             tool_calls,
             loop_guard,
+            intent_state,
         )
         self._append_function_tool_results(
             messages,
@@ -815,7 +878,28 @@ class OrchestratorAgent(ToolUsingAgent):
         self,
         tool_calls: list[ToolCall],
         loop_guard: Any | None,
+        intent_state: Any | None = None,
     ) -> list[tuple[ToolCall, ToolResult]]:
+        if intent_state is not None:
+            try:
+                tool_calls = intent_state.prepare(tool_calls)
+            except (ValueError, TypeError):
+                return [
+                    (
+                        call,
+                        ToolResult(
+                            tool_name=call.name,
+                            success=False,
+                            content=(
+                                "intent_dispatch_blocked: preserve the declared "
+                                "goal and validate prerequisites"
+                            ),
+                            metadata=intent_state.metadata(),
+                        ),
+                    )
+                    for call in tool_calls
+                ]
+
         def execute(tc: ToolCall) -> ToolResult:
             if loop_guard:
                 verdict = loop_guard.check_call(
@@ -843,8 +927,13 @@ class OrchestratorAgent(ToolUsingAgent):
                     for tc in tool_calls
                 }
                 results = {id(tc): future.result() for future, tc in futures.items()}
-            return [(tc, results[id(tc)]) for tc in tool_calls]
-        return [(tc, execute(tc)) for tc in tool_calls]
+            ordered = [(tc, results[id(tc)]) for tc in tool_calls]
+        else:
+            ordered = [(tc, execute(tc)) for tc in tool_calls]
+        if intent_state is not None:
+            for call, result in ordered:
+                intent_state.observe(call, result)
+        return ordered
 
     def _display_customer_message(self, tool_results: list[ToolResult]) -> str:
         """Use acknowledged display text only after the whole batch succeeds."""

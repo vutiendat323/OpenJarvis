@@ -12,6 +12,51 @@ from openjarvis.security.guardrails import GuardrailsEngine, SecurityBlockError
 from openjarvis.security.types import RedactionMode
 
 
+def test_verified_business_contacts_survive_while_customer_pii_and_secrets_redact():
+    from openjarvis.security.scanner import PIIScanner, SecretScanner
+
+    public_phone = "0886128008"
+    public_email = "trend.coffee.tea@gmail.com"
+    private_phone = "0901234567"
+    secret = "sk-abc123def456ghi789jkl012"
+    text = f"Quán {public_phone} {public_email}; khách {private_phone}; key {secret}"
+    engine = _make_mock_engine(text)
+    guard = GuardrailsEngine(
+        engine,
+        scanners=[
+            SecretScanner(),
+            PIIScanner(public_contact_values=[public_phone, public_email]),
+        ],
+        mode=RedactionMode.REDACT,
+    )
+    result = guard.generate([Message(role=Role.USER, content=text)], model="test")
+    sent = engine.generate.call_args[0][0][0].text
+    for content in [sent, result["content"]]:
+        assert public_phone in content and public_email in content
+        assert private_phone not in content and secret not in content
+
+
+def test_public_contact_exceptions_cannot_exempt_cards_or_email_substrings():
+    from openjarvis.security.scanner import PIIScanner
+
+    scanner = PIIScanner(
+        public_contact_values=["4111111111111111", "public@example.com"]
+    )
+    text = "Thẻ 4111111111111111; privatepublic@example.com; public@example.com.evil"
+    redacted = scanner.redact(text)
+    assert "4111111111111111" not in redacted
+    assert "privatepublic@example.com" not in redacted
+    assert "public@example.com.evil" not in redacted
+
+
+def test_public_phone_with_spaces_keeps_only_the_configured_number():
+    from openjarvis.security.scanner import PIIScanner
+
+    scanner = PIIScanner(public_contact_values=["0886128008"])
+    redacted = scanner.redact("Quán: 088 612 8008; khách: 090 123 4567")
+    assert "088 612 8008" in redacted and "090 123 4567" not in redacted
+
+
 def _make_mock_engine(response_content: str = "Hello!") -> MagicMock:
     """Create a mock InferenceEngine."""
     engine = MagicMock()

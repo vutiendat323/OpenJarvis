@@ -86,6 +86,7 @@ def construct_registered_agent(
     operator_id: str | None = None,
     system_prompt: str | None = None,
     parallel_tools: bool | None = None,
+    intent_normalization: bool | None = None,
     prompt_builder: Any = None,
     extra_kwargs: dict[str, Any] | None = None,
 ) -> BaseAgent:
@@ -110,6 +111,7 @@ def construct_registered_agent(
         # False is meaningful here, so it survives the None filter below as an
         # explicit value rather than being treated as "not supplied".
         "parallel_tools": parallel_tools,
+        "intent_normalization": intent_normalization,
         # Only agents that name it get the persona builder (SOUL.md etc.).
         "prompt_builder": prompt_builder,
     }

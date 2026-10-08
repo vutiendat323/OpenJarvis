@@ -199,6 +199,122 @@ def test_agent_input_preserves_consecutive_user_turns():
     ]
 
 
+def test_history_budget_preserves_complete_tool_turn_and_newest_user():
+    original = [
+        {"role": "user", "content": "old " * 20},
+        {"role": "assistant", "content": "old answer " * 20},
+        {"role": "user", "content": "chọn bàn"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "tables", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "content": "bàn 5", "tool_call_id": "call-1"},
+        {"role": "assistant", "content": "Bạn chọn bàn nào?"},
+        {"role": "user", "content": "bàn đó"},
+    ]
+    prompt, context = agent_input(_PipecatContext(original), max_history_tokens=15)
+    history = context.conversation.messages[1:]
+    assert prompt == "bàn đó"
+    assert [m.role.value for m in history] == ["user", "assistant", "tool", "assistant"]
+    assert history[1].tool_calls[0].id == history[2].tool_call_id == "call-1"
+    assert original[0]["content"] == "old " * 20
+    _, fresh = agent_input(_PipecatContext([{"role": "user", "content": "khách mới"}]))
+    assert len(fresh.conversation.messages) == 1
+
+
+@pytest.mark.anyio
+async def test_slow_recall_does_not_block_voice_loop_or_replace_history():
+    import threading
+    from types import SimpleNamespace
+
+    from openjarvis.tools.storage.context import ContextConfig
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def retrieve(*args, **kwargs):
+        started.set()
+        release.wait(2)
+        return []
+
+    service = OpenJarvisLLMService(
+        _Binding([]), recall=(SimpleNamespace(retrieve=retrieve), ContextConfig())
+    )
+    messages = _PipecatContext(
+        [
+            {"role": "user", "content": "đặt tiệc"},
+            {"role": "assistant", "content": "Bạn cần tư vấn gì?"},
+            {"role": "user", "content": "số điện thoại đó?"},
+        ]
+    )
+    try:
+        task = asyncio.create_task(service.prepare_agent_input(messages))
+        await asyncio.sleep(0.025)
+        assert started.is_set() and not release.is_set()
+        prompt, context = await asyncio.wait_for(task, timeout=0.5)
+        assert prompt == "số điện thoại đó?"
+        assert any(m.text == "đặt tiệc" for m in context.conversation.messages)
+        assert any("unavailable" in m.text for m in context.conversation.messages)
+    finally:
+        release.set()
+        if getattr(service, "_recall_task", None) is not None:
+            await service._recall_task
+
+
+@pytest.mark.anyio
+async def test_native_sqlite_lock_does_not_block_voice_deadline(tmp_path):
+    import subprocess
+    import sys
+    import time
+
+    from openjarvis.tools.storage.context import ContextConfig
+    from openjarvis.tools.storage.sqlite import SQLiteMemory
+
+    path = tmp_path / "native-lock.db"
+    backend = SQLiteMemory(path)
+    backend.store("Hotline hỗ trợ", source="synthetic")
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sqlite3,sys,time; c=sqlite3.connect(sys.argv[1]); "
+                'c.execute("BEGIN EXCLUSIVE"); print("locked",flush=True); '
+                "time.sleep(.6); c.rollback()"
+            ),
+            str(path),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    service = OpenJarvisLLMService(_Binding([]), recall=(backend, ContextConfig()))
+    try:
+        assert holder.stdout.readline().strip() == "locked"
+        started = time.perf_counter()
+        task = asyncio.create_task(
+            service.prepare_agent_input(
+                _PipecatContext([{"role": "user", "content": "hotline"}])
+            )
+        )
+        await asyncio.sleep(0.02)
+        assert time.perf_counter() - started < 0.25
+        prompt, context = await task
+        assert time.perf_counter() - started < 0.3
+        assert prompt == "hotline"
+        assert "unavailable" in context.conversation.messages[0].text
+    finally:
+        holder.communicate(timeout=3)
+        if service._recall_task is not None:
+            await service._recall_task
+
+
 @pytest.mark.anyio
 async def test_interruption_does_not_flush_cancelled_response_into_tts():
     binding = _BlockingBinding()
@@ -600,7 +716,9 @@ async def _frames_after_reply(bot_speaking_before):
         await worker.queue_frame(EndFrame())
 
     await runner.add_workers(worker)
-    await asyncio.wait_for(asyncio.gather(runner.run(), drive()), timeout=_TURN_TIMEOUT_S)
+    await asyncio.wait_for(
+        asyncio.gather(runner.run(), drive()), timeout=_TURN_TIMEOUT_S
+    )
     return seen
 
 

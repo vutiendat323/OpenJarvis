@@ -275,6 +275,16 @@ class TraceCollector:
                 "ttft_seconds": self._ttft,
                 "first_text_seconds": self._first_text,
                 "queue_wait_seconds": self._queue_wait,
+                **{
+                    key: result.metadata[key]
+                    for key in (
+                        "normalized_intent",
+                        "intent_satisfied",
+                        "execution_path",
+                        "terminal_reason",
+                    )
+                    if key in result.metadata
+                },
             },
         )
         # Nested/parallel spans cannot be summed into wall-clock latency.

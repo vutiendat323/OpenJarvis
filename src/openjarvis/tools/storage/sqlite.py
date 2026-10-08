@@ -40,7 +40,7 @@ class SQLiteMemory(MemoryBackend):
 
             db_path = str(DEFAULT_CONFIG_DIR / "memory.db")
 
-        self._db_path = str(db_path)
+        self._db_path = str(Path(db_path).expanduser())
 
         from openjarvis._rust_bridge import get_rust_module
 

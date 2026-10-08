@@ -45,7 +45,12 @@ def setup_security(
         if config.security.secret_scanner:
             scanners.append(SecretScanner())
         if config.security.pii_scanner:
-            scanners.append(PIIScanner())
+            public_contacts = getattr(config.security, "public_contact_values", [])
+            scanners.append(
+                PIIScanner(public_contact_values=public_contacts)
+                if public_contacts
+                else PIIScanner()
+            )
 
         if scanners:
             mode = RedactionMode(config.security.mode)

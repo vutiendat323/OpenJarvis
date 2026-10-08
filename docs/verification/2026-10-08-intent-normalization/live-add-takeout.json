@@ -1,0 +1,263 @@
+[
+  {
+    "variant": "continuation-fix",
+    "repeat": 0,
+    "flow": "add_takeout",
+    "query": "Cho mình một cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 4,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "display_cart"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 1,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "set_order_type",
+          "order_type": "take-out"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 4.6191,
+    "time_to_final_response_s": 7.6887,
+    "spoken_words": 23,
+    "speech": "Đã thêm một cà phê sữa mang đi vào giỏ; tổng hiện tại là 35.000đ. Bạn muốn thêm món khác hay thanh toán?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 1,
+        "unit_price": 35000,
+        "note": ""
+      }
+    ],
+    "cart_order_type": "take-out",
+    "order_lines": [],
+    "order_type": null,
+    "checkout_done": false,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 10658,
+    "completion_tokens": 603,
+    "normalized_intent": "ADD_TO_CART",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "display_cart"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "continuation-fix",
+    "repeat": 1,
+    "flow": "add_takeout",
+    "query": "Cho mình một cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 4,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "display_cart"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 1,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "set_order_type",
+          "order_type": "take-out"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 7.4572,
+    "time_to_final_response_s": 11.0852,
+    "spoken_words": 21,
+    "speech": "Mình đã cập nhật lựa chọn mang đi cho đơn của bạn; bạn muốn chọn thêm món hay thanh toán ngay?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 1,
+        "unit_price": 35000,
+        "note": ""
+      }
+    ],
+    "cart_order_type": "take-out",
+    "order_lines": [],
+    "order_type": null,
+    "checkout_done": false,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 10748,
+    "completion_tokens": 700,
+    "normalized_intent": "ADD_TO_CART",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "display_cart"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "continuation-fix",
+    "repeat": 2,
+    "flow": "add_takeout",
+    "query": "Cho mình một cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 4,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "display_cart"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 1,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "set_order_type",
+          "order_type": "take-out"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 9.1112,
+    "time_to_final_response_s": 11.8245,
+    "spoken_words": 20,
+    "speech": "Mình đã ghi nhận cà phê sữa mang đi trong giỏ. Bạn muốn thêm món khác hay thanh toán ngay?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 1,
+        "unit_price": 35000,
+        "note": ""
+      }
+    ],
+    "cart_order_type": "take-out",
+    "order_lines": [],
+    "order_type": null,
+    "checkout_done": false,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 11091,
+    "completion_tokens": 1042,
+    "normalized_intent": "ADD_TO_CART",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "display_cart"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  }
+]

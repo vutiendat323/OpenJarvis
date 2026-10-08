@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, nullcontext
 from typing import Any, Literal
@@ -29,7 +31,7 @@ from openjarvis.agents._stubs import (
     AgentToolStarted,
 )
 from openjarvis.core.conversation import uncertain_speaker_scope
-from openjarvis.core.types import Conversation, Message, Role
+from openjarvis.core.types import Conversation, Message, Role, ToolCall
 from openjarvis.server.voice.runtime import VOICE_SYSTEM_PROMPT
 from openjarvis.server.voice.text import normalize_speech_text
 
@@ -132,6 +134,8 @@ class _SpeechProjector:
 def agent_input(
     context: Any,
     recall: tuple[Any, Any] | None = None,
+    *,
+    max_history_tokens: int = 4096,
 ) -> tuple[str, AgentContext]:
     """Split a Pipecat context into the Agent's prompt and its history.
 
@@ -149,10 +153,47 @@ def agent_input(
             break
 
     history = [
-        Message(role=Role(role), content=message_text(message))
+        Message(
+            role=Role(role),
+            content=message_text(message),
+            name=message.get("name"),
+            tool_call_id=message.get("tool_call_id"),
+            tool_calls=[
+                ToolCall(
+                    id=call.get("id", ""),
+                    name=call.get("function", {}).get("name", ""),
+                    arguments=call.get("function", {}).get("arguments", "{}"),
+                )
+                for call in message.get("tool_calls", []) or []
+            ]
+            or None,
+            metadata=dict(message.get("metadata", {}) or {}),
+        )
         for message in messages
         if (role := message.get("role")) in Role._value2member_map_
     ]
+    systems = [m for m in history if m.role == Role.SYSTEM]
+    turns: list[list[Message]] = []
+    for message in history:
+        if message.role == Role.SYSTEM:
+            continue
+        if message.role == Role.USER or not turns:
+            turns.append([])
+        turns[-1].append(message)
+    kept: list[Message] = []
+    tokens = 0
+    for turn in reversed(turns):
+        cost = sum(
+            len(m.text.split())
+            + sum(len(call.arguments.split()) for call in m.tool_calls or [])
+            for m in turn
+        )
+        # Keep the newest whole turn even when it alone exceeds the soft budget.
+        if kept and tokens + cost > max_history_tokens:
+            break
+        kept = turn + kept
+        tokens += cost
+    history = systems + kept
 
     if recall is not None and prompt:
         backend, ctx_cfg = recall
@@ -234,6 +275,7 @@ class OpenJarvisLLMService(LLMService):
         super().__init__(**kwargs)
         self._binding = binding
         self._recall = recall
+        self._recall_task: asyncio.Task | None = None
         self._turn_state = turn_state or VoiceTurnState()
         self._speaker_tracker = speaker_tracker
         self._uncertain_allowed_tools = uncertain_allowed_tools
@@ -299,6 +341,53 @@ class OpenJarvisLLMService(LLMService):
         if speech:
             yield LLMTextFrame(speech)
 
+    async def prepare_agent_input(self, context: Any) -> tuple[str, AgentContext]:
+        """Recall off the audio loop, with one in-flight lookup per session."""
+        prompt, result = agent_input(context)
+        if self._recall is None or not prompt:
+            return prompt, result
+        started = time.perf_counter()
+        outcome = "busy"
+        if self._recall_task is None or self._recall_task.done():
+            from openjarvis.tools.storage.context import inject_context
+
+            backend, config = self._recall
+            self._recall_task = asyncio.create_task(
+                asyncio.to_thread(
+                    inject_context,
+                    prompt,
+                    result.conversation.messages,
+                    backend,
+                    config=config,
+                )
+            )
+            # A timed-out lookup may fail after the caller has moved on.
+            self._recall_task.add_done_callback(
+                lambda task: task.exception() if not task.cancelled() else None
+            )
+            try:
+                result.conversation.messages = await asyncio.wait_for(
+                    asyncio.shield(self._recall_task), timeout=0.1
+                )
+                outcome = "ok"
+            except asyncio.TimeoutError:
+                outcome = "timeout"
+            except Exception:
+                outcome = "error"
+                logger.warning("voice memory recall failed", exc_info=True)
+        if outcome != "ok":
+            result.conversation.messages[0].content += (
+                "\nReference retrieval is unavailable for this turn. "
+                "Do not invent store-specific facts; use verified live state "
+                "or explain that the requested information cannot be verified."
+            )
+        logger.info(
+            "voice_recall outcome=%s elapsed_ms=%.2f",
+            outcome,
+            (time.perf_counter() - started) * 1000,
+        )
+        return prompt, result
+
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         """Answer an aggregated context, or pass the frame along."""
         if isinstance(frame, BotStartedSpeakingFrame):
@@ -319,7 +408,7 @@ class OpenJarvisLLMService(LLMService):
             await self.push_frame(frame, direction)
             return
 
-        prompt, context = agent_input(frame.context, self._recall)
+        prompt, context = await self.prepare_agent_input(frame.context)
         if not prompt:
             return
         authority = nullcontext()

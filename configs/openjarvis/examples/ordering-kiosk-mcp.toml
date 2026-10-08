@@ -38,6 +38,8 @@ max_tokens = 4096
 default_agent = "orchestrator"
 system_prompt_path = "configs/openjarvis/prompts/ordering-kiosk.md"
 max_turns = 8
+context_from_memory = true
+intent_normalization = true
 # Flipped to true deliberately, with the cost understood. Read the whole note
 # before flipping it back or leaving it.
 #
@@ -73,6 +75,24 @@ model_hidden = "http_request,skill_manage,typesafe_decide,display_bill,display_p
 # Only this origin may supply a payment QR. Empty would mean no QR can ever be
 # displayed; a wide list would mean the guard proves nothing.
 payment_trusted_origins = "https://trendcoffee.net"
+
+[tools.storage]
+# Curated public FAQ only. Isolated from personal/global memory databases.
+default_backend = "sqlite"
+db_path = "~/.openjarvis/trendcoffee-rag.db"
+context_top_k = 3
+context_min_score = 0.0
+context_max_tokens = 800
+enabled = false  # automatic personal-fact extraction remains off
+
+[sessions]
+# Retain logs for inspection; voice context still starts fresh for each customer.
+enabled = true
+
+[security]
+# Verified public business contacts from the curated corpus. All other PII,
+# card numbers and secrets retain normal redaction; no role/message bypass.
+public_contact_values = ["0886128008", "0367820500", "0945867620", "trend.coffee.tea@gmail.com"]
 
 [skills]
 # Expose only this merchant's prepared menu and guarded checkout procedures.

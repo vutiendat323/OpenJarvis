@@ -272,6 +272,12 @@ def test_parallel_tools_false_survives_the_construction_seam_none_filter():
     assert agent._parallel_tools is False
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_intent_normalization_survives_the_construction_seam(enabled):
+    assert AgentConfig().intent_normalization is False
+    assert _build(intent_normalization=enabled)._intent_normalization is enabled
+
+
 def test_builder_arms_tool_executor_with_capability_policy():
     """A None policy silently disables the check for every tool it routes."""
     import openjarvis.system.builder as builder_module

@@ -1,0 +1,40 @@
+[
+  {
+    "case": "booking_followup",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Tôi muốn đặt tiệc workshop"
+      },
+      {
+        "role": "assistant",
+        "content": "Trend Coffee có hỗ trợ workshop. Bạn cần tư vấn gì?"
+      },
+      {
+        "role": "user",
+        "content": "Số điện thoại đó?"
+      }
+    ],
+    "answer": "Hotline tư vấn đặt tiệc và workshop là **0367820500**. Bạn có thể gọi để trao đổi nhu cầu và xác nhận ngày còn chỗ.",
+    "ttft_ms": 4145.0669480036595,
+    "total_ms": 4145.361522001622,
+    "expected_phone": "0367820500",
+    "phone_pass": true,
+    "tool_calls": []
+  },
+  {
+    "case": "fresh_support",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Số điện thoại hotline hỗ trợ chung?"
+      }
+    ],
+    "answer": "Hotline hỗ trợ chung của TREND Coffee là **0886128008**. Theo hướng dẫn đặt hàng, hotline hỗ trợ từ 8:00 đến 21:00 mỗi ngày.",
+    "ttft_ms": 4473.798890998296,
+    "total_ms": 4474.051053999574,
+    "expected_phone": "0886128008",
+    "phone_pass": true,
+    "tool_calls": []
+  }
+]

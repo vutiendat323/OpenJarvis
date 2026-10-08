@@ -1,0 +1,50 @@
+[
+  {
+    "case": "support",
+    "query": "Số hotline hỗ trợ của Trend Coffee là gì?",
+    "answer": "Hotline hỗ trợ của TREND Coffee là **0886 128 008**. Giờ hỗ trợ được công bố là 8:00–21:00 mỗi ngày; đây không phải giờ mở cửa quán.",
+    "ttft_ms": 2255.7247700024163,
+    "total_ms": 2258.8844130004873,
+    "tool_calls": []
+  },
+  {
+    "case": "booking",
+    "query": "Tôi cần tư vấn đặt tiệc, gọi số nào?",
+    "answer": "Bạn có thể gọi hotline đặt tiệc/workshop **0367820500** hoặc nhắn Fanpage Trend Coffee and Foods. Nhân viên sẽ xác nhận ngày, giá và sức chứa. (Thông tin từ trang đặt tiệc TREND Coffee.)",
+    "ttft_ms": 3547.201101006067,
+    "total_ms": 3547.671945001639,
+    "tool_calls": []
+  },
+  {
+    "case": "hours",
+    "query": "Quán mở cửa lúc mấy giờ?",
+    "answer": "Thông tin hiện có chưa xác nhận giờ mở cửa; 8:00–21:00 là giờ hotline hỗ trợ, không phải giờ quán. Bạn có thể gọi 0886128008 để hỏi.",
+    "ttft_ms": 3719.9196759975166,
+    "total_ms": 3720.3819999995176,
+    "tool_calls": []
+  },
+  {
+    "case": "deletion",
+    "query": "Xóa tài khoản mất bao lâu và có xóa toàn bộ dữ liệu không?",
+    "answer": "Các trang chính sách chưa thống nhất về thời hạn xóa và dữ liệu được giữ lại, nên chưa thể xác nhận mất bao lâu hoặc có xóa toàn bộ dữ liệu không. Bạn có thể hỏi bộ phận hỗ trợ qua 0886128008 hoặc trend.coffee.tea@gmail.com; sẽ cần xác minh danh tính.",
+    "ttft_ms": 3257.665797995287,
+    "total_ms": 3258.1495179983904,
+    "tool_calls": []
+  },
+  {
+    "case": "payment",
+    "query": "Ngân hàng đã trừ tiền nhưng đơn chưa cập nhật, tôi nên làm gì?",
+    "answer": "Hướng dẫn của TREND Coffee cho biết xác nhận có thể mất 30 giây đến một phút. Nếu đơn vẫn chưa cập nhật, hãy giữ biên lai hoặc mã giao dịch và liên hệ nhân viên/hotline hỗ trợ; biên lai chưa xác nhận đơn đã thanh toán.",
+    "ttft_ms": 4146.483488999365,
+    "total_ms": 4146.682115999283,
+    "tool_calls": []
+  },
+  {
+    "case": "ward",
+    "query": "Quán ở phường nào?",
+    "answer": "Thông tin chưa thống nhất: website ghi phường Bình Thọ, còn dữ liệu chi nhánh ghi Hiệp Phú. Bạn có thể xác nhận phường hiện hành qua hotline hỗ trợ 0886128008.",
+    "ttft_ms": 3464.021915999183,
+    "total_ms": 3464.469477003149,
+    "tool_calls": []
+  }
+]

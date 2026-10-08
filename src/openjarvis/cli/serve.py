@@ -395,6 +395,7 @@ def serve(
                 session_store=system.session_store,
                 system_prompt=system_prompt,
                 parallel_tools=system.config.agent.parallel_tools,
+                intent_normalization=system.config.agent.intent_normalization,
                 prompt_builder=prompt_builder,
                 extra_kwargs={
                     "max_tokens": system.config.intelligence.max_tokens,

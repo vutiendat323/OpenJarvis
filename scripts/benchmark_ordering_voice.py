@@ -39,6 +39,8 @@ ROWS = [
     {"id": "latte", "name": "Latte", "price": 51_000, "available": True},
     {"id": "matcha-latte", "name": "Matcha latte", "price": 55_000, "available": True},
     {"id": "yaourt-dau", "name": "Yaourt dâu", "price": 45_000, "available": True},
+    {"id": "coffee-milk", "name": "Cà phê sữa", "price": 35_000, "available": True},
+    {"id": "coffee-black", "name": "Cà phê đen", "price": 35_000, "available": True},
 ]
 
 
@@ -198,10 +200,21 @@ class OrderingFixture:
             *self.skills,
         ]
 
-    def seed(self, *, menu=False, cart=False, ambiguous=False, order_type="take-out"):
+    def seed(
+        self,
+        *,
+        menu=False,
+        cart=False,
+        ambiguous=False,
+        order_type="take-out",
+        menu_id="latte",
+    ):
         if menu:
             assert self.menu.execute(
-                items=ROWS if ambiguous else [ROWS[0]], result_complete=True
+                items=ROWS
+                if ambiguous
+                else [next(row for row in ROWS if row["id"] == menu_id)],
+                result_complete=True,
             ).success
         if cart:
             assert self.cart.edit_without_display(
@@ -226,6 +239,7 @@ class OrderingFixture:
 
 FLOWS = [
     ("menu", "Cho xem các món latte", {}),
+    ("menu_all", "menu", {}),
     ("add_shown", "Thêm hai Latte vào giỏ và mở giỏ", {"menu": True}),
     ("view_cart", "Xem giỏ hàng", {"cart": True}),
     ("checkout_draft", "Thanh toán đơn mang về này, lấy QR", {"cart": True}),
@@ -233,6 +247,30 @@ FLOWS = [
     ("clarify", "Thêm món đó vào giỏ", {"menu": True, "ambiguous": True}),
     ("tables", "Bàn nào còn trống?", {}),
     ("missing_type", "Đặt giỏ hàng này và lấy QR", {"cart": True, "order_type": ""}),
+    ("checkout_direct", "thanh toán 2 cà phê sữa mang đi", {}),
+    ("checkout_polite", "bạn thanh toán 2 cà phê sữa mang đi", {}),
+    ("checkout_sell_black", "Bán cho mình một cà phê đen mang về.", {}),
+    (
+        "checkout_sell_black_shown",
+        "Bán cho mình một cà phê đen mang về.",
+        {"menu": True, "menu_id": "coffee-black"},
+    ),
+    ("checkout_sell_polite", "Bạn bán cho mình một cà phê đen mang về.", {}),
+    ("checkout_buy_black", "Mình muốn mua một cà phê đen mang về.", {}),
+    ("checkout_order_black", "Đặt cho mình một cà phê đen mang về.", {}),
+    ("checkout_give_milk", "Cho mình một cà phê sữa mang đi.", {}),
+    ("checkout_take_milk", "Lấy cho mình một cà phê sữa mang đi.", {}),
+    ("sell_question", "Quán có bán cà phê đen không?", {}),
+    (
+        "sell_draft_only",
+        "Bán cho mình một cà phê đen mang về nhưng chỉ thêm vào giỏ, chưa thanh toán.",
+        {},
+    ),
+    ("negated", "Đừng thanh toán 2 cà phê sữa mang đi", {}),
+    ("past_payment", "Tôi đã thanh toán 2 cà phê sữa mang đi rồi", {}),
+    ("payment_help", "Thanh toán bằng cách nào?", {}),
+    ("add_only", "Thêm 2 cà phê sữa vào giỏ, chưa thanh toán", {}),
+    ("add_takeout", "Thêm một cà phê sữa mang đi vào giỏ, chưa thanh toán.", {}),
 ]
 
 
@@ -285,6 +323,7 @@ async def benchmark(args):
                     system_prompt=prompt,
                     max_tokens=4096,
                     max_turns=8,
+                    intent_normalization=args.intent_normalization,
                 )
                 times, speech, arguments = [], [], []
                 fixture.bus.subscribe(
@@ -312,11 +351,18 @@ async def benchmark(args):
                                         "minPrice",
                                         "maxPrice",
                                         "displayMode",
+                                        "cart_revision",
+                                        "cart_lines",
+                                        "update_order_type",
+                                        "order_type",
+                                        "table",
+                                        "action",
                                     }
                                 },
                             }
                         )
                         if event.data["tool"].startswith("skill_")
+                        or event.data["tool"] == "display_cart"
                         else None
                     ),
                 )
@@ -377,7 +423,26 @@ async def benchmark(args):
                         ]
                         if flow.startswith("checkout_"):
                             expected_id = (
-                                "latte" if flow == "checkout_draft" else "yaourt-dau"
+                                "coffee-black"
+                                if flow
+                                in {
+                                    "checkout_sell_black",
+                                    "checkout_sell_black_shown",
+                                    "checkout_sell_polite",
+                                    "checkout_buy_black",
+                                    "checkout_order_black",
+                                }
+                                else "coffee-milk"
+                                if flow
+                                in {
+                                    "checkout_direct",
+                                    "checkout_polite",
+                                    "checkout_give_milk",
+                                    "checkout_take_milk",
+                                }
+                                else "latte"
+                                if flow == "checkout_draft"
+                                else "yaourt-dau"
                             )
                             behavior_ok = (
                                 behavior_ok
@@ -391,11 +456,72 @@ async def benchmark(args):
                                 == [
                                     {
                                         "variant_id": expected_id,
-                                        "quantity": 2,
+                                        "quantity": 1
+                                        if expected_id == "coffee-black"
+                                        or flow
+                                        in {"checkout_give_milk", "checkout_take_milk"}
+                                        else 2,
                                         "note": "",
                                     }
                                 ]
                             )
+                            if args.intent_normalization:
+                                behavior_ok = (
+                                    behavior_ok
+                                    and result.metadata.get("normalized_intent")
+                                    == "CHECKOUT_NOW"
+                                    and result.metadata.get("intent_satisfied") is True
+                                )
+                                if flow in {"checkout_direct", "checkout_polite"}:
+                                    behavior_ok = behavior_ok and result.metadata.get(
+                                        "execution_path"
+                                    ) == [
+                                        "skill_trendcoffee-add-to-cart",
+                                        "skill_trendcoffee-checkout",
+                                    ]
+                        elif flow in {
+                            "negated",
+                            "past_payment",
+                            "payment_help",
+                            "sell_question",
+                        }:
+                            behavior_ok = (
+                                behavior_ok
+                                and writes == 0
+                                and not checkout_done
+                                and (
+                                    not args.intent_normalization
+                                    or result.metadata.get("normalized_intent")
+                                    == "NONE"
+                                )
+                            )
+                        elif flow in {"add_only", "add_takeout", "sell_draft_only"}:
+                            behavior_ok = (
+                                behavior_ok
+                                and writes == 0
+                                and not checkout_done
+                                and (
+                                    not args.intent_normalization
+                                    or result.metadata.get("normalized_intent")
+                                    == "ADD_TO_CART"
+                                )
+                                and cart_lines
+                                == [
+                                    {
+                                        "variant_id": "coffee-black"
+                                        if flow == "sell_draft_only"
+                                        else "coffee-milk",
+                                        "quantity": 2 if flow == "add_only" else 1,
+                                        "unit_price": 35_000,
+                                        "note": "",
+                                    }
+                                ]
+                            )
+                            if flow == "add_takeout":
+                                behavior_ok = (
+                                    behavior_ok and snapshot["order_type"] == "take-out"
+                                )
+
                         elif flow in {"add_shown", "view_cart"}:
                             behavior_ok = (
                                 behavior_ok
@@ -418,15 +544,18 @@ async def benchmark(args):
                                 and not result.tool_results
                                 and spoken.count("?") == 1
                             )
-                        elif flow == "menu":
-                            behavior_ok = behavior_ok and set(menu_ids) == {
-                                "latte",
-                                "matcha-latte",
-                            }
+                        elif flow in {"menu", "menu_all"}:
+                            expected_menu = (
+                                {row["id"] for row in ROWS}
+                                if flow == "menu_all"
+                                else {"latte", "matcha-latte"}
+                            )
+                            behavior_ok = behavior_ok and set(menu_ids) == expected_menu
                         record = {
                             "variant": args.variant,
                             "repeat": repeat,
                             "flow": flow,
+                            "query": query,
                             "model": args.model,
                             "model_calls": engine.calls,
                             "tool_calls": len(result.tool_results),
@@ -458,11 +587,23 @@ async def benchmark(args):
                             "behavior_ok": behavior_ok,
                             "menu_ids": menu_ids,
                             "cart_lines": cart_lines,
+                            "cart_order_type": snapshot["order_type"],
                             "order_lines": order_lines,
+                            "order_type": order["type"] if order else None,
+                            "checkout_done": checkout_done,
                             "max_turns_exceeded": result.metadata.get(
                                 "max_turns_exceeded", False
                             ),
                             **engine.usage,
+                            **{
+                                key: result.metadata.get(key)
+                                for key in (
+                                    "normalized_intent",
+                                    "intent_satisfied",
+                                    "execution_path",
+                                    "terminal_reason",
+                                )
+                            },
                         }
                     except Exception as exc:
                         record = {
@@ -495,6 +636,7 @@ def main():
     parser.add_argument("--model", default="gpt-6-luna")
     parser.add_argument("--flow", action="append", choices=[f[0] for f in FLOWS])
     parser.add_argument("--variant", default="baseline")
+    parser.add_argument("--intent-normalization", action="store_true")
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=90)
     parser.add_argument("--output", type=Path, required=True)

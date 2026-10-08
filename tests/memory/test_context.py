@@ -81,6 +81,26 @@ def test_format_context_empty():
     assert format_context([]) == ""
 
 
+def test_current_search_topic_is_not_rewritten_by_prior_history(tmp_path):
+    from openjarvis.tools.storage.sqlite import SQLiteMemory
+
+    backend = SQLiteMemory(tmp_path / "followup.db")
+    backend.store(
+        "Đặt tiệc workshop hotline đặt tiệc workshop đặt tiệc", source="booking"
+    )
+    backend.store("Hoàn tiền sản phẩm lỗi", source="refund")
+    messages = [
+        Message(role=Role.USER, content="Đặt tiệc workshop hotline"),
+        Message(role=Role.ASSISTANT, content="Bạn cần tư vấn gì?"),
+    ]
+    enriched = inject_context(
+        "Vậy hoàn tiền như thế nào?", messages, backend, config=ContextConfig(top_k=1)
+    )
+    assert "[Source: refund]" in enriched[0].text
+    assert "[Source: booking]" not in enriched[0].text
+    assert messages[0].text == "Đặt tiệc workshop hotline"
+
+
 def test_recall_omits_missing_skills_but_keeps_live_skills_and_other_memory():
     results = [
         RetrievalResult(

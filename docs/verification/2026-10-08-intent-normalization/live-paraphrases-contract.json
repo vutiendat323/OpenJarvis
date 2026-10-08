@@ -1,0 +1,852 @@
+[
+  {
+    "variant": "checkout-contract",
+    "repeat": 0,
+    "flow": "checkout_direct",
+    "query": "thanh toán 2 cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 2
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "uses_explicit_nonce": true,
+        "arguments": {
+          "order_type": "take-out",
+          "table": "",
+          "cart_revision": 1,
+          "update_order_type": true
+        }
+      }
+    ],
+    "time_to_first_tool_s": 5.9416,
+    "time_to_final_response_s": 13.0148,
+    "spoken_words": 27,
+    "speech": "Đơn mang đi đã được tạo và mã QR thanh toán đang hiển thị. Bạn quét mã để thanh toán; đơn vẫn chờ xác nhận thanh toán.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 10177,
+    "completion_tokens": 587,
+    "normalized_intent": "CHECKOUT_NOW",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "checkout-contract",
+    "repeat": 0,
+    "flow": "checkout_polite",
+    "query": "bạn thanh toán 2 cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 2
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "uses_explicit_nonce": true,
+        "arguments": {
+          "order_type": "take-out",
+          "table": "",
+          "cart_revision": 1,
+          "update_order_type": true
+        }
+      }
+    ],
+    "time_to_first_tool_s": 5.4554,
+    "time_to_final_response_s": 8.5203,
+    "spoken_words": 23,
+    "speech": "Đơn mang đi đã được lập; bạn quét mã QR trên màn hình để thanh toán, giao dịch hiện đang chờ xác nhận.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 10480,
+    "completion_tokens": 682,
+    "normalized_intent": "CHECKOUT_NOW",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "checkout-contract",
+    "repeat": 1,
+    "flow": "checkout_direct",
+    "query": "thanh toán 2 cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 2
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "uses_explicit_nonce": true,
+        "arguments": {
+          "cart_revision": 1,
+          "order_type": "take-out",
+          "table": "",
+          "update_order_type": true
+        }
+      }
+    ],
+    "time_to_first_tool_s": 4.1551,
+    "time_to_final_response_s": 8.7381,
+    "spoken_words": 27,
+    "speech": "Đơn mang đi đã được tạo và mã QR thanh toán đang hiển thị; vui lòng quét mã để thanh toán, đơn vẫn chờ xác nhận nhé.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 10402,
+    "completion_tokens": 790,
+    "normalized_intent": "CHECKOUT_NOW",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "checkout-contract",
+    "repeat": 1,
+    "flow": "checkout_polite",
+    "query": "bạn thanh toán 2 cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 2
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "uses_explicit_nonce": true,
+        "arguments": {
+          "order_type": "take-out",
+          "table": "",
+          "cart_revision": 1,
+          "update_order_type": true
+        }
+      }
+    ],
+    "time_to_first_tool_s": 2.9475,
+    "time_to_final_response_s": 7.5274,
+    "spoken_words": 24,
+    "speech": "Đơn mang đi đã được tạo; vui lòng quét mã QR trên màn hình để thanh toán. Thanh toán vẫn đang chờ xác nhận.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 10210,
+    "completion_tokens": 374,
+    "normalized_intent": "CHECKOUT_NOW",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "checkout-contract",
+    "repeat": 2,
+    "flow": "checkout_direct",
+    "query": "thanh toán 2 cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 2
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "uses_explicit_nonce": true,
+        "arguments": {
+          "order_type": "take-out",
+          "table": "",
+          "cart_revision": 1,
+          "update_order_type": true
+        }
+      }
+    ],
+    "time_to_first_tool_s": 2.7378,
+    "time_to_final_response_s": 6.1091,
+    "spoken_words": 17,
+    "speech": "Mình xác nhận đơn mang đi; khi mã QR hiển thị, bạn quét để thanh toán nhé.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 10196,
+    "completion_tokens": 445,
+    "normalized_intent": "CHECKOUT_NOW",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "checkout-contract",
+    "repeat": 2,
+    "flow": "checkout_polite",
+    "query": "bạn thanh toán 2 cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 2
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "uses_explicit_nonce": true,
+        "arguments": {
+          "order_type": "take-out",
+          "table": "",
+          "cart_revision": 1,
+          "update_order_type": true
+        }
+      }
+    ],
+    "time_to_first_tool_s": 5.1935,
+    "time_to_final_response_s": 10.5255,
+    "spoken_words": 25,
+    "speech": "Đơn mang đi đã được tạo; mã QR thanh toán đang hiển thị, vui lòng quét để thanh toán. Trạng thái vẫn chờ xác nhận.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 10441,
+    "completion_tokens": 925,
+    "normalized_intent": "CHECKOUT_NOW",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "checkout-contract",
+    "repeat": 3,
+    "flow": "checkout_direct",
+    "query": "thanh toán 2 cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 2
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "uses_explicit_nonce": true,
+        "arguments": {
+          "order_type": "take-out",
+          "table": "",
+          "cart_revision": 1,
+          "update_order_type": true
+        }
+      }
+    ],
+    "time_to_first_tool_s": 4.1965,
+    "time_to_final_response_s": 6.5826,
+    "spoken_words": 24,
+    "speech": "Đơn mang đi đã được xác nhận; vui lòng quét mã QR trên màn hình để thanh toán, giao dịch sẽ chờ xác minh.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 10270,
+    "completion_tokens": 454,
+    "normalized_intent": "CHECKOUT_NOW",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "checkout-contract",
+    "repeat": 3,
+    "flow": "checkout_polite",
+    "query": "bạn thanh toán 2 cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 2
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "uses_explicit_nonce": true,
+        "arguments": {
+          "order_type": "take-out",
+          "table": "",
+          "cart_revision": 1,
+          "update_order_type": true
+        }
+      }
+    ],
+    "time_to_first_tool_s": 4.9662,
+    "time_to_final_response_s": 8.8917,
+    "spoken_words": 26,
+    "speech": "Đơn mang đi đã được lập, mã QR thanh toán đang hiển thị. Vui lòng quét mã để thanh toán; giao dịch còn chờ xác nhận.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 10198,
+    "completion_tokens": 511,
+    "normalized_intent": "CHECKOUT_NOW",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "checkout-contract",
+    "repeat": 4,
+    "flow": "checkout_direct",
+    "query": "thanh toán 2 cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 2
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "uses_explicit_nonce": true,
+        "arguments": {
+          "order_type": "take-out",
+          "table": "",
+          "cart_revision": 1,
+          "update_order_type": true
+        }
+      }
+    ],
+    "time_to_first_tool_s": 4.4242,
+    "time_to_final_response_s": 7.5495,
+    "spoken_words": 25,
+    "speech": "Đơn mang đi đã được tạo. Bạn vui lòng quét mã QR trên màn hình để thanh toán; thanh toán vẫn đang chờ xác nhận.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 10280,
+    "completion_tokens": 496,
+    "normalized_intent": "CHECKOUT_NOW",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "checkout-contract",
+    "repeat": 4,
+    "flow": "checkout_polite",
+    "query": "bạn thanh toán 2 cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 2,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 2
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "uses_explicit_nonce": true,
+        "arguments": {
+          "order_type": "take-out",
+          "table": "",
+          "cart_revision": 1,
+          "update_order_type": true
+        }
+      }
+    ],
+    "time_to_first_tool_s": 3.4015,
+    "time_to_final_response_s": 6.5448,
+    "spoken_words": 23,
+    "speech": "Đơn mang đi đã được tạo; bạn quét mã QR trên màn hình để thanh toán. Thanh toán vẫn đang chờ xác nhận.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "order_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 2,
+        "note": ""
+      }
+    ],
+    "max_turns_exceeded": false,
+    "prompt_tokens": 10166,
+    "completion_tokens": 395,
+    "normalized_intent": "CHECKOUT_NOW",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  }
+]

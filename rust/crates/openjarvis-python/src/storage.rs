@@ -61,10 +61,11 @@ impl PySQLiteMemory {
     }
 
     #[pyo3(signature = (query, top_k=5))]
-    fn retrieve(&self, query: &str, top_k: usize) -> PyResult<String> {
-        let results = self
-            .inner
-            .retrieve(query, top_k)
+    fn retrieve(&self, py: Python<'_>, query: &str, top_k: usize) -> PyResult<String> {
+        // SQLite can wait on locks. Leave Python free to process audio and
+        // enforce the caller's deadline while this worker finishes its query.
+        let results = py
+            .allow_threads(|| self.inner.retrieve(query, top_k))
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         Ok(serde_json::to_string(&results).unwrap_or_default())
     }

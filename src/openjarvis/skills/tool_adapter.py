@@ -263,12 +263,23 @@ class SkillTool(BaseTool):
 
     @property
     def spec(self) -> ToolSpec:
+        policy = self._manifest.metadata.get("openjarvis", {}) or {}
         return ToolSpec(
             name=f"skill_{self._manifest.name}",
             description=self._manifest.description or f"Skill: {self._manifest.name}",
             parameters=self._parameters,
             category="skill",
             required_capabilities=self._manifest.required_capabilities,
+            metadata={
+                key: policy[key]
+                for key in (
+                    "intent_contract",
+                    "continuation_arguments",
+                    "read_only",
+                    "runtime_arguments",
+                )
+                if key in policy
+            },
         )
 
     def execute(self, **params: Any) -> ToolResult:
@@ -285,7 +296,10 @@ class SkillTool(BaseTool):
                 tool_name=tool_name,
                 content=f"invalid_skill_arguments: {error}",
                 success=False,
-                metadata=self._build_result_metadata(steps_run=0),
+                metadata={
+                    **self._build_result_metadata(steps_run=0),
+                    "execution_started": False,
+                },
             )
         content_parts: List[str] = []
         display_metadata: Dict[str, Any] = {}

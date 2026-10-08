@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from typing import Dict, Tuple
 
 from openjarvis._rust_bridge import get_rust_module, scan_result_from_json
@@ -94,9 +96,12 @@ class PIIScanner(BaseScanner):
 
     scanner_id = "pii"
 
-    def __init__(self) -> None:
+    def __init__(self, *, public_contact_values: Sequence[str] = ()) -> None:
         _rust = get_rust_module()
         self._rust_impl = _rust.PIIScanner()
+        self._public_contacts = {
+            value.strip().casefold() for value in public_contact_values
+        }
 
     PATTERNS: Dict[str, Tuple[str, ThreatLevel, str]] = {
         "email": (
@@ -138,11 +143,34 @@ class PIIScanner(BaseScanner):
 
     def scan(self, text: str) -> ScanResult:
         """Scan *text* for PII patterns — always via Rust backend."""
-        return scan_result_from_json(self._rust_impl.scan(text))
+        result = scan_result_from_json(self._rust_impl.scan(text))
+        result.findings = [
+            finding
+            for finding in result.findings
+            if not (
+                finding.pattern_name == "email"
+                and finding.matched_text.casefold() in self._public_contacts
+            )
+            and not (
+                finding.pattern_name == "us_phone"
+                and re.sub(r"\D", "", finding.matched_text) in self._public_contacts
+            )
+        ]
+        return result
 
     def redact(self, text: str) -> str:
         """Replace PII matches with ``[REDACTED:{pattern_name}]``."""
-        return self._rust_impl.redact(text)
+        if not self._public_contacts:
+            return self._rust_impl.redact(text)
+        # Replace full native matches, longest first. This preserves Unicode
+        # and never exempts a substring of a different address/card/secret.
+        for finding in sorted(
+            self.scan(text).findings, key=lambda f: -len(f.matched_text)
+        ):
+            text = text.replace(
+                finding.matched_text, f"[REDACTED:{finding.pattern_name}]"
+            )
+        return text
 
 
 __all__ = ["PIIScanner", "SecretScanner"]

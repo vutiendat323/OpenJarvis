@@ -1,8 +1,15 @@
 [skill]
 name = "trendcoffee-checkout"
-description = "Checkout a freshly confirmed take-out or at-table order in one call, show the verified bill, and display its payment QR. Pass cart_revision or cart_lines, turn_nonce, and customer_message. For a saved draft, order_note must match; order_type and table must match unless this turn states the dining choice with payment: then pass update_order_type=true with order_type=take-out and table empty, or order_type=at-table and the chosen table slug, to atomically apply it to the current revision. For at-table use the table slug already selected from a fresh table read (a reserved table is allowed only after the customer confirms sharing it). Delivery is not supported."
+description = "For names just added by the add-to-cart skill, checkout that saved draft with cart_revision copied from runtime_context and update_order_type=true; OMIT cart_lines and do not insert a display_cart dining edit. Never combine cart_lines with update_order_type=true. Checkout a freshly confirmed take-out or at-table order in one call, show the verified bill, and display its payment QR. Pass cart_revision or cart_lines, turn_nonce, and customer_message. For a saved draft, order_note must match; order_type and table must match unless this turn states the dining choice with payment: then pass update_order_type=true with order_type=take-out and table empty, or order_type=at-table and the chosen table slug, to atomically apply it to the current revision. For at-table use the table slug already selected from a fresh table read (a reserved table is allowed only after the customer confirms sharing it). Delivery is not supported."
 checkout = true
 accepts_cart_lines = true
+
+
+[skill.metadata.openjarvis.intent_contract]
+name = "CHECKOUT_NOW"
+
+[skill.metadata.openjarvis.runtime_arguments]
+turn_nonce = "turn_nonce"
 
 # Read-only merchant endpoints the customer display uses around this checkout:
 # the live table list for the touch picker and the order it polls for payment.

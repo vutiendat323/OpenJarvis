@@ -1,0 +1,10 @@
+{
+  "samples": 100,
+  "first_ms": 3.0611940019298345,
+  "p50_ms": 1.4721320039825514,
+  "p95_ms": 1.6601669994997792,
+  "max_ms": 3.0611940019298345,
+  "followup_context_pass": true,
+  "new_session_history_isolation_pass": true,
+  "scope": "Actual async voice input preparation with native SQLite; no microphone, STT, model or TTS."
+}

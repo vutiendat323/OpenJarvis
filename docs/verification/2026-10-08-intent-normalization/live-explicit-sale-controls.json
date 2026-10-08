@@ -1,0 +1,528 @@
+[
+  {
+    "variant": "explicit-sale-controls",
+    "repeat": 0,
+    "flow": "sell_question",
+    "query": "Quán có bán cà phê đen không?",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 3,
+    "tool_names": [
+      "skill_trendcoffee-menu"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-menu",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "itemTerms": [
+            "cà phê đen"
+          ],
+          "categoryTerms": [],
+          "minPrice": 0,
+          "maxPrice": 1000000000,
+          "displayMode": "filtered"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 4.4488,
+    "time_to_final_response_s": 4.455,
+    "spoken_words": 22,
+    "speech": "Mình kiểm tra menu hiện tại cho bạn; các món phù hợp sẽ hiển thị trên màn hình để bạn xem nhé.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [
+      "coffee-black"
+    ],
+    "cart_lines": [],
+    "cart_order_type": "",
+    "order_lines": [],
+    "order_type": null,
+    "checkout_done": false,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 5279,
+    "completion_tokens": 246,
+    "normalized_intent": "NONE",
+    "intent_satisfied": false,
+    "execution_path": [
+      "skill_trendcoffee-menu"
+    ],
+    "terminal_reason": "ANSWER"
+  },
+  {
+    "variant": "explicit-sale-controls",
+    "repeat": 0,
+    "flow": "sell_draft_only",
+    "query": "Bán cho mình một cà phê đen mang về nhưng chỉ thêm vào giỏ, chưa thanh toán.",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 4,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "display_cart"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê đen",
+              "quantity": 1,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-black",
+              "name": "Cà phê đen",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "set_order_type",
+          "order_type": "take-out"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 8.7773,
+    "time_to_final_response_s": 11.6145,
+    "spoken_words": 25,
+    "speech": "Mình đã lưu món trong giỏ và chọn mang về; bạn có thể tiếp tục chọn món khác hoặc xem lại giỏ khi sẵn sàng.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "coffee-black",
+        "quantity": 1,
+        "unit_price": 35000,
+        "note": ""
+      }
+    ],
+    "cart_order_type": "take-out",
+    "order_lines": [],
+    "order_type": null,
+    "checkout_done": false,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 11541,
+    "completion_tokens": 882,
+    "normalized_intent": "ADD_TO_CART",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "display_cart"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "explicit-sale-controls",
+    "repeat": 0,
+    "flow": "negated",
+    "query": "Đừng thanh toán 2 cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 2.4905,
+    "spoken_words": 12,
+    "speech": "Đã rõ, tôi sẽ không thanh toán hoặc thêm món vào giỏ.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "cart_order_type": "",
+    "order_lines": [],
+    "order_type": null,
+    "checkout_done": false,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 5281,
+    "completion_tokens": 176,
+    "normalized_intent": "NONE",
+    "intent_satisfied": false,
+    "execution_path": [],
+    "terminal_reason": "ANSWER"
+  },
+  {
+    "variant": "explicit-sale-controls",
+    "repeat": 0,
+    "flow": "add_takeout",
+    "query": "Cho mình một cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 1,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "uses_explicit_nonce": true,
+        "arguments": {
+          "cart_revision": 1,
+          "order_type": "take-out",
+          "table": "",
+          "update_order_type": true
+        }
+      }
+    ],
+    "time_to_first_tool_s": 4.7609,
+    "time_to_final_response_s": 8.3735,
+    "spoken_words": 23,
+    "speech": "Đơn mang đi đã được tạo; vui lòng quét mã QR đang hiển thị để thanh toán, trạng thái sẽ chờ xác nhận.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": false,
+    "menu_ids": [],
+    "cart_lines": [],
+    "cart_order_type": "",
+    "order_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 1,
+        "note": ""
+      }
+    ],
+    "order_type": "take-out",
+    "checkout_done": true,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 10947,
+    "completion_tokens": 446,
+    "normalized_intent": "CHECKOUT_NOW",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "explicit-sale-controls",
+    "repeat": 1,
+    "flow": "sell_question",
+    "query": "Quán có bán cà phê đen không?",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 3,
+    "tool_names": [
+      "skill_trendcoffee-menu"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-menu",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "itemTerms": [
+            "cà phê đen"
+          ],
+          "categoryTerms": [],
+          "minPrice": 0,
+          "maxPrice": 1000000000,
+          "displayMode": "filtered"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 2.83,
+    "time_to_final_response_s": 2.8363,
+    "spoken_words": 23,
+    "speech": "Mình kiểm tra menu hiện tại giúp bạn; kết quả phù hợp sẽ hiển thị trên màn hình để bạn tham khảo nhé.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [
+      "coffee-black"
+    ],
+    "cart_lines": [],
+    "cart_order_type": "",
+    "order_lines": [],
+    "order_type": null,
+    "checkout_done": false,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 5280,
+    "completion_tokens": 194,
+    "normalized_intent": "NONE",
+    "intent_satisfied": false,
+    "execution_path": [
+      "skill_trendcoffee-menu"
+    ],
+    "terminal_reason": "ANSWER"
+  },
+  {
+    "variant": "explicit-sale-controls",
+    "repeat": 1,
+    "flow": "sell_draft_only",
+    "query": "Bán cho mình một cà phê đen mang về nhưng chỉ thêm vào giỏ, chưa thanh toán.",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 4,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "display_cart"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê đen",
+              "quantity": 1,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-black",
+              "name": "Cà phê đen",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "set_order_type",
+          "order_type": "take-out"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 6.1485,
+    "time_to_final_response_s": 9.377,
+    "spoken_words": 21,
+    "speech": "Cà phê đen đã được thêm vào giỏ để mang về, chưa thanh toán. Bạn muốn chọn thêm món nào không?",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [
+      {
+        "variant_id": "coffee-black",
+        "quantity": 1,
+        "unit_price": 35000,
+        "note": ""
+      }
+    ],
+    "cart_order_type": "take-out",
+    "order_lines": [],
+    "order_type": null,
+    "checkout_done": false,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 11332,
+    "completion_tokens": 705,
+    "normalized_intent": "ADD_TO_CART",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "display_cart"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  },
+  {
+    "variant": "explicit-sale-controls",
+    "repeat": 1,
+    "flow": "negated",
+    "query": "Đừng thanh toán 2 cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 0,
+    "internal_tool_calls": 0,
+    "tool_names": [],
+    "tool_arguments": [],
+    "time_to_first_tool_s": null,
+    "time_to_final_response_s": 3.0646,
+    "spoken_words": 12,
+    "speech": "Mình chưa thực hiện thanh toán hay thêm món nào vào giỏ.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [],
+    "cart_lines": [],
+    "cart_order_type": "",
+    "order_lines": [],
+    "order_type": null,
+    "checkout_done": false,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 5283,
+    "completion_tokens": 109,
+    "normalized_intent": "NONE",
+    "intent_satisfied": false,
+    "execution_path": [],
+    "terminal_reason": "ANSWER"
+  },
+  {
+    "variant": "explicit-sale-controls",
+    "repeat": 1,
+    "flow": "add_takeout",
+    "query": "Cho mình một cà phê sữa mang đi",
+    "model": "gpt-6-luna",
+    "model_calls": 2,
+    "tool_calls": 2,
+    "internal_tool_calls": 10,
+    "tool_names": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-add-to-cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "items": [
+            {
+              "contains": "cà phê sữa",
+              "quantity": 1,
+              "note": ""
+            }
+          ]
+        }
+      },
+      {
+        "tool": "display_cart",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "action": "add",
+          "items": [
+            {
+              "variant_id": "coffee-milk",
+              "name": "Cà phê sữa",
+              "size": "Tiêu chuẩn",
+              "note": "",
+              "available": true,
+              "unit_price": 35000,
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      {
+        "tool": "skill_trendcoffee-checkout",
+        "uses_explicit_nonce": true,
+        "arguments": {
+          "order_type": "take-out",
+          "table": "",
+          "cart_revision": 1,
+          "update_order_type": true
+        }
+      }
+    ],
+    "time_to_first_tool_s": 5.4864,
+    "time_to_final_response_s": 11.9956,
+    "spoken_words": 22,
+    "speech": "Đơn mang đi đã được tạo; vui lòng quét mã QR trên màn hình để thanh toán, đơn vẫn chờ xác nhận.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 2,
+    "behavior_ok": false,
+    "menu_ids": [],
+    "cart_lines": [],
+    "cart_order_type": "",
+    "order_lines": [
+      {
+        "variant_id": "coffee-milk",
+        "quantity": 1,
+        "note": ""
+      }
+    ],
+    "order_type": "take-out",
+    "checkout_done": true,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 11119,
+    "completion_tokens": 873,
+    "normalized_intent": "CHECKOUT_NOW",
+    "intent_satisfied": true,
+    "execution_path": [
+      "skill_trendcoffee-add-to-cart",
+      "skill_trendcoffee-checkout"
+    ],
+    "terminal_reason": "TARGET_COMPLETED"
+  }
+]

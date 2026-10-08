@@ -1,0 +1,46 @@
+[
+  {
+    "query": "hotline hỗ trợ",
+    "ranking": [
+      "02-lien-he",
+      "03-dat-tiec",
+      "05-ho-tro-thanh-toan"
+    ],
+    "p50_ms": 2.1213739964878187,
+    "p95_ms": 4.236501001287252,
+    "samples": 25
+  },
+  {
+    "query": "dat tiec workshop",
+    "ranking": [
+      "03-dat-tiec",
+      "01-gioi-thieu",
+      "04-huong-dan-dat-hang"
+    ],
+    "p50_ms": 3.532434995577205,
+    "p95_ms": 4.34931199561106,
+    "samples": 25
+  },
+  {
+    "query": "xoa tai khoan",
+    "ranking": [
+      "07-tai-khoan-quyen-rieng-tu",
+      "06-yeu-cau-hoan-tien",
+      "01-gioi-thieu"
+    ],
+    "p50_ms": 3.1149580026976764,
+    "p95_ms": 3.830396002740599,
+    "samples": 25
+  },
+  {
+    "query": "Đã trừ tiền nhưng đơn chưa cập nhật",
+    "ranking": [
+      "05-ho-tro-thanh-toan",
+      "06-yeu-cau-hoan-tien",
+      "04-huong-dan-dat-hang"
+    ],
+    "p50_ms": 2.711405999434646,
+    "p95_ms": 4.171250999206677,
+    "samples": 25
+  }
+]

@@ -998,6 +998,7 @@ class AgentConfig:
     max_turns: int = 10
     tools: str = ""  # comma-separated tool names
     parallel_tools: bool = True  # False runs a turn's tool calls one at a time
+    intent_normalization: bool = False  # goals supplied by tool contracts
     objective: str = ""  # concise purpose for routing/learning/docs
     system_prompt: str = ""  # inline system prompt (takes precedence if set)
     system_prompt_path: str = ""  # path to system prompt file (.txt, .md)
@@ -1292,6 +1293,7 @@ class SecurityConfig:
     mode: str = "redact"  # "redact" | "warn" | "block"
     secret_scanner: bool = True
     pii_scanner: bool = True
+    public_contact_values: List[str] = field(default_factory=list)
     audit_log_path: str = field(
         default_factory=lambda: str(get_config_dir() / "audit.db")
     )

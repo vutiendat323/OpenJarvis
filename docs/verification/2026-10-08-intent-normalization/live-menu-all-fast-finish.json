@@ -1,0 +1,57 @@
+[
+  {
+    "variant": "display-ack-fast-finish",
+    "repeat": 0,
+    "flow": "menu_all",
+    "query": "menu",
+    "model": "gpt-6-luna",
+    "model_calls": 1,
+    "tool_calls": 1,
+    "internal_tool_calls": 3,
+    "tool_names": [
+      "skill_trendcoffee-menu"
+    ],
+    "tool_arguments": [
+      {
+        "tool": "skill_trendcoffee-menu",
+        "uses_explicit_nonce": false,
+        "arguments": {
+          "itemTerms": [],
+          "categoryTerms": [],
+          "minPrice": 0,
+          "maxPrice": 1000000000,
+          "displayMode": "browse"
+        }
+      }
+    ],
+    "time_to_first_tool_s": 2.9736,
+    "time_to_final_response_s": 2.9846,
+    "spoken_words": 13,
+    "speech": "Mời bạn xem menu trên màn hình và chọn món muốn gọi nhé.",
+    "speech_before_tool": false,
+    "failed_tools": [],
+    "failure_details": [],
+    "merchant_writes": 0,
+    "behavior_ok": true,
+    "menu_ids": [
+      "latte",
+      "matcha-latte",
+      "yaourt-dau",
+      "coffee-milk"
+    ],
+    "cart_lines": [],
+    "cart_order_type": "",
+    "order_lines": [],
+    "order_type": null,
+    "checkout_done": false,
+    "max_turns_exceeded": false,
+    "prompt_tokens": 4993,
+    "completion_tokens": 66,
+    "normalized_intent": "NONE",
+    "intent_satisfied": false,
+    "execution_path": [
+      "skill_trendcoffee-menu"
+    ],
+    "terminal_reason": "ANSWER"
+  }
+]

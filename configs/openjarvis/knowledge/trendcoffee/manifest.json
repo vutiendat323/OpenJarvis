@@ -1,0 +1,120 @@
+{
+  "corpus_id": "trendcoffee-public-faq",
+  "version": "2026-10-08",
+  "language": "vi",
+  "official_domain": "trendcoffee.net",
+  "status": "indexed_and_enabled",
+  "index_directory": "documents",
+  "documents": [
+    {
+      "id": "01-gioi-thieu",
+      "file": "documents/01-gioi-thieu.md",
+      "sources": [
+        "https://trendcoffee.net/about"
+      ],
+      "verified_on": "2026-10-08",
+      "verification": "public_source_observed",
+      "approval": "not_operator_reviewed",
+      "scope": "brand_website_guidance",
+      "sha256": "7ea92a5ce6ae57e5b420848a902681b7c8b9bc3cb07462574e964c9968f1017e",
+      "document_words": 157
+    },
+    {
+      "id": "02-lien-he",
+      "file": "documents/02-lien-he.md",
+      "sources": [
+        "https://trendcoffee.net/",
+        "https://trendcoffee.net/order-instructions",
+        "https://trendcoffee.net/api/latest/branch"
+      ],
+      "verified_on": "2026-10-08",
+      "verification": "public_source_observed",
+      "approval": "not_operator_reviewed",
+      "scope": "brand_website_guidance",
+      "sha256": "37338c4df447295470d1b6075f3a27f4d8e7885515105c18c07c516849740f6b",
+      "document_words": 167
+    },
+    {
+      "id": "03-dat-tiec",
+      "file": "documents/03-dat-tiec.md",
+      "sources": [
+        "https://trendcoffee.net/booking"
+      ],
+      "verified_on": "2026-10-08",
+      "verification": "public_source_observed",
+      "approval": "not_operator_reviewed",
+      "scope": "brand_website_guidance",
+      "sha256": "630968b5ff6db0a4b8c3957c223560c7bad5fd869f5a0d27db278b4b0d44eea9",
+      "document_words": 144
+    },
+    {
+      "id": "04-huong-dan-dat-hang",
+      "file": "documents/04-huong-dan-dat-hang.md",
+      "sources": [
+        "https://trendcoffee.net/order-instructions"
+      ],
+      "verified_on": "2026-10-08",
+      "verification": "public_source_observed",
+      "approval": "not_operator_reviewed",
+      "scope": "brand_website_guidance",
+      "sha256": "41caf2388750ba29239425999841442b7b1e07689e20ea39184ba558b4847c7a",
+      "document_words": 183
+    },
+    {
+      "id": "05-ho-tro-thanh-toan",
+      "file": "documents/05-ho-tro-thanh-toan.md",
+      "sources": [
+        "https://trendcoffee.net/payment-instructions"
+      ],
+      "verified_on": "2026-10-08",
+      "verification": "public_source_observed",
+      "approval": "not_operator_reviewed",
+      "scope": "brand_website_guidance",
+      "sha256": "61da72e774736ecacc5c4b35bb3c2e591897306d91211dbbf9fd3cff0f3be88a",
+      "document_words": 210
+    },
+    {
+      "id": "06-yeu-cau-hoan-tien",
+      "file": "documents/06-yeu-cau-hoan-tien.md",
+      "sources": [
+        "https://trendcoffee.net/policy"
+      ],
+      "verified_on": "2026-10-08",
+      "verification": "public_source_observed",
+      "approval": "not_operator_reviewed",
+      "scope": "brand_website_guidance",
+      "sha256": "8fbfcdbb6ec6dab9d174adeec5cdb79f582653fad286f017aef3167443e8b7ff",
+      "document_words": 138
+    },
+    {
+      "id": "07-tai-khoan-quyen-rieng-tu",
+      "file": "documents/07-tai-khoan-quyen-rieng-tu.md",
+      "sources": [
+        "https://trendcoffee.net/security",
+        "https://trendcoffee.net/delete-account",
+        "https://trendcoffee.net/policy"
+      ],
+      "verified_on": "2026-10-08",
+      "verification": "public_source_observed",
+      "approval": "not_operator_reviewed",
+      "scope": "brand_website_guidance",
+      "sha256": "c117e4777da9f47ae720f5bd2070c38f43ce12f0597610c9afb79fccd201144d",
+      "document_words": 176
+    }
+  ],
+  "exclude": [
+    "prices",
+    "stock",
+    "promotions",
+    "payment_details",
+    "order_status",
+    "customer_data"
+  ],
+  "unresolved": [
+    "address_ward",
+    "deletion_deadline_and_retention",
+    "refund_response_window"
+  ],
+  "runtime_note": "Dedicated SQLite database configured by ordering-kiosk-mcp.toml. benchmark_kiosk_rag.py loads manifest metadata; generic CLI does not. No metadata tenant filter for mixed databases.",
+  "verification_report": "docs/verification/2026-10-08-kiosk-history-rag/report.md"
+}

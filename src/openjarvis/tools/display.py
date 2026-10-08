@@ -628,7 +628,7 @@ class DisplayCartTool(_DisplayTool):
                 "required": ["action"],
             },
             category="display",
-            metadata=dict(DISPLAYS),
+            metadata={**DISPLAYS, "continuation_arguments": {"finish_turn": False}},
         )
 
     def execute(self, **params: Any) -> ToolResult:
