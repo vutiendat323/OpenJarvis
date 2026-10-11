@@ -167,53 +167,12 @@ describe('KioskPage', () => {
     expect(markup).toContain('aria-pressed="false"');
   });
 
-  it('renders consent actions in Vietnamese when uiLanguage is vi', () => {
-    mockUiLanguage = 'vi';
-    const markup = renderToStaticMarkup(
-      <MemoryRouter>
-        <KioskPage />
-      </MemoryRouter>,
-    );
-
-    expect(markup).toContain('data-testid="kiosk-prompting-overlay"');
-    expect(markup).toContain('Sẵn sàng gọi món chưa?');
-    expect(markup).toContain('Bắt đầu gọi món');
-    expect(markup).toContain('Không phải bây giờ');
-    expect(markup).toContain('trợ lý bán hàng');
-    expect(markup).not.toContain('Ready to chat?');
-    expect(markup).not.toContain('Start chatting');
-  });
-
-  it('renders consent actions in English when uiLanguage is en', () => {
-    mockUiLanguage = 'en';
-    const markup = renderToStaticMarkup(
-      <MemoryRouter>
-        <KioskPage />
-      </MemoryRouter>,
-    );
-
-    expect(markup).toContain('data-testid="kiosk-prompting-overlay"');
-    expect(markup).toContain('Ready to order?');
-    expect(markup).toContain('Start ordering');
-    expect(markup).toContain('Not now');
-    expect(markup).toContain('ordering assistant');
-    expect(markup).not.toContain('Sẵn sàng gọi món chưa?');
-    expect(markup).not.toContain('Bắt đầu gọi món');
-  });
-
-  it('hides the consent prompt while a voice session is active', () => {
-    mockUiLanguage = 'vi';
-    mockVoiceState.status = 'connecting';
-
-    const markup = renderToStaticMarkup(
-      <MemoryRouter>
-        <KioskPage />
-      </MemoryRouter>,
-    );
-
+  it.each(['vi', 'en'] as const)('does not block the kiosk with a consent popup in %s', (language) => {
+    mockUiLanguage = language;
+    const markup = renderToStaticMarkup(<MemoryRouter><KioskPage /></MemoryRouter>);
     expect(markup).not.toContain('data-testid="kiosk-prompting-overlay"');
-    expect(markup).not.toContain('Sẵn sàng gọi món chưa?');
     expect(markup).not.toContain('Bắt đầu gọi món');
+    expect(markup).not.toContain('Start ordering');
   });
 
   it('shows live transcription when the microphone starts a session before kiosk policy is active', () => {
@@ -248,7 +207,20 @@ describe('KioskPage', () => {
     );
 
     expect(markup).toContain('data-testid="mock-floating-codex-pet"');
-    expect(markup).toContain('data-scale="2.5"');
+    expect(markup).toContain('data-scale="10"');
+  });
+
+  it('automatically resizes the mascot from fullscreen to split and back', () => {
+    mockKioskState = 'idle';
+    const view = () => <MemoryRouter><KioskPage /></MemoryRouter>;
+    const { getByTestId, rerender } = render(view());
+    expect(getByTestId('mock-floating-codex-pet').getAttribute('data-scale')).toBe('10');
+    mockKioskState = 'active';
+    rerender(view());
+    expect(getByTestId('mock-floating-codex-pet').getAttribute('data-scale')).toBe('5');
+    mockKioskState = 'idle';
+    rerender(view());
+    expect(getByTestId('mock-floating-codex-pet').getAttribute('data-scale')).toBe('10');
   });
 
   it('hides mascot pet when showPet is false in localStorage', () => {

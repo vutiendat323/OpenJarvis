@@ -80,7 +80,7 @@ def test_invalid_settings_cannot_change_live_or_saved_config(
 def test_debounce_cannot_exceed_approach_hold(settings_client):
     client, _ = settings_client
     values = transition_values(get_config())
-    values["approach_entry_debounce"] = 3
+    values["approach_entry_debounce"] = 6
     assert client.put("/api/kiosk/settings", json=values).status_code == 422
     assert get_config() == KioskConfig()
 

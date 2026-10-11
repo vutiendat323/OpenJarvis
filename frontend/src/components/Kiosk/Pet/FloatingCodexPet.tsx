@@ -1,10 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CodexPet, DEFAULT_MINTY_MANIFEST } from './CodexPet';
 import { PetRenderer, type PetRendererType } from './PetRenderer';
 import { parsePetManifest } from './codexPetAtlas';
 import { resolvePetState } from './codexPetState';
-import { splitCaptionSegments } from '@/components/Chat/voiceTurnRows';
-import { useFloatingPet } from '@/hooks/useFloatingPet';
+import { clampPetPosition, useFloatingPet } from '@/hooks/useFloatingPet';
 import type { PetManifest, PetPosition, PetSize } from './types';
 import type { LocalVoiceStatus } from '@/hooks/voiceStatus';
 
@@ -43,6 +42,9 @@ export interface FloatingCodexPetProps {
   className?: string;
   /** Additional inline styles */
   style?: React.CSSProperties;
+  /** Local pane geometry; omitted for the normal viewport overlay. */
+  bounds?: PetSize;
+  positioning?: 'fixed' | 'absolute';
 }
 
 /**
@@ -90,6 +92,8 @@ export function FloatingCodexPet({
   enableWandering = true,
   className = '',
   style,
+  bounds,
+  positioning = 'fixed',
 }: FloatingCodexPetProps) {
   const [activeManifest, setActiveManifest] = useState<PetManifest>(
     () => manifestProp ?? DEFAULT_MINTY_MANIFEST,
@@ -114,10 +118,10 @@ export function FloatingCodexPet({
     };
   }, [manifestProp, manifestUrl]);
 
-  const baseSize: PetSize = {
-    width: activeManifest.size.width,
-    height: activeManifest.size.height,
-  };
+  const effectivePetType = petTypeProp ?? (manifestProp ? 'sprite' : 'robot');
+  const baseSize: PetSize = effectivePetType === 'robot'
+    ? { width: 55, height: 55 }
+    : { width: activeManifest.size.width, height: activeManifest.size.height };
 
   const {
     position,
@@ -136,6 +140,8 @@ export function FloatingCodexPet({
     initialScale: scaleProp ?? activeManifest.scale ?? 2,
     baseSize,
     enableWandering,
+    bounds,
+    minScale: Math.min(1, scaleProp ?? 1),
     maxScale: Math.max(10, scaleProp ?? 10),
   });
 
@@ -162,6 +168,17 @@ export function FloatingCodexPet({
   }, [initialPosition, isDragging, setPosition]);
 
   const effectiveScale = scaleProp ?? scale;
+  const boundedPosition = bounds
+    ? clampPetPosition(position, {
+        width: baseSize.width * effectiveScale,
+        height: baseSize.height * effectiveScale,
+      }, bounds)
+    : position;
+  useLayoutEffect(() => {
+    if (boundedPosition.x !== position.x || boundedPosition.y !== position.y) {
+      setPosition(boundedPosition);
+    }
+  }, [boundedPosition.x, boundedPosition.y, position.x, position.y, setPosition]);
 
   const petState = resolvePetState(
     voiceStatus,
@@ -172,12 +189,9 @@ export function FloatingCodexPet({
 
   const effectiveSpeechText = useMemo(() => {
     if (speechText) return speechText;
-    if (!assistantCaptionText) return undefined;
-    const segments = splitCaptionSegments(assistantCaptionText);
-    return segments.slice(-1)[0] ?? assistantCaptionText;
+    return assistantCaptionText || undefined;
   }, [speechText, assistantCaptionText]);
   const effectiveVoiceStatus = voiceStatus ?? undefined;
-  const effectivePetType = petTypeProp ?? (manifestProp ? 'sprite' : 'robot');
 
   return (
     <div
@@ -185,12 +199,12 @@ export function FloatingCodexPet({
       data-state={petState}
       data-dragging={isDragging ? 'true' : 'false'}
       data-resizing={isResizing ? 'true' : 'false'}
-      className={`fixed z-40 touch-none select-none group ${className}`}
+      className={`${positioning} z-40 touch-none select-none group ${className}`}
       style={{
-        position: 'fixed',
+        position: positioning,
         left: 0,
         top: 0,
-        transform: `translate3d(${position.x}px, ${position.y}px, 0)`,
+        transform: `translate3d(${boundedPosition.x}px, ${boundedPosition.y}px, 0)`,
         zIndex: 40,
         ...style,
       }}

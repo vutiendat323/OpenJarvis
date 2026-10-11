@@ -26,6 +26,11 @@ describe('formatSpeechText', () => {
 });
 
 describe('CodexPetSpeechBubble component', () => {
+  it.each(['speaking', 'processing', 'inference', 'tool'])('keeps the bubble blue in %s', (voiceStatus) => {
+    const html = renderToStaticMarkup(<CodexPetSpeechBubble text="Mình kiểm tra menu." voiceStatus={voiceStatus} />);
+    expect(html).toContain('stroke="#67e8f9"');
+    expect(html).not.toContain('#c084fc');
+  });
   it('renders null when not visible and no active voice status or text', () => {
     const html = renderToStaticMarkup(
       React.createElement(CodexPetSpeechBubble, {})
@@ -64,11 +69,12 @@ describe('CodexPetSpeechBubble component', () => {
     expect(html).toContain('Chào bạn nhé!');
   });
 
-  it('defaults to maxChars=140 truncation in component', () => {
+  it('keeps long spoken context available in the scrollable card', () => {
     const html = renderToStaticMarkup(
       <CodexPetSpeechBubble voiceStatus="speaking" text={'B'.repeat(160)} />
     );
-    expect(html).toContain('B'.repeat(137) + '...');
+    expect(html).toContain('B'.repeat(160));
+    expect(html).toContain('overflow-y:auto');
   });
 
   it('applies position alignment classes for top-left and top-right', () => {
@@ -105,23 +111,23 @@ describe('CodexPetSpeechBubble component', () => {
     expect(html).toContain('data-testid="speech-bubble-tail"');
   });
 
-  it('renders seamless SVG border with glowing cyan stroke, transparent background, and integrated tail', () => {
+  it('renders a dark filled card and an integrated downward tail above the pet', () => {
     const html = renderToStaticMarkup(
       <CodexPetSpeechBubble text="Xin chào bạn!" position="top" />
     );
     expect(html).toContain('data-testid="speech-bubble-border-svg"');
     expect(html).toContain('data-testid="speech-bubble-tail"');
-    expect(html).toContain('stroke="#22d3ee"');
-    expect(html).toContain('fill="none"');
-    expect(html).toContain('background:transparent');
+    expect(html).toContain('fill="#082329"');
+    expect(html).toContain('fill-opacity="0.98"');
+    expect(html).toContain('data-tail-side="bottom"');
   });
 
-  it('uses left-aligned tail path when position is top-right', () => {
+  it('aims the tail downward when position is top-right', () => {
     const html = renderToStaticMarkup(
       <CodexPetSpeechBubble text="Sample" position="top-right" />
     );
     expect(html).toContain('data-testid="speech-bubble-tail"');
-    expect(html).toContain('fill="none"');
+    expect(html).toContain('data-tail-side="bottom"');
   });
 
   it('defaults to position="left" (Bubble on left, Robot on right matching sample photo)', () => {
@@ -135,18 +141,16 @@ describe('CodexPetSpeechBubble component', () => {
 });
 
 describe('getBubblePath', () => {
-  it('generates a closed SVG path with tail at bottom-right for right position', () => {
+  it('generates a closed SVG path pointing right at the requested height', () => {
     const path = getBubblePath(260, 76, 24, 'right');
-    expect(path).toContain('M 24 0');
     expect(path).toContain('Z');
-    expect(path).toContain('267 84');
+    expect(path).toContain('270 38');
   });
 
-  it('generates a closed SVG path with tail at bottom-left for left position', () => {
+  it('generates a closed SVG path pointing left at the requested height', () => {
     const path = getBubblePath(260, 76, 24, 'left');
-    expect(path).toContain('M 24 0');
     expect(path).toContain('Z');
-    expect(path).toContain('-7 84');
+    expect(path).toContain('-10 38');
   });
 });
 

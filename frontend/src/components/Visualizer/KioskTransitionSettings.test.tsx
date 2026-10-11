@@ -11,7 +11,7 @@ vi.mock('@/lib/api', () => ({ apiFetch: vi.fn() }));
 const defaults = {
   approach_threshold_m: 1,
   approach_entry_debounce: 0.4,
-  approach_sustain_seconds: 2,
+  approach_sustain_seconds: 5,
   leave_sustain_seconds_prompting: 5,
   leave_sustain_seconds_active: 10,
   session_max_seconds: 600,
@@ -21,7 +21,11 @@ const defaults = {
 
 beforeEach(() => {
   vi.mocked(apiFetch).mockReset();
-  vi.mocked(apiFetch).mockResolvedValue(new Response(JSON.stringify(defaults)));
+  vi.mocked(apiFetch).mockImplementation(async (path) => new Response(JSON.stringify(
+    path === '/api/kiosk/voice'
+      ? { voice: 'Trúc Ly', voices: ['Trúc Ly', 'Mai Anh'] }
+      : defaults,
+  )));
 });
 afterEach(cleanup);
 
@@ -43,8 +47,11 @@ describe('Kiosk transition settings', () => {
     const view = render(<KioskTransitionSettings uiLanguage="vi" />);
     const distance = await view.findByRole('textbox', { name: /Khoảng cách tiếp cận/ });
     expect(distance.getAttribute('value')).toBe('1');
-    expect(view.getAllByRole('textbox')).toHaveLength(8);
+    expect(view.getAllByRole('textbox')).toHaveLength(5);
+    expect(view.getByRole('textbox', { name: /Thời gian đứng trong vùng để bắt đầu/ }).getAttribute('value')).toBe('5');
+    expect(view.getByText('approaching → active / idle')).toBeTruthy();
     expect(view.getByText(/Cleanup → idle tự động/)).toBeTruthy();
+    expect(view.queryByRole('textbox', { name: /chờ xác nhận|sau từ chối|vắng khi chờ xác nhận/i })).toBeNull();
     expect(view.queryByText(/cảnh báo/i)).toBeNull();
     expect(apiFetch).toHaveBeenCalledWith('/api/kiosk/settings');
   });
@@ -69,7 +76,7 @@ describe('Kiosk transition settings', () => {
   it('rejects debounce greater than the approach hold without sending a save', async () => {
     const view = render(<KioskTransitionSettings uiLanguage="vi" />);
     const debounce = await view.findByRole('textbox', { name: /Thời gian xác nhận tiếp cận/ });
-    fireEvent.change(debounce, { target: { value: '3' } });
+    fireEvent.change(debounce, { target: { value: '6' } });
     fireEvent.click(view.getByRole('button', { name: 'Lưu chuyển trạng thái' }));
     expect(view.getByRole('alert').textContent).toContain('nhỏ hơn hoặc bằng');
     expect(apiFetch).toHaveBeenCalledTimes(1);

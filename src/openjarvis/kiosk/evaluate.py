@@ -132,7 +132,7 @@ def _evaluate_approaching(
     if last.kind == "person_near" and last.nearest_m < _CFG.approach_threshold_m:
         sustained = history.consecutive_kind_duration("person_near", now)
         if sustained >= _CFG.approach_sustain_seconds:
-            return ("prompting", [_publish_state("prompting")])
+            return _activate_session()
         return ("approaching", [])
 
     return ("approaching", [])
@@ -148,15 +148,7 @@ def _evaluate_prompting(
 ) -> tuple[KioskState, list[SideEffect]]:
     # User response takes priority
     if user_response == "accept":
-        return (
-            "active",
-            [
-                _publish_state("active", mic_enabled=False),
-                SideEffect("load_initial_display"),
-                SideEffect("tts_greeting"),
-                _publish_state("active", mic_enabled=True),
-            ],
-        )
+        return _activate_session()
     if user_response == "decline":
         return ("idle", [_publish_state("idle")])
 
@@ -174,6 +166,17 @@ def _evaluate_prompting(
             return ("idle", [_publish_state("idle")])
 
     return ("prompting", [])
+
+
+def _activate_session() -> tuple[KioskState, list[SideEffect]]:
+    return (
+        "active",
+        [
+            _publish_state("active", mic_enabled=True),
+            SideEffect("tts_greeting"),
+            SideEffect("load_initial_display"),
+        ],
+    )
 
 
 def _in_zone(event) -> bool:

@@ -388,6 +388,7 @@ export function useFloatingPet(options: UseFloatingPetOptions = {}): UseFloating
       const vp = getViewport();
       setPosition((prev) => clampPetPosition(prev, currentPetSize, vp, safeMargin));
     };
+    handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [getViewport, currentPetSize.width, currentPetSize.height, safeMargin]);

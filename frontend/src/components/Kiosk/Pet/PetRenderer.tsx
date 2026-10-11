@@ -211,9 +211,9 @@ export const PetRenderer: React.FC<PetRendererProps> = ({
         {/* Speech bubble */}
         {speechBubble ? (
           speechBubble
-        ) : speechText || voiceStatus === 'speaking' ? (
+        ) : (
           <CodexPetSpeechBubble text={speechText} voiceStatus={voiceStatus} />
-        ) : null}
+        )}
 
         {/* 3D Robot Mascot */}
         <RobotPet

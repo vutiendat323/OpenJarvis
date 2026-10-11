@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { X } from 'lucide-react';
 
@@ -108,6 +108,7 @@ const PANEL_STATUS: Record<LocalVoiceStatus, VoiceStatus> = {
 };
 
 export function KioskPage() {
+  const kioskDefaults = { ...VISUALIZER_DEFAULTS, petScale: 10 };
   const [settings, setSettings] = useState<VisualizerSettings>(() => {
     try {
       const storage = typeof window !== 'undefined' ? window.localStorage : globalThis.localStorage;
@@ -115,10 +116,17 @@ export function KioskPage() {
         const raw =
           storage.getItem('openjarvis_kiosk_visualizer_settings') ||
           storage.getItem('openjarvis_visualizer_settings');
-        if (raw) return { ...VISUALIZER_DEFAULTS, ...JSON.parse(raw) };
+        if (raw) {
+          const saved = JSON.parse(raw);
+          return {
+            ...kioskDefaults, ...saved,
+            petScale: saved.petScale === VISUALIZER_DEFAULTS.petScale
+              ? kioskDefaults.petScale : saved.petScale ?? kioskDefaults.petScale,
+          };
+        }
       }
     } catch {}
-    return VISUALIZER_DEFAULTS;
+    return kioskDefaults;
   });
 
   const handleSettingsChange = useCallback((next: VisualizerSettings) => {
@@ -145,7 +153,7 @@ export function KioskPage() {
     () => computeEdgeGlowShadow(voice.status, settings.glow),
     [voice.status, settings.glow]
   );
-  const { state: kioskState, micEnabled, respond } = useKioskState();
+  const { state: kioskState, micEnabled } = useKioskState();
   const browser = useSharedBrowser();
   const [screenRequested, setScreenRequested] = useState(true);
   const screenVisible = kioskState === 'active' && screenRequested;
@@ -333,46 +341,60 @@ export function KioskPage() {
     ? (speechRows.find((r) => r.role === 'assistant') ?? speechRows[speechRows.length - 1])
     : speechRows[speechRows.length - 1];
   const voiceStatusShimmers = shouldShimmerVoiceStatus(voice.status);
-  const voicePetPosition = useMemo(() => {
-    if (typeof window === 'undefined') return undefined;
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const horizontalSplit = screenVisible && browserMode === 'split' && viewportWidth >= 768;
-    const verticalSplit = screenVisible && browserMode === 'split' && viewportWidth < 768;
-    const petSize = Math.round(110 * (settings.petScale / 2));
-    const paneStartX = horizontalSplit ? viewportWidth * splitRatio / 100 : 0;
-    const paneWidth = horizontalSplit ? viewportWidth - paneStartX : viewportWidth;
-    const paneStartY = verticalSplit ? viewportHeight * 0.65 : 0;
-    const paneHeight = verticalSplit ? viewportHeight * 0.35 : viewportHeight;
-    const availableWidth = paneWidth - petSize;
-    const targetX = horizontalSplit
-      ? paneStartX + Math.max(16, Math.min(availableWidth - 28, Math.round(availableWidth * 0.82)))
-      : paneStartX + Math.round((paneWidth - petSize) / 2);
-    return {
-      x: targetX,
-      y: Math.round(paneStartY + (paneHeight - petSize) / 2),
+  const [voicePane, setVoicePane] = useState<HTMLElement | null>(null);
+  const [voicePaneSize, setVoicePaneSize] = useState<{ width: number; height: number }>();
+  useLayoutEffect(() => {
+    if (!voicePane) return;
+    const measure = () => {
+      const { width, height } = voicePane.getBoundingClientRect();
+      if (width > 0 && height > 0) {
+        setVoicePaneSize((prev) => prev?.width === width && prev.height === height
+          ? prev : { width, height });
+      }
     };
-  }, [browserMode, screenVisible, settings.petScale, splitRatio]);
+    measure();
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    observer?.observe(voicePane);
+    window.addEventListener('resize', measure);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
+  }, [voicePane]);
+  const splitPet = screenVisible && browserMode === 'split';
+  const petBounds = voicePaneSize ?? {
+    width: typeof window === 'undefined' ? 1920 : window.innerWidth * (splitPet ? (100 - splitRatio) / 100 : 1),
+    height: typeof window === 'undefined' ? 1080 : window.innerHeight,
+  };
+  const voicePetScale = Math.max(0.5, Math.min(
+    10, settings.petScale * (splitPet ? 0.5 : 1), splitPet ? 5 : 10,
+    (petBounds.width - 32) / 55, (petBounds.height - 160) / 55,
+  ));
+  const voicePetPosition = useMemo(() => ({
+    x: Math.max(16, Math.round((petBounds.width - 55 * voicePetScale) / 2)),
+    y: Math.max(16, Math.round((petBounds.height - 55 * voicePetScale) / 2)),
+  }), [petBounds.width, petBounds.height, voicePetScale]);
 
   const voiceAssistantPane = (
     <aside
+      ref={setVoicePane}
       aria-label="Voice assistant"
+      data-pet-boundary
       className={
         !screenVisible || browserMode === 'floating'
-          ? 'relative h-full w-full shrink-0 overflow-hidden bg-[#071410]'
-          : `relative shrink-0 overflow-hidden bg-[#071410] ${
-              voiceCollapsed ? 'h-14 md:h-full md:w-14' : 'h-[35%] min-h-48 md:h-full'
+          ? 'relative isolate h-full min-w-0 w-full shrink-0 overflow-hidden bg-[#071410]'
+          : `relative isolate min-w-0 shrink-0 overflow-hidden bg-[#071410] ${
+              voiceCollapsed ? 'h-14 md:h-full md:w-14' : 'w-full h-[35%] min-h-48 md:h-full md:w-[var(--voice-pane-width)]'
             }`
       }
       style={{
+        '--pet-bubble-max-width': `${Math.max(24, Math.min(260, petBounds.width - 40))}px`,
+        '--pet-bubble-max-height': `${Math.max(40, petBounds.height - 64)}px`,
         background: 'linear-gradient(155deg, #0b1e19 0%, #071410 58%, #06110f 100%)',
         ...(screenVisible && browserMode === 'split' && !voiceCollapsed
           ? {
-              width: `${100 - splitRatio}%`,
+              '--voice-pane-width': `${100 - splitRatio}%`,
               flex: `0 0 ${100 - splitRatio}%`,
             }
           : {}),
-      }}
+      } as React.CSSProperties}
     >
       <div className={`relative h-full ${voiceCollapsed ? 'invisible' : ''}`}>
 
@@ -406,10 +428,12 @@ export function KioskPage() {
           />
         )}
 
-        {settings.showPet && (
+        {settings.showPet && !voiceCollapsed && (
           <FloatingCodexPet
             initialPosition={voicePetPosition}
-            scale={settings.petScale}
+            scale={voicePetScale}
+            bounds={petBounds}
+            positioning="absolute"
             storageKey={
               browserMode === 'split'
                 ? 'openjarvis_kiosk_pet_pos_split'
@@ -525,12 +549,12 @@ export function KioskPage() {
             id="kiosk-shared-screen"
             hidden={!screenVisible}
             data-testid="customer-display-pane-container"
-            className="flex min-h-0 min-w-0 flex-col overflow-hidden"
+            className="flex w-full min-h-0 min-w-0 flex-col overflow-hidden md:w-[var(--customer-pane-width)]"
             style={{
               display: screenVisible ? undefined : 'none',
-              width: voiceCollapsed ? 'calc(100% - 3.5rem)' : `${splitRatio}%`,
+              '--customer-pane-width': voiceCollapsed ? 'calc(100% - 3.5rem)' : `${splitRatio}%`,
               flex: voiceCollapsed ? '1 1 auto' : `0 0 ${splitRatio}%`,
-            }}
+            } as React.CSSProperties}
           >
             <SharedBrowserPane
               browser={browser}
@@ -663,47 +687,6 @@ export function KioskPage() {
         </>
       )}
 
-      {/* Global Prompting Modal: Centered over the entire Kiosk across both panes */}
-      {kioskState === 'prompting' && !isVoiceActive && (
-        <div
-          data-testid="kiosk-prompting-overlay"
-          className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md"
-        >
-          <div
-            className="mx-4 max-w-sm rounded-2xl p-8 text-center shadow-2xl"
-            style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
-          >
-            <div className="mb-4 text-4xl">🤖</div>
-            <h2 className="mb-2 text-xl font-semibold" style={{ color: 'var(--color-text)' }}>
-              {uiLanguage === 'vi' ? 'Sẵn sàng gọi món chưa?' : 'Ready to order?'}
-            </h2>
-            <p className="mb-6 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-              {uiLanguage === 'vi'
-                ? 'Chạm Bắt đầu gọi món để trò chuyện với trợ lý bán hàng và chọn món.'
-                : 'Chat with your ordering assistant to explore the menu and choose your items.'}
-            </p>
-            <div className="flex flex-wrap justify-center gap-3">
-              <button
-                onClick={() => void respond(true)}
-                className="cursor-pointer rounded-xl bg-[var(--color-accent)] px-4 py-2.5 text-sm font-semibold text-white transition-transform hover:scale-105"
-              >
-                {uiLanguage === 'vi' ? 'Bắt đầu gọi món' : 'Start ordering'}
-              </button>
-              <button
-                onClick={() => void respond(false)}
-                className="cursor-pointer rounded-xl px-4 py-2.5 text-sm font-semibold transition-transform hover:scale-105"
-                style={{
-                  background: 'var(--color-bg-secondary)',
-                  border: '1px solid var(--color-border)',
-                  color: 'var(--color-text)',
-                }}
-              >
-                {uiLanguage === 'vi' ? 'Không phải bây giờ' : 'Not now'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

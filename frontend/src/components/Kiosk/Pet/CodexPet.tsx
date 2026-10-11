@@ -240,12 +240,12 @@ export function CodexPet({
       {/* Speech bubble */}
       {speechBubble ? (
         speechBubble
-      ) : speechText || voiceStatus === 'speaking' ? (
+      ) : (
         <CodexPetSpeechBubble
           text={speechText}
           voiceStatus={voiceStatus}
         />
-      ) : null}
+      )}
 
       {/* Pet sprite */}
       {renderMode === 'canvas' ? (

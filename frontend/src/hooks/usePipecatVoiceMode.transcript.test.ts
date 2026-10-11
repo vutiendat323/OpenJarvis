@@ -73,6 +73,24 @@ beforeEach(() => {
 });
 
 describe('live user transcript events', () => {
+  it('keeps TTS sentence boundaries and replaces a held caption on the next utterance', async () => {
+    vi.useFakeTimers();
+    try {
+      const onTurn = vi.fn();
+      await renderVoice(onTurn).start('thread-1', 'test-model');
+      emit('bot-tts-text', { text: 'Mình đang nghe đây ạ.' });
+      emit('bot-tts-text', { text: 'Bạn muốn xem menu nhé?' });
+      emit('bot-stopped-speaking');
+      expect(renderVoice(onTurn).assistantCaptionText).toBe('Mình đang nghe đây ạ. Bạn muốn xem menu nhé?');
+      expect(onTurn.mock.calls[0][0].content).toBe('Mình đang nghe đây ạ. Bạn muốn xem menu nhé?');
+      emit('bot-tts-text', { text: 'Chào bạn.' });
+      emit('bot-stopped-speaking');
+      expect(renderVoice(onTurn).assistantCaptionText).toBe('Chào bạn.');
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
   it('shows interim revisions immediately and saves only the final message', async () => {
     const onTurn = vi.fn();
     await renderVoice(onTurn).start('thread-1', 'test-model');

@@ -73,8 +73,8 @@ export const RobotPet: React.FC<RobotPetProps> = ({
 }) => {
   const [loadError, setLoadError] = useState<unknown | null>(null);
 
-  const baseWidth = 120;
-  const baseHeight = 120;
+  const baseWidth = 110;
+  const baseHeight = 110;
   const computedWidth = Math.round(baseWidth * (scale / 2));
   const computedHeight = Math.round(baseHeight * (scale / 2));
 

@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { layoutSpeechBubble, type BubbleTailSide } from './speechBubbleGeometry';
 
 export interface CodexPetSpeechBubbleProps {
   /** Text content to show in the speech bubble */
@@ -69,43 +70,30 @@ export function parseSpeechContent(text?: string): SpeechContent {
 }
 
 /**
- * Generates the SVG path for the speech bubble border with an integrated tail,
- * perfectly matching the glowing curved border in the reference image sample.
+ * Generates one filled card outline with a short tail facing the pet.
  */
 export function getBubblePath(
   w: number,
   h: number,
   r: number = 18,
-  tailPos: 'right' | 'left' = 'right'
+  tailPos: BubbleTailSide = 'right',
+  tailOffset?: number,
 ): string {
-  const radius = Math.min(r, Math.floor(w / 4), Math.floor(h / 2));
-
-  if (tailPos === 'left') {
-    return [
-      `M ${radius} 0`,
-      `H ${w - radius}`,
-      `A ${radius} ${radius} 0 0 1 ${w} ${radius}`,
-      `V ${h - radius}`,
-      `A ${radius} ${radius} 0 0 1 ${w - radius} ${h}`,
-      `H 14`,
-      `C 6 ${h + 1}, -1 ${h + 5}, -7 ${h + 8}`,
-      `C -1 ${h + 3}, 2 ${h - 6}, 0 ${h - 14}`,
-      `V ${radius}`,
-      `A ${radius} ${radius} 0 0 1 ${radius} 0`,
-      `Z`,
-    ].join(' ');
-  }
-
-  // Tail at bottom-right pointing towards robot (matching image sample)
+  const radius = Math.max(0, Math.min(r, Math.floor(w / 4), Math.floor(h / 2) - 8));
+  const length = tailPos === 'top' || tailPos === 'bottom' ? w : h;
+  const t = Math.max(radius + 8, Math.min(tailOffset ?? length / 2, length - radius - 8));
   return [
     `M ${radius} 0`,
+    ...(tailPos === 'top' ? [`H ${t - 8}`, `Q ${t - 3} 0 ${t} -10`, `Q ${t + 3} 0 ${t + 8} 0`] : []),
     `H ${w - radius}`,
     `A ${radius} ${radius} 0 0 1 ${w} ${radius}`,
-    `V ${h - 14}`,
-    `C ${w - 2} ${h - 6}, ${w + 1} ${h + 3}, ${w + 7} ${h + 8}`,
-    `C ${w + 1} ${h + 5}, ${w - 6} ${h + 1}, ${w - 14} ${h}`,
+    ...(tailPos === 'right' ? [`V ${t - 8}`, `Q ${w} ${t - 3} ${w + 10} ${t}`, `Q ${w} ${t + 3} ${w} ${t + 8}`] : []),
+    `V ${h - radius}`,
+    `A ${radius} ${radius} 0 0 1 ${w - radius} ${h}`,
+    ...(tailPos === 'bottom' ? [`H ${t + 8}`, `Q ${t + 3} ${h} ${t} ${h + 10}`, `Q ${t - 3} ${h} ${t - 8} ${h}`] : []),
     `H ${radius}`,
     `A ${radius} ${radius} 0 0 1 0 ${h - radius}`,
+    ...(tailPos === 'left' ? [`V ${t + 8}`, `Q 0 ${t + 3} -10 ${t}`, `Q 0 ${t - 3} 0 ${t - 8}`] : []),
     `V ${radius}`,
     `A ${radius} ${radius} 0 0 1 ${radius} 0`,
     `Z`,
@@ -122,7 +110,7 @@ export function CodexPetSpeechBubble({
   typing = false,
   position = 'left',
   offsetY = 14,
-  maxChars = 140,
+  maxChars,
   className = '',
   style,
   role = 'assistant',
@@ -130,8 +118,8 @@ export function CodexPetSpeechBubble({
 }: CodexPetSpeechBubbleProps) {
   const formattedText = formatSpeechText(text, maxChars);
   const speechContent = parseSpeechContent(formattedText);
-  const isSpeaking = voiceStatus === 'speaking';
-  const showTyping = typing || (Boolean(voiceStatus && voiceStatus !== 'idle') && !formattedText);
+  const isWorking = voiceStatus === 'processing' || voiceStatus === 'inference' || voiceStatus === 'tool';
+  const showTyping = typing || isWorking || (voiceStatus === 'speaking' && !formattedText);
 
   const isVisible =
     visible !== undefined
@@ -143,69 +131,93 @@ export function CodexPetSpeechBubble({
     height: 68,
   });
   const containerRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
+  const outerRef = useRef<HTMLDivElement | null>(null);
+  const [layout, setLayout] = useState<(ReturnType<typeof layoutSpeechBubble> & { left: number; top: number }) | null>(null);
+  const updateGeometry = useCallback(() => {
     if (!containerRef.current) return;
     const node = containerRef.current;
-    const updateSize = () => {
-      const rect = node.getBoundingClientRect();
-      const w = Math.round(rect.width);
-      const h = Math.round(rect.height);
-      if (w > 0 && h > 0) {
-        setDimensions((prev) =>
-          prev.width === w && prev.height === h ? prev : { width: w, height: h }
+    const rect = node.getBoundingClientRect();
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
+    if (w > 0 && h > 0) {
+      setDimensions((prev) =>
+        prev.width === w && prev.height === h ? prev : { width: w, height: h }
+      );
+      const boundary = outerRef.current?.closest('[data-pet-boundary]')?.getBoundingClientRect()
+        ?? { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+      const pet = outerRef.current?.parentElement?.getBoundingClientRect();
+      if (pet) {
+        const next = layoutSpeechBubble(
+          boundary,
+          { x: pet.left - boundary.left, y: pet.top - boundary.top, width: pet.width, height: pet.height },
+          { width: w, height: h },
+          position,
+          offsetY,
         );
+        const left = next.x + boundary.left - pet.left;
+        const top = next.y + boundary.top - pet.top;
+        setLayout((prev) => prev?.left === left && prev.top === top && prev.position === next.position && prev.tailOffset === next.tailOffset
+          ? prev : { ...next, left, top });
       }
-    };
-
-    updateSize();
-
+    }
+  }, [position, offsetY]);
+  // Reposition before paint when the pet moves, including drag and split toggles.
+  useLayoutEffect(() => { updateGeometry(); });
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) return;
+    const boundary = outerRef.current?.closest('[data-pet-boundary]');
     if (typeof ResizeObserver !== 'undefined') {
-      const ro = new ResizeObserver(updateSize);
+      const ro = new ResizeObserver(updateGeometry);
       ro.observe(node);
+      if (boundary) ro.observe(boundary);
       return () => ro.disconnect();
     }
-  }, [formattedText, showTyping]);
+    window.addEventListener('resize', updateGeometry);
+    return () => window.removeEventListener('resize', updateGeometry);
+  }, [isVisible, updateGeometry]);
 
   if (!isVisible) {
     return null;
   }
 
   // Positioning classes: default 'left' (Bubble on left, Robot on right matching sample photo)
+  const resolvedPosition = layout?.position ?? position;
   let posClasses = 'right-full -mr-7 top-1';
-  if (position === 'top') {
+  if (resolvedPosition === 'top') {
     posClasses = 'bottom-full mb-2 left-1/2 -translate-x-1/2';
-  } else if (position === 'top-left') {
+  } else if (resolvedPosition === 'top-left') {
     posClasses = 'bottom-full mb-2 left-0';
-  } else if (position === 'top-right') {
+  } else if (resolvedPosition === 'top-right') {
     posClasses = 'bottom-full mb-2 right-0';
   }
 
-  const effectiveTailPosition: 'right' | 'left' =
-    position === 'top-right' ? 'left' : 'right';
+  const effectiveTailPosition = layout?.tailSide ?? (position === 'left' ? 'right' : 'bottom');
 
   const pathData = getBubblePath(
     dimensions.width,
     dimensions.height,
     18,
-    effectiveTailPosition
+    effectiveTailPosition,
+    layout?.tailOffset,
   );
 
-  const isVerticalPosition = position === 'top' || position === 'top-left' || position === 'top-right';
+  const isVerticalPosition = resolvedPosition !== 'left';
   const defaultHorizontalOffset = -28;
   const effectiveMarginRight = offsetY !== 14 ? offsetY : defaultHorizontalOffset;
 
   return (
     <div
+      ref={outerRef}
       data-testid="codex-pet-speech-bubble"
       data-role={role}
-      data-position={position}
+      data-position={resolvedPosition}
       role="status"
       aria-live="polite"
       onClick={onClick}
-      className={`absolute pointer-events-auto select-none z-30 transition-all duration-200 ease-out animate-in fade-in zoom-in-95 ${posClasses} ${className}`}
+      className={`absolute pointer-events-auto select-none z-30 transition-opacity duration-200 ease-out ${layout ? '' : posClasses} ${className}`}
       style={{
-        ...(isVerticalPosition
+        ...(layout ? { left: layout.left, top: layout.top } : isVerticalPosition
           ? { marginBottom: `${offsetY}px` }
           : { marginRight: `${effectiveMarginRight}px` }),
         ...style,
@@ -214,13 +226,15 @@ export function CodexPetSpeechBubble({
       {/* Speech bubble card wrapper */}
       <div
         ref={containerRef}
-        className="relative w-max min-w-[170px] max-w-[260px] sm:max-w-[290px] px-5 py-3 text-xs font-medium leading-relaxed whitespace-normal break-words"
+        className="relative w-max min-w-[170px] max-w-[260px] px-4 py-3 text-xs font-medium leading-relaxed whitespace-normal break-words"
         style={{
-          background: 'transparent',
+          width: 'min(260px, var(--pet-bubble-max-width, calc(100vw - 40px)))',
+          minWidth: 0,
+          maxWidth: 'var(--pet-bubble-max-width, calc(100vw - 40px))',
           color: '#ffffff',
         }}
       >
-        {/* Seamless glowing cyan neon SVG border with integrated tail matching sample image */}
+        {/* Opaque card and tail share one border so background particles cannot cover the text. */}
         <svg
           data-testid="speech-bubble-border-svg"
           aria-hidden="true"
@@ -232,15 +246,17 @@ export function CodexPetSpeechBubble({
         >
           <path
             data-testid="speech-bubble-tail"
+            data-tail-side={effectiveTailPosition}
             d={pathData}
-            fill="none"
-            stroke="#22d3ee"
-            strokeWidth="1.8"
+            fill="#082329"
+            fillOpacity="0.98"
+            stroke="#67e8f9"
+            strokeWidth="1"
             strokeLinecap="round"
             strokeLinejoin="round"
             style={{
               filter:
-                'drop-shadow(0 0 3px #00f0ff) drop-shadow(0 0 8px rgba(6, 182, 212, 0.75))',
+                'drop-shadow(0 4px 10px rgba(0, 0, 0, 0.3))',
             }}
           />
         </svg>
@@ -248,7 +264,7 @@ export function CodexPetSpeechBubble({
         {showTyping ? (
           <div
             data-testid="speech-bubble-typing"
-            className="flex items-center gap-1.5 py-1 px-2 justify-center"
+            className="relative flex items-center gap-1.5 py-1 px-2 justify-center"
           >
             <span
               className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.8)] animate-bounce"
@@ -264,7 +280,11 @@ export function CodexPetSpeechBubble({
             />
           </div>
         ) : (
-          <div data-testid="speech-bubble-text" className="break-words whitespace-pre-wrap flex flex-col">
+          <div
+            data-testid="speech-bubble-text"
+            className="relative break-words whitespace-pre-wrap flex flex-col"
+            style={{ maxHeight: 'min(200px, calc(var(--pet-bubble-max-height, 100vh) - 24px))', overflowY: 'auto' }}
+          >
             {speechContent.title && (
               <span className="text-[15px] sm:text-[16px] font-bold text-white tracking-tight leading-snug">
                 {speechContent.title}

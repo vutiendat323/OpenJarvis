@@ -16,7 +16,7 @@ class KioskConfig:
 
     approach_threshold_m: float = 1.0
     approach_entry_debounce: float = 0.4  # 2 ticks at 5 Hz
-    approach_sustain_seconds: float = 2.0
+    approach_sustain_seconds: float = 5.0
     leave_sustain_seconds_prompting: float = 5.0
     leave_sustain_seconds_active: float = 10.0
     session_max_seconds: float = 600.0  # 10 minutes

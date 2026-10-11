@@ -71,7 +71,7 @@ export interface SpeechToken {
 
 export function tokenizeSpeechPacing(text: string, msPerChar = 55): SpeechToken[] {
   if (!text) return [];
-  const rawTokens = text.match(/\S+\s*/gu) ?? [];
+  const rawTokens = text.match(/\s*\S+\s*/gu) ?? [];
   return rawTokens.map((token) => {
     const trimmed = token.trim();
     let pause = 0;

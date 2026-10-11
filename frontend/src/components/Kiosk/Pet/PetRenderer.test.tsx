@@ -5,6 +5,27 @@ import { PetRenderer, isWebGLSupported } from './PetRenderer';
 import { DEFAULT_MINTY_MANIFEST } from './CodexPet';
 
 describe('PetRenderer', () => {
+  it.each(['robot', 'sprite'] as const)('shows working dots before speech in %s mode', (petType) => {
+    for (const voiceStatus of ['processing', 'inference', 'tool']) {
+      const html = renderToStaticMarkup(<PetRenderer petType={petType} voiceStatus={voiceStatus} />);
+      expect(html).toContain('data-testid="codex-pet-speech-bubble"');
+      expect(html).toContain('data-testid="speech-bubble-typing"');
+    }
+  });
+
+  it.each(['robot', 'sprite'] as const)('replaces held caption with working dots then shows new speech in %s mode', (petType) => {
+    const working = renderToStaticMarkup(<PetRenderer petType={petType} voiceStatus="tool" speechText="Lời của lượt trước." />);
+    expect(working).toContain('data-testid="speech-bubble-typing"');
+    expect(working).not.toContain('Lời của lượt trước.');
+    const speaking = renderToStaticMarkup(<PetRenderer petType={petType} voiceStatus="speaking" speechText="Mình đã mở menu." />);
+    expect(speaking).toContain('Mình đã mở menu.');
+    expect(speaking).not.toContain('data-testid="speech-bubble-typing"');
+  });
+
+  it.each(['idle', 'listening', 'ended', 'error', 'busy'])('does not show working dots in %s without text', (voiceStatus) => {
+    const html = renderToStaticMarkup(<PetRenderer voiceStatus={voiceStatus} />);
+    expect(html).not.toContain('data-testid="codex-pet-speech-bubble"');
+  });
   it('detects webgl support function', () => {
     expect(typeof isWebGLSupported()).toBe('boolean');
   });

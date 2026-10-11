@@ -449,8 +449,16 @@ export function usePipecatVoiceMode(options: { onTurn?: (message: ChatMessage) =
       }
     });
     client.on(RTVIEvent.BotTtsText, (data: { text: string }) => {
-      captionRef.current += data.text;
-      pacerRef.current?.enqueue(data.text);
+      if (!data.text.trim()) return;
+      const previous = captionRef.current;
+      if (!previous) {
+        clearCaptionTimers();
+        setAssistantCaptionText('');
+      }
+      const separator = previous && !/\s$/u.test(previous) && !/^[\s,.;!?…]/u.test(data.text) ? ' ' : '';
+      const delta = separator + data.text;
+      captionRef.current += delta;
+      pacerRef.current?.enqueue(delta);
     });
     client.on(RTVIEvent.UserTranscript, (data: { text: string; final: boolean }) => {
       // Interim results replace the utterance so far; only finals enter history.

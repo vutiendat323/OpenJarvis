@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
@@ -74,7 +75,7 @@ async def run_side_effects(
                 deps.presentation.publish(fx.data)
 
             elif fx.kind == "load_initial_display" and deps.presentation is not None:
-                deps.presentation.load_initial_display()
+                await asyncio.to_thread(deps.presentation.load_initial_display)
 
             elif fx.kind in _TTS_MAP and deps.voice_boundary is not None:
                 await deps.voice_boundary(fx.kind)
