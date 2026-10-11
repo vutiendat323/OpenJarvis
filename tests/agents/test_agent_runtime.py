@@ -25,6 +25,7 @@ from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import Message, Role, ToolResult
 from openjarvis.engine._stubs import StreamChunk
 from openjarvis.sessions.session import SessionStore
+from openjarvis.tools import _stubs as tool_stubs
 from openjarvis.tools._stubs import BaseTool, ToolSpec
 from openjarvis.tools.display import DisplayMenuMemoryTool, DisplayMenuTool
 from openjarvis.tools.storage._stubs import RetrievalResult
@@ -366,7 +367,10 @@ class _StreamingToolEngine:
 
 
 @pytest.mark.asyncio
-async def test_cancelled_streaming_tool_retains_resource_not_conversation() -> None:
+async def test_cancelled_streaming_tool_retains_resource_not_conversation(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(tool_stubs, "WRITE_WAIT_SECONDS", 0.05)
     tool = _BlockingStreamingTool()
     runtime = NativeAgentRuntime(
         OrchestratorAgent(
@@ -611,7 +615,10 @@ class _CancellableStreamingTool(BaseTool):
 
 
 @pytest.mark.asyncio
-async def test_cancelled_stream_signals_worker_without_holding_conversation() -> None:
+async def test_cancelled_stream_signals_worker_without_holding_conversation(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(tool_stubs, "WRITE_WAIT_SECONDS", 0.05)
     tool = _CancellableStreamingTool()
     runtime = NativeAgentRuntime(
         OrchestratorAgent(_StreamingToolEngine(), "server-default", tools=[tool])
@@ -635,7 +642,10 @@ async def test_cancelled_stream_signals_worker_without_holding_conversation() ->
 
 
 @pytest.mark.asyncio
-async def test_dispatched_tool_keeps_late_evidence_in_its_original_journal(tmp_path):
+async def test_dispatched_tool_keeps_late_evidence_in_its_original_journal(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(tool_stubs, "WRITE_WAIT_SECONDS", 0.05)
     tool = _CancellableStreamingTool()
     bus = EventBus(record_history=True)
     store = TraceStore(tmp_path / "trace.db")

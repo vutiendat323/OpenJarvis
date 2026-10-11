@@ -126,6 +126,10 @@ class MultiEngine(InferenceEngine):
     def supports_semantic_reasoning_stream(self, model: str) -> bool:
         return self._engine_for(model).supports_semantic_reasoning_stream(model)
 
+    def reasoning_off_options(self, model: str) -> dict[str, Any] | None:
+        options = getattr(self._engine_for(model), "reasoning_off_options", None)
+        return options(model) if callable(options) else None
+
     def list_models(self) -> List[str]:
         self._refresh_map()
         return list(self._model_map.keys())

@@ -137,6 +137,15 @@ class InferenceEngine(ABC):
         del model
         return False
 
+    def reasoning_off_options(self, model: str) -> dict[str, Any] | None:
+        """Request options that turn private reasoning off for one call.
+
+        ``None`` when the engine has no such switch. The agent uses it to retry
+        a round whose whole token budget went into reasoning.
+        """
+        del model
+        return None
+
     def close(self) -> None:
         """Release resources (HTTP clients, connections, threads, etc.)."""
 

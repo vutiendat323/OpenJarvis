@@ -531,6 +531,7 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
                 separator=await _separator(),
                 embedder=await _embedder(),
                 bot_voiceprint=_BOT_VOICEPRINT,
+                conversation_id=session.voice_session_id,
                 **extra,
             )
             request.app.state.pipecat_voice_context = context
@@ -568,6 +569,9 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
             # sync, idempotent status check, so double-firing alongside the
             # natural path's own call is harmless.
             def finished(_t):
+                from openjarvis.agents.action_ledger import ACTION_LEDGER
+
+                ACTION_LEDGER.clear(session.voice_session_id)
                 sessions.end_session(session.voice_session_id, reason="task_done")
                 if getattr(request.app.state, "pipecat_voice_task", None) is _t:
                     request.app.state.pipecat_voice_lifecycle = None

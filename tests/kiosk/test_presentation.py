@@ -61,6 +61,26 @@ def test_cancelled_worker_cannot_publish_a_late_display(bus):
     assert not any(e.event_type == EventType.DISPLAY_UPDATE for e in bus.history)
 
 
+def test_a_dispatched_tool_publishes_after_its_run_was_cancelled(bus):
+    """Spec 2026-10-10 D2: a dispatched tool finishes its display after a barge-in."""
+    from openjarvis.agents._stubs import _RUN_WORKER_LEASE, AgentWorkerLease
+    from openjarvis.tools._stubs import _IN_TOOL
+
+    manager = PresentationSessionManager(bus, _FakeMCPClient(server_name="playwright"))
+    manager.ensure("http://127.0.0.1:5173")
+    lease = AgentWorkerLease()
+    lease_token = _RUN_WORKER_LEASE.set(lease)
+    tool_token = _IN_TOOL.set(True)
+    try:
+        lease._signal_cancelled()
+        result = manager.publish({"view": "payment_qr", "text": "kept"})
+    finally:
+        _IN_TOOL.reset(tool_token)
+        _RUN_WORKER_LEASE.reset(lease_token)
+    assert result.success
+    assert any(e.event_type == EventType.DISPLAY_UPDATE for e in bus.history)
+
+
 def test_ensure_navigates_the_display_tab_without_creating_a_blank_tab(
     bus: EventBus,
 ) -> None:
@@ -650,3 +670,88 @@ def test_a_background_cart_update_keeps_the_screen_a_reconnect_replays(
     assert (on_cart["view"], on_cart["total"]) == ("cart", 90000)
     assert "navigate" not in on_cart
     assert [event.data.get("navigate") for event in bus.history][-1] is False
+
+
+def test_set_language_never_waits_for_the_presentation_lock(bus):
+    """A route runs it on the event loop: ``ensure`` holds the lock across a
+    browser call that needs that same loop to answer, so waiting here froze the
+    whole server (2026-10-11 live: /health timed out until restart)."""
+    import threading
+
+    manager = PresentationSessionManager(bus, _FakeMCPClient(server_name="playwright"))
+    held, release = threading.Event(), threading.Event()
+
+    def hold() -> None:
+        with manager._lock:
+            held.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    assert held.wait(2)
+    done = threading.Event()
+    threading.Thread(
+        target=lambda: (manager.set_language("en"), done.set()), daemon=True
+    ).start()
+    try:
+        assert done.wait(1), "set_language blocked on the presentation lock"
+    finally:
+        release.set()
+        holder.join(2)
+    assert manager._ui_language == "en"
+
+
+def test_a_slow_first_navigation_does_not_hold_the_state_lock(bus):
+    """The display page connects back to this process while ``ensure`` is still
+    waiting for it to load. Holding the lock across that wait made every route
+    that touched the manager (on the event loop) block, so the page never
+    loaded and the whole server froze (2026-10-11 live)."""
+    import threading
+
+    client = _FakeMCPClient(server_name="playwright")
+    navigating, release = threading.Event(), threading.Event()
+    original = client.call_tool
+
+    def slow(name, arguments):
+        if name == "browser_navigate":
+            navigating.set()
+            assert release.wait(5)
+        return original(name, arguments)
+
+    client.call_tool = slow  # type: ignore[method-assign]
+    manager = PresentationSessionManager(bus, client)
+    result: dict[str, object] = {}
+    ensuring = threading.Thread(
+        target=lambda: result.update(session=manager.ensure("http://127.0.0.1:5173")),
+        daemon=True,
+    )
+    ensuring.start()
+    assert navigating.wait(2)
+
+    probes: dict[str, object] = {}
+    probe = threading.Thread(
+        target=lambda: (
+            probes.update(replay=manager.replay("x")),
+            manager.activate("generation-1"),
+            probes.update(done=True),
+        ),
+        daemon=True,
+    )
+    probe.start()
+    probe.join(1)
+    try:
+        assert probes.get("done") is True, "state accessors waited on ensure()"
+    finally:
+        release.set()
+        ensuring.join(2)
+    session = result["session"]
+    assert manager.replay(session.session_id) is not None  # type: ignore[attr-defined]
+
+
+def test_a_failed_first_navigation_leaves_no_session(bus):
+    client = _FakeMCPClient(server_name="playwright")
+    client.failures[("browser_navigate", None)] = RuntimeError("boom")
+    manager = PresentationSessionManager(bus, client)
+    with pytest.raises(PresentationUnavailableError):
+        manager.ensure("http://127.0.0.1:5173")
+    assert manager._session is None

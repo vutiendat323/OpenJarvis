@@ -1003,6 +1003,7 @@ class DisplayCartTool(_DisplayTool):
                 display and finish_turn and customer_message
             )
             if display and finish_turn and customer_message:
+                metadata["completed_display"] = True
                 metadata["customer_message"] = customer_message.strip()
             return ToolResult(
                 tool_name=self.spec.name,
@@ -1355,6 +1356,9 @@ class DisplayCartMemoryTool(BaseTool):
                     tool_name="display_cart",
                     content="cart_item_unverified",
                     success=False,
+                    # Refused before the draft changed: the intent guard may
+                    # allow a retry through the prepared add skill.
+                    metadata={"execution_started": False},
                 )
             row = verified.get(item.get("variant_id"))
             if (
@@ -1367,6 +1371,9 @@ class DisplayCartMemoryTool(BaseTool):
                     tool_name="display_cart",
                     content="cart_item_unverified",
                     success=False,
+                    # Refused before the draft changed: the intent guard may
+                    # allow a retry through the prepared add skill.
+                    metadata={"execution_started": False},
                 )
             items.append(
                 {

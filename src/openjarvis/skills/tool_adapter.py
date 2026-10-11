@@ -324,13 +324,23 @@ class SkillTool(BaseTool):
                     if result.step_results
                     else "Pipeline failed with no step results."
                 )
+                metadata = self._build_result_metadata(
+                    steps_run=len(result.step_results)
+                )
+                if result.context.get("_checkout_write_attempted"):
+                    # The order write went out before a later step failed, so
+                    # the order may exist: unknown, not a retryable failure.
+                    metadata["outcome_unknown"] = True
+                    error_content += (
+                        " The order write may already have been sent; its "
+                        "outcome is unknown. Observe the order state before "
+                        "retrying -- do not re-execute."
+                    )
                 return ToolResult(
                     tool_name=tool_name,
                     content=error_content,
                     success=False,
-                    metadata=self._build_result_metadata(
-                        steps_run=len(result.step_results)
-                    ),
+                    metadata=metadata,
                 )
 
             # Use the last step's output as the primary content

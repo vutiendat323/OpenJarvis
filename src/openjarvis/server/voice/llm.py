@@ -12,6 +12,8 @@ from typing import Any, Literal
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    CancelFrame,
+    EndFrame,
     Frame,
     InterruptionFrame,
     LLMContextFrame,
@@ -30,10 +32,15 @@ from openjarvis.agents._stubs import (
     AgentToolFinished,
     AgentToolStarted,
 )
-from openjarvis.core.conversation import uncertain_speaker_scope
+from openjarvis.agents.action_ledger import ACTION_LEDGER
+from openjarvis.core.conversation import (
+    current_conversation_id,
+    uncertain_speaker_scope,
+)
 from openjarvis.core.types import Conversation, Message, Role, ToolCall
 from openjarvis.server.voice.runtime import VOICE_SYSTEM_PROMPT
 from openjarvis.server.voice.text import normalize_speech_text
+from openjarvis.server.voice.tts import FLUSH_TTS_METADATA
 
 logger = logging.getLogger("openjarvis.server.voice")
 
@@ -45,6 +52,41 @@ UNCERTAIN_SPEAKER_NOTE = (
     "[Speaker unconfirmed: this may not be the customer at the kiosk. "
     "Confirm with the customer before any cart, order or payment change.]"
 )
+
+
+# Interrupted requests carried into the next turn, newest last (spec 2026-10-10
+# background actions §5.5).
+CARRY_OVER_LIMIT = 3
+
+
+def carried_prompt(unfinished: list[str], latest: str) -> str:
+    """The latest request, preceded by interrupted ones it does not already hold.
+
+    Pipecat appends a new utterance to the previous user message when nothing
+    was said in between, so an interrupted request can already be inside
+    ``latest``; it is not repeated.
+    """
+    earlier = [
+        text for text in unfinished if text.strip() and text.strip() not in latest
+    ]
+    if not earlier:
+        return latest
+    return (
+        "<earlier_unfinished_request>\n"
+        + "\n".join(earlier)
+        + "\n</earlier_unfinished_request>\n<latest_request>\n"
+        + latest
+        + "\n</latest_request>\n"
+        "The earlier request was interrupted before it finished. Actions it "
+        "already started are listed in background_actions; do not repeat them. "
+        "If the latest request contradicts the earlier one, follow the latest."
+    )
+
+
+def remember_unfinished(unfinished: list[str], latest: str) -> list[str]:
+    """Drop earlier entries the latest repeats or extends; nothing is carried twice."""
+    kept = [text for text in unfinished if text.strip() not in latest]
+    return [*kept, latest][-CARRY_OVER_LIMIT:]
 
 
 class VoiceTurnState:
@@ -235,12 +277,24 @@ def voice_activity_frame(
     )
 
 
+class _EventContext:
+    """The session's messages plus one kiosk event, without writing to them."""
+
+    def __init__(self, context: Any, event: str) -> None:
+        self._context = context
+        self._event = event
+
+    def get_messages(self) -> list[dict[str, Any]]:
+        return [*self._context.get_messages(), {"role": "user", "content": self._event}]
+
+
 class OpenJarvisLLMService(LLMService):
     """Answer through the native Agent, which owns tools, memory, and policy.
 
-    The first round streams immediately so TTS can acknowledge the turn early.
-    After a tool starts, later rounds are buffered until they prove final; this
-    keeps tool-loop drafts from being spoken as repeated answers.
+    Every round's text is spoken as soon as the Agent releases it: text written
+    alongside a tool call arrives before that tool starts, so TTS covers the
+    tool's latency, and later rounds follow in order. The Agent releases each
+    segment once; this service never buffers or replays drafts.
     """
 
     def __init__(
@@ -280,6 +334,12 @@ class OpenJarvisLLMService(LLMService):
         self._speaker_tracker = speaker_tracker
         self._uncertain_allowed_tools = uncertain_allowed_tools
         self._bot_speaking = False
+        self._unfinished: list[str] = []
+        self._last_context: Any | None = None
+        self._answering = False
+        # A kiosk-event turn holds the Agent runtime until its model answers;
+        # any customer activity or the session's end cuts it.
+        self._event_task: asyncio.Task[bool] | None = None
 
     async def stream_agent(
         self,
@@ -288,7 +348,7 @@ class OpenJarvisLLMService(LLMService):
         *,
         turn_id: int | None = None,
     ) -> AsyncGenerator[Frame, None]:
-        """Yield the first round immediately and only the final later round.
+        """Speak each released round in order, flushing at tool boundaries.
 
         Each delta is projected into speech text before it leaves: the Agent
         answers the screen (markdown, bullet lists, emoji), and the VieNeu
@@ -297,8 +357,7 @@ class OpenJarvisLLMService(LLMService):
         flushes the remainder at a tool boundary or the end of the response.
         """
         projector = _SpeechProjector()
-        tool_round_started = False
-        later_round: list[str] = []
+        round_spoken = False
         if turn_id is None:
             turn_id = self._turn_state.begin_turn()
         yield voice_activity_frame("inference", model=self._binding.model)
@@ -311,32 +370,25 @@ class OpenJarvisLLMService(LLMService):
                     return
 
                 if isinstance(event, AgentToolStarted):
-                    if tool_round_started:
-                        # This buffered narration belongs to another intermediate
-                        # tool round. The customer already heard the first round;
-                        # speaking every draft is what repeated the same order.
-                        later_round.clear()
-                    else:
-                        speech = projector.finish()
-                        if speech:
-                            yield LLMTextFrame(f"{speech} ")
-                        tool_round_started = True
+                    # The round's text is complete; speak its tail before the
+                    # tool runs. A second start in the same round finds nothing.
+                    speech = projector.finish()
+                    if speech or round_spoken:
+                        # TTS sentence aggregation holds the last sentence for
+                        # lookahead text that will not come until the tool
+                        # ends; ask it to synthesize what it holds now.
+                        frame = LLMTextFrame(f"{speech} " if speech else " ")
+                        frame.metadata[FLUSH_TTS_METADATA] = True
+                        yield frame
+                        round_spoken = False
                     yield voice_activity_frame("tool", tool_name=event.tool_name)
                 elif isinstance(event, AgentToolFinished):
                     yield voice_activity_frame("inference", model=self._binding.model)
-                if isinstance(event, AgentTextDelta):
-                    if tool_round_started:
-                        later_round.append(event.content)
-                    else:
-                        speech = projector.push(event.content)
-                        if speech:
-                            yield LLMTextFrame(speech)
-        if tool_round_started:
-            projector = _SpeechProjector()
-            for content in later_round:
-                speech = projector.push(content)
-                if speech:
-                    yield LLMTextFrame(speech)
+                elif isinstance(event, AgentTextDelta):
+                    speech = projector.push(event.content)
+                    if speech:
+                        round_spoken = True
+                        yield LLMTextFrame(speech)
         speech = projector.finish()
         if speech:
             yield LLMTextFrame(speech)
@@ -399,6 +451,9 @@ class OpenJarvisLLMService(LLMService):
             # Any custom iterator cleanup that races with cancellation can then
             # no longer emit frames for the interrupted turn.
             self._turn_state.interrupt()
+            self._cancel_event_turn()
+        elif isinstance(frame, (EndFrame, CancelFrame)):
+            self._cancel_event_turn()
         # First: the base class routes InterruptionFrame to
         # _handle_interruptions, which cancels in-flight tool calls. Skipping
         # it would lose barge-in while the Agent is inside a tool.
@@ -408,9 +463,12 @@ class OpenJarvisLLMService(LLMService):
             await self.push_frame(frame, direction)
             return
 
-        prompt, context = await self.prepare_agent_input(frame.context)
-        if not prompt:
+        self._last_context = frame.context
+        latest, context = await self.prepare_agent_input(frame.context)
+        if not latest:
             return
+        prompt = carried_prompt(self._unfinished, latest)
+        carry = True
         authority = nullcontext()
         if self._speaker_tracker is not None:
             from openjarvis.server.voice.speaker import Verdict
@@ -420,8 +478,32 @@ class OpenJarvisLLMService(LLMService):
             # UNCERTAIN turns act with full authority, without asking.
             verdict = self._speaker_tracker.take_turn_verdict()
             if verdict is Verdict.REJECT:
+                # Never carried: a later turn runs with full authority.
+                carry = False
                 prompt = f"{UNCERTAIN_SPEAKER_NOTE}\n\n{prompt}"
                 authority = uncertain_speaker_scope(self._uncertain_allowed_tools)
+        completed = False
+        try:
+            self._answering = True
+            # Free the runtime an event turn holds before asking for it.
+            await self._stop_event_turn()
+            completed = await self._answer(prompt, context, authority)
+        finally:
+            self._answering = False
+            # Also reached when Pipecat cancels this task on barge-in.
+            conversation_id = current_conversation_id()
+            if completed:
+                self._unfinished.clear()
+                if conversation_id:
+                    ACTION_LEDGER.settle(conversation_id)
+            elif carry:
+                self._unfinished = remember_unfinished(self._unfinished, latest)
+                if conversation_id:
+                    # What it already did stays visible to the carried request.
+                    ACTION_LEDGER.carry(conversation_id)
+
+    async def _answer(self, prompt: str, context: AgentContext, authority: Any) -> bool:
+        """Speak one Agent turn; True when it ended normally."""
         if self._bot_speaking:
             # A newer customer request is being answered: the reply still
             # being spoken is stale (live crowd retest 2026-09-28: the bot
@@ -464,3 +546,47 @@ class OpenJarvisLLMService(LLMService):
                 await self.stop_processing_metrics()
         if completed:
             await self.push_frame(LLMFullResponseEndFrame())
+        return completed
+
+    async def run_event_turn(self, event: str) -> bool:
+        """Answer a kiosk event (a background outcome), never as customer words.
+
+        The event is this run's input only; the shared Pipecat context is not
+        written, so later turns never read it as something the customer said.
+        It never starts while a customer turn is answered: that turn would be
+        invalidated and carried over as unfinished. Customer activity or the
+        session's end cuts it; it then returns False.
+        """
+        if (
+            self._answering
+            or self._last_context is None
+            or (self._event_task is not None and not self._event_task.done())
+        ):
+            return False
+        _, context = agent_input(_EventContext(self._last_context, event))
+        task = asyncio.create_task(self._answer(event, context, nullcontext()))
+        self._event_task = task
+        try:
+            return await task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+            return False
+        finally:
+            if self._event_task is task:
+                self._event_task = None
+
+    def _cancel_event_turn(self) -> asyncio.Task[bool] | None:
+        task = self._event_task
+        if task is None or task.done():
+            return None
+        task.cancel()
+        return task
+
+    async def _stop_event_turn(self) -> None:
+        task = self._cancel_event_turn()
+        if task is not None:
+            # Only its unwinding is awaited: no frame of this processor is
+            # needed for it, and its cancellation is not this turn's.
+            await asyncio.wait({task})

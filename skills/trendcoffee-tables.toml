@@ -4,6 +4,11 @@ description = "Read the current TrendCoffee table list from its fixed public API
 required_capabilities = ["network:fetch"]
 input_schema_json = '''{"type":"object","properties":{},"additionalProperties":false}'''
 
+[skill.metadata.openjarvis]
+# A pure read: after the add target lands, this read keeps the turn open for
+# the table selection that follows (agents/intent.py observe).
+read_only = true
+
 [skill.metadata.openjarvis.request_recipe]
 origin = "https://trendcoffee.net"
 method = "GET"

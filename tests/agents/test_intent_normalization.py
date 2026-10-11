@@ -386,6 +386,97 @@ class ExistingTool(BaseTool):
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["sync", "stream"])
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "Which option do you want?",
+        '{"_intent":"NONE","state":"NEEDS_INPUT","message":"Which option?"}',
+        '{"_intent":"FINALIZE","state":"ANSWER","message":"Done."}',
+    ],
+)
+async def test_invalid_final_response_receives_current_goal_and_repair_context(
+    mode, invalid
+):
+    from openjarvis.agents._stubs import AgentTextDelta
+    from openjarvis.engine._stubs import StreamChunk
+
+    class RepairingEngine(FakeEngine):
+        def generate(self, messages, **kwargs):
+            if self.call_count >= 2 and "<final_correction>" in messages[-1].content:
+                correction = json.loads(
+                    messages[-1]
+                    .content.split("<final_correction>")[1]
+                    .split("</final_correction>")[0]
+                )
+                assert correction["normalized_intent"] == "FINALIZE"
+                assert correction["rejected_response"] == invalid
+                assert correction["allowed_states"] == ["NEEDS_INPUT", "FAILED"]
+                self._responses[-1] = {
+                    "content": json.dumps(
+                        {
+                            "_intent": "FINALIZE",
+                            "state": "NEEDS_INPUT",
+                            "message": "Which option do you want?",
+                        }
+                    )
+                }
+            return super().generate(messages, **kwargs)
+
+        def supports_semantic_reasoning_stream(self, model):
+            return True
+
+        async def stream_full(self, messages, **kwargs):
+            response = self.generate(messages, **kwargs)
+            for index, call in enumerate(response.get("tool_calls", [])):
+                yield StreamChunk(
+                    tool_calls=[
+                        {
+                            "index": index,
+                            "id": call["id"],
+                            "function": {
+                                "name": call["name"],
+                                "arguments": call["arguments"],
+                            },
+                        }
+                    ]
+                )
+            yield StreamChunk(
+                content=response["content"], finish_reason=response["finish_reason"]
+            )
+
+    prepare = ExistingTool("prepare")
+    target = ExistingTool("finish", metadata={"intent_contract": {"name": "FINALIZE"}})
+    engine = RepairingEngine(
+        [
+            {"tool_calls": [invoke("prepare", "FINALIZE")]},
+            {"content": invalid},
+            {"content": invalid},
+        ]
+    )
+    agent = OrchestratorAgent(
+        engine, "fake", tools=[prepare, target], max_turns=3, intent_normalization=True
+    )
+    if mode == "stream":
+        events = [event async for event in agent.run_stream("request")]
+        result = events[-1].result
+        assert (
+            "".join(
+                event.content for event in events if isinstance(event, AgentTextDelta)
+            )
+            == "Which option do you want?"
+        )
+    else:
+        result = agent.run("request")
+    assert result.content == "Which option do you want?"
+    assert result.metadata["terminal_reason"] == "NEEDS_INPUT"
+    assert result.metadata["intent_satisfied"] is False
+    assert not result.metadata.get("max_turns_exceeded")
+    assert len(prepare.calls) == 1
+    assert target.calls == []
+
+
 def test_trace_records_canonical_goal_and_execution_path():
     from openjarvis.traces.collector import TraceCollector
 

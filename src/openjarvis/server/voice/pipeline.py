@@ -99,6 +99,7 @@ def build_voice_pipeline(
     vision_audio: Any | None = None,
     embedder: Any | None = None,
     bot_voiceprint: Any | None = None,
+    conversation_id: str = "",
 ) -> Any:
     """Wire transport, VAD, STT, Agent, and voice into one runnable worker.
 
@@ -108,6 +109,7 @@ def build_voice_pipeline(
     ``separator`` is a loaded target-speaker extractor, used with ``stt_mask``.
     ``embedder`` is the speaker embedder for ``identity = "fusion"``;
     ``bot_voiceprint`` is the process's ``BotVoiceprint``.
+    ``conversation_id`` is the Voice session id; it scopes background outcomes.
     Returns the worker and the shared context, which the caller reads on
     teardown to write the conversation to the Chat thread.
     """
@@ -292,15 +294,30 @@ def build_voice_pipeline(
     from openjarvis.kiosk.evaluate import get_config
 
     kiosk_config = get_config()
+    reporter = None
+    if conversation_id:
+        from openjarvis.agents.action_ledger import ACTION_LEDGER
+        from openjarvis.server.voice.background import BackgroundReporter
+
+        reporter = BackgroundReporter(
+            ACTION_LEDGER,
+            conversation_id,
+            speak=lambda text: lifecycle.report(text),
+            flush=lambda: lifecycle.flush(),
+            run_event_turn=llm.run_event_turn,
+        )
     lifecycle = VoiceSessionLifecycle(
         presence=customer_present,
         warning_after_secs=kiosk_config.session_warning_seconds,
         limit_secs=kiosk_config.session_max_seconds,
         absence_secs=kiosk_config.leave_sustain_seconds_active,
+        on_idle=reporter.on_idle if reporter is not None else None,
     )
 
     @transport.event_handler("on_client_connected")
     async def _start_lifecycle(_transport: Any, _client: Any) -> None:
+        if reporter is not None:
+            reporter.start()
         await lifecycle.start_session()
 
     pipeline = Pipeline(

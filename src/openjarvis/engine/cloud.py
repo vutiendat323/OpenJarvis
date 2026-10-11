@@ -26,6 +26,7 @@ from openjarvis.engine._base import (
 )
 from openjarvis.engine._openrouter import openrouter_model_id
 from openjarvis.engine._stubs import StreamChunk
+from openjarvis.engine.effort import effort_setting
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,59 @@ def _is_minimax_model(model: str) -> bool:
 
 def _is_deepseek_model(model: str) -> bool:
     return model.lower().startswith("deepseek")
+
+
+_OPENAI_EFFORT_ENV = "OPENJARVIS_OPENAI_REASONING_EFFORT"
+
+
+def _openai_responses_effort() -> str:
+    """The Luna reasoning effort: ``high`` unless the deployment lowers it.
+
+    Callers cannot lower it (a verified follow-up keeps full reasoning); the
+    operator can, because first-word latency is mostly this reasoning.
+    """
+    value = effort_setting("luna", _OPENAI_EFFORT_ENV)
+    if not value:
+        return "high"
+    if value not in ("low", "medium", "high"):
+        raise ValueError(
+            f"luna effort ({_OPENAI_EFFORT_ENV}) must be low, medium or high, "
+            f"got {value!r}"
+        )
+    return value
+
+
+_DEEPSEEK_THINKING_ENV = "OPENJARVIS_DEEPSEEK_THINKING"
+
+
+def _deepseek_thinking_options(request: Dict[str, Any]) -> None:
+    """Apply the deployment's DeepSeek thinking budget to ``request``.
+
+    Thinking shares ``max_tokens`` with the answer and the tool call, so a
+    long deliberation can end a round with no text and no call after a 20 s
+    wait. Unset keeps the provider default; ``off`` disables thinking;
+    ``low``/``high``/``max`` set the effort. A value the caller already put in
+    the request is kept.
+    """
+    extra = request.get("extra_body")
+    thinking = extra.get("thinking") if isinstance(extra, dict) else None
+    if isinstance(thinking, dict) and thinking.get("type") == "disabled":
+        return
+    value = effort_setting("deepseek", _DEEPSEEK_THINKING_ENV)
+    if not value:
+        return
+    if value in ("off", "disabled"):
+        if "reasoning_effort" not in request:
+            request.setdefault("extra_body", {}).setdefault(
+                "thinking", {"type": "disabled"}
+            )
+        return
+    if value not in ("low", "high", "max"):
+        raise ValueError(
+            f"deepseek effort ({_DEEPSEEK_THINKING_ENV}) must be off, low, high "
+            f"or max, got {value!r}"
+        )
+    request.setdefault("reasoning_effort", value)
 
 
 def _is_openrouter_model(model: str) -> bool:
@@ -342,6 +396,11 @@ class CloudEngine(InferenceEngine):
 
     def supports_semantic_reasoning_stream(self, model: str) -> bool:
         return _is_deepseek_model(model) or _uses_openai_responses(model)
+
+    def reasoning_off_options(self, model: str) -> Dict[str, Any] | None:
+        if _is_deepseek_model(model):
+            return {"extra_body": {"thinking": {"type": "disabled"}}}
+        return None
 
     def __init__(self) -> None:
         self._openai_client: Any = None
@@ -705,7 +764,7 @@ class CloudEngine(InferenceEngine):
             "input": input_items,
             "max_output_tokens": max_tokens,
             **kwargs,
-            "reasoning": {"effort": "high"},
+            "reasoning": {"effort": _openai_responses_effort()},
             "include": list(
                 dict.fromkeys([*requested_include, "reasoning.encrypted_content"])
             ),
@@ -1301,6 +1360,7 @@ class CloudEngine(InferenceEngine):
         tool_choice = kwargs.pop("tool_choice", None)
         if tool_choice is not None:
             create_kwargs["tool_choice"] = tool_choice
+        _deepseek_thinking_options(create_kwargs)
         t0 = time.monotonic()
         resp = self._deepseek_client.chat.completions.create(**create_kwargs)
         elapsed = time.monotonic() - t0
@@ -1787,6 +1847,7 @@ class CloudEngine(InferenceEngine):
             "temperature": temperature,
             "stream": True,
         }
+        _deepseek_thinking_options(create_kwargs)
         resp = await client.chat.completions.create(**create_kwargs)
         async for chunk in resp:
             delta = chunk.choices[0].delta if chunk.choices else None
@@ -1864,6 +1925,7 @@ class CloudEngine(InferenceEngine):
                 "stream": True,
                 **kwargs,
             }
+            _deepseek_thinking_options(create_kwargs)
         else:
             client = self._openai_async_client
             if client is None:
@@ -1944,7 +2006,7 @@ class CloudEngine(InferenceEngine):
             "model": openrouter_model_id(model),
             "input": input_items,
             "max_output_tokens": max_tokens,
-            "reasoning": {"effort": "high"},
+            "reasoning": {"effort": _openai_responses_effort()},
             "include": ["reasoning.encrypted_content"],
             "store": False,
             "stream": True,

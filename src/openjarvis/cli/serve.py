@@ -399,6 +399,10 @@ def serve(
                 prompt_builder=prompt_builder,
                 extra_kwargs={
                     "max_tokens": system.config.intelligence.max_tokens,
+                    "progress_speech": system.config.agent.progress_speech,
+                    "reasoning_deadline_seconds": (
+                        system.config.agent.reasoning_deadline_seconds
+                    ),
                     "skill_few_shot_examples": system._skill_few_shot_examples,
                 },
             )

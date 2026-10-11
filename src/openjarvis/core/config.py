@@ -999,6 +999,8 @@ class AgentConfig:
     tools: str = ""  # comma-separated tool names
     parallel_tools: bool = True  # False runs a turn's tool calls one at a time
     intent_normalization: bool = False  # goals supplied by tool contracts
+    progress_speech: bool = False  # tools carry a spoken _progress clause
+    reasoning_deadline_seconds: float = 0.0  # 0 = off; else retry w/o reasoning
     objective: str = ""  # concise purpose for routing/learning/docs
     system_prompt: str = ""  # inline system prompt (takes precedence if set)
     system_prompt_path: str = ""  # path to system prompt file (.txt, .md)

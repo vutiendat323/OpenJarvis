@@ -50,6 +50,7 @@ class IntentState:
         self.path: list[str] = []
         self.terminal_reason = "INCOMPLETE"
         self.runtime_context: dict[str, Any] = {}
+        self.deferred: list[ToolCall] = []
 
     def schemas(self, schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result = copy.deepcopy(schemas)
@@ -106,7 +107,18 @@ class IntentState:
             for target in self.targets.get(name, [])
         )
 
-    def prepare(self, calls: list[ToolCall]) -> list[ToolCall]:
+    def prepare(
+        self, calls: list[ToolCall], *, defer_targets: bool = False
+    ) -> list[ToolCall]:
+        """Validate a round's calls; return the ones to dispatch now.
+
+        With ``defer_targets`` a target that shares its round with
+        prerequisites that are all ``read_only`` is held back
+        (``self.deferred``) instead of refusing the whole batch, so those reads
+        still run this round. A batch with any other prerequisite is refused
+        whole, as before.
+        """
+        self.deferred: list[ToolCall] = []
         parsed = []
         declared_goal = self.declared
         for call in calls:
@@ -161,10 +173,28 @@ class IntentState:
             parsed.append(
                 (ToolCall(call.id, call.name, json.dumps(arguments)), bool(target))
             )
-        if len(calls) > 1 and any(target for _, target in parsed):
-            raise ValueError("execute the intent target separately after prerequisites")
         if declared_goal is not None:
+            # Recorded before a refusal below: a refused batch's declaration is
+            # still the model's goal for this turn, made before any evidence.
+            # Left unrecorded, the next prerequisite read declared NONE and
+            # that locked the turn out of its target.
             self._declare(declared_goal)
+        if len(calls) > 1 and any(target for _, target in parsed):
+            reads_only = all(
+                self.tools[call.name].spec.metadata.get("read_only") is True
+                for call, target in parsed
+                if not target and call.name in self.tools
+            )
+            if (
+                not defer_targets
+                or all(target for _, target in parsed)
+                or not reads_only
+            ):
+                raise ValueError(
+                    "execute the intent target separately after prerequisites"
+                )
+            self.deferred = [call for call, target in parsed if target]
+            parsed = [(call, target) for call, target in parsed if not target]
         if any(target for _, target in parsed):
             self.target_attempted = True
         return [call for call, _ in parsed]
@@ -202,7 +232,12 @@ class IntentState:
         elif not self.reached:
             result.metadata = {**result.metadata, "continue_agent": True}
             result.metadata.pop("customer_message", None)
-        self.continuing = result.metadata.get("continue_agent") is True
+        tool = self.tools.get(call.name)
+        read_only = tool is not None and tool.spec.metadata.get("read_only") is True
+        if not (self.reached and read_only):
+            # A read made after the goal landed (the table list before a table
+            # choice) neither continues nor ends the turn; only the steps do.
+            self.continuing = result.metadata.get("continue_agent") is True
         result.metadata.update(self.metadata())
 
     def finish(self, content: str) -> str | None:
@@ -233,6 +268,27 @@ class IntentState:
         if value["state"] == "FAILED":
             self.reached = False
         return message
+
+    def final_correction(self, content: str) -> str:
+        return (
+            "The previous final response was rejected. Repair its JSON format "
+            "and preserve the current normalized intent. Return exactly one JSON "
+            "object with _intent, state and a nonempty customer-facing message. "
+            "Use NEEDS_INPUT when required information is missing, or FAILED "
+            "when unable to proceed. Do not repeat successful preparation or "
+            "claim an uncompleted target succeeded.\n<final_correction>"
+            + json.dumps(
+                {
+                    "normalized_intent": self.declared,
+                    "target_completed": self.reached,
+                    "allowed_states": ["NEEDS_INPUT", "FAILED"]
+                    + (["ANSWER"] if self.declared == "NONE" else []),
+                    "rejected_response": content,
+                },
+                ensure_ascii=False,
+            )
+            + "</final_correction>"
+        )
 
     def metadata(self) -> dict[str, Any]:
         return {

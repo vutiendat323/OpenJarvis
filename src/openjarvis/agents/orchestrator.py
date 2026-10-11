@@ -15,8 +15,11 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import copy
 import json
+import logging
 import re
+import time
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from typing import Any, List, Optional
@@ -33,13 +36,121 @@ from openjarvis.agents._stubs import (
     check_agent_cancelled,
     run_agent_sync_worker,
 )
-from openjarvis.core.conversation import agent_turn_scope, current_turn_nonce
+from openjarvis.agents.action_ledger import ACTION_LEDGER
+from openjarvis.core.conversation import (
+    agent_turn_scope,
+    current_conversation_id,
+    current_turn_nonce,
+)
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.registry import AgentRegistry
 from openjarvis.core.types import Message, Role, ToolCall, ToolResult
 from openjarvis.engine._stubs import InferenceEngine, merge_tool_call_fragments
 from openjarvis.tools._stubs import BaseTool
 from openjarvis.tools.result_projection import project_tool_content
+
+logger = logging.getLogger("openjarvis.agents.orchestrator")
+
+
+def _log_round(
+    *,
+    path: str,
+    turn: int,
+    model: str,
+    finish_reason: str,
+    visible_chars: int,
+    tool_names: list[str],
+    usage: dict[str, Any] | None = None,
+    reasoning_chars: int | None = None,
+    continuation: int = 0,
+) -> None:
+    """One diagnostic line per model round: shape only, never customer text.
+
+    A turn that loops leaves no other trace of why: the bus payload carries
+    neither the finish reason nor whether the round produced any visible text.
+    WARNING, like the kiosk tick: `jarvis serve` drops openjarvis INFO lines.
+    """
+    logger.warning(
+        "agent_round path=%s turn=%d model=%s finish=%s completion_tokens=%s "
+        "visible_chars=%d reasoning_chars=%s tool_calls=%s continuation=%d",
+        path,
+        turn,
+        model,
+        finish_reason or "-",
+        (usage or {}).get("completion_tokens"),
+        visible_chars,
+        "-" if reasoning_chars is None else reasoning_chars,
+        ",".join(tool_names) or "-",
+        continuation,
+    )
+
+
+def _log_final_rejected(turn: int, intent_state: Any, visible_chars: int) -> None:
+    logger.warning(
+        "agent_final_rejected turn=%d declared=%s reached=%s terminal=%s "
+        "target_attempted=%s visible_chars=%d",
+        turn,
+        intent_state.declared,
+        intent_state.reached,
+        intent_state.terminal_reason,
+        intent_state.target_attempted,
+        visible_chars,
+    )
+
+
+_PROGRESS_ARGUMENT = "_progress"
+
+
+def _with_progress_argument(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Require a short spoken clause on every tool call.
+
+    Asked for in the prompt alone, models skipped it and the customer heard
+    nothing until the turn's last round. As a required argument it is written,
+    from the customer's own request, together with the call itself.
+    """
+    result = copy.deepcopy(tools)
+    for entry in result:
+        schema = entry["function"].setdefault("parameters", {"type": "object"})
+        schema.setdefault("properties", {})[_PROGRESS_ARGUMENT] = {
+            "type": "string",
+            "description": (
+                "Short clause for the user about what you are doing for their "
+                "current request, spoken aloud while this call runs. Never "
+                "state or imply the result. Empty string after the turn's "
+                "first call."
+            ),
+        }
+        if _PROGRESS_ARGUMENT not in schema.setdefault("required", []):
+            schema["required"].append(_PROGRESS_ARGUMENT)
+    return result
+
+
+def _progress_clause(tool_calls: list[ToolCall]) -> str:
+    """The first nonempty ``_progress`` among a round's calls."""
+    for call in tool_calls:
+        try:
+            arguments = json.loads(call.arguments or "{}")
+        except ValueError:
+            continue
+        value = (
+            arguments.get(_PROGRESS_ARGUMENT) if isinstance(arguments, dict) else None
+        )
+        if isinstance(value, str) and value.strip():
+            clause = value.strip()
+            if not clause.startswith(("{", "[")):
+                return clause
+    return ""
+
+
+def _without_progress(call: ToolCall) -> ToolCall:
+    try:
+        arguments = json.loads(call.arguments or "{}")
+    except ValueError:
+        return call
+    if not isinstance(arguments, dict) or _PROGRESS_ARGUMENT not in arguments:
+        return call
+    arguments.pop(_PROGRESS_ARGUMENT)
+    return ToolCall(call.id, call.name, json.dumps(arguments, ensure_ascii=False))
 
 
 @AgentRegistry.register("orchestrator")
@@ -80,6 +191,8 @@ class OrchestratorAgent(ToolUsingAgent):
         mode: str = "function_calling",
         system_prompt: Optional[str] = None,
         intent_normalization: bool = False,
+        progress_speech: bool = False,
+        reasoning_deadline_seconds: float = 0.0,
         prompt_builder: Optional[Any] = None,
         parallel_tools: bool = True,
         interactive: bool = False,
@@ -107,6 +220,8 @@ class OrchestratorAgent(ToolUsingAgent):
         self._system_prompt = system_prompt
         self._parallel_tools = parallel_tools
         self._intent_normalization = intent_normalization
+        self._progress_speech = progress_speech
+        self._reasoning_deadline = max(0.0, float(reasoning_deadline_seconds))
 
     def _intent_state(self, messages):
         if not self._intent_normalization:
@@ -117,6 +232,22 @@ class OrchestratorAgent(ToolUsingAgent):
         messages.insert(0, Message(role=Role.SYSTEM, content=state.instruction()))
         return state
 
+    @staticmethod
+    def _mark_run_completed() -> None:
+        # A run the customer interrupted told them nothing, even when a sync
+        # fallback worker still reaches a normal ending after the consumer left.
+        try:
+            check_agent_cancelled()
+        except asyncio.CancelledError:
+            return
+        conversation_id = current_conversation_id()
+        if conversation_id:
+            ACTION_LEDGER.mark_run_completed(conversation_id, current_turn_nonce())
+
+    def _is_read_only_tool(self, name: str) -> bool:
+        tool = self._executor.get_tool(name)
+        return tool is not None and tool.spec.metadata.get("read_only") is True
+
     def run(
         self,
         input: str,
@@ -125,8 +256,11 @@ class OrchestratorAgent(ToolUsingAgent):
     ) -> AgentResult:
         with agent_turn_scope():
             if self._mode == "structured":
-                return self._run_structured(input, context, **kwargs)
-            return self._run_function_calling(input, context, **kwargs)
+                result = self._run_structured(input, context, **kwargs)
+            else:
+                result = self._run_function_calling(input, context, **kwargs)
+            self._mark_run_completed()
+            return result
 
     async def run_stream(
         self,
@@ -158,8 +292,14 @@ class OrchestratorAgent(ToolUsingAgent):
         **kwargs: Any,
     ) -> AsyncIterator[AgentStreamEvent]:
         with agent_turn_scope():
+            completed = False
             async for event in self._run_stream_in_turn(input, context, **kwargs):
+                completed = isinstance(event, AgentRunCompleted)
                 yield event
+            # An interrupted consumer never resumes the generator, so only a
+            # run that ended normally gets here with ``completed``.
+            if completed:
+                self._mark_run_completed()
 
     async def _run_stream_in_turn(
         self,
@@ -202,9 +342,21 @@ class OrchestratorAgent(ToolUsingAgent):
         openai_tools = self._executor.get_openai_tools() if self._tools else []
         if intent_state is not None:
             openai_tools = intent_state.schemas(openai_tools)
+        if self._progress_speech and openai_tools:
+            openai_tools = _with_progress_argument(openai_tools)
         all_tool_results: list[ToolResult] = []
         total_prompt_tokens = 0
         total_completion_tokens = 0
+        turn_spoke = False
+        # Set once a round spent its whole budget reasoning; stays on this turn.
+        reasoning_off: dict[str, Any] = {}
+        # Only worth arming when the engine can actually answer without it.
+        off_options_fn = getattr(self._engine, "reasoning_off_options", None)
+        reasoning_deadline = (
+            self._reasoning_deadline
+            if callable(off_options_fn) and off_options_fn(model)
+            else 0.0
+        )
 
         for turns in range(1, self._max_turns + 1):
             if loop_guard:
@@ -227,6 +379,8 @@ class OrchestratorAgent(ToolUsingAgent):
                 finish_reason = ""
                 round_usage: dict[str, Any] = {}
                 response_items: list[dict[str, Any]] = []
+                reasoning_chars = 0
+                visible_before = sum(len(part) for part in visible_parts)
 
                 self._emit_stream_inference_start(model=model)
                 stream = self._engine.stream_full(
@@ -235,14 +389,48 @@ class OrchestratorAgent(ToolUsingAgent):
                     temperature=self._temperature,
                     max_tokens=self._max_tokens,
                     **gen_kwargs,
+                    **reasoning_off,
                 )
+                output_seen = False
+                reasoning_started: float | None = None
                 async with aclosing(stream):
-                    async for chunk in stream:
+                    while True:
+                        wait: float | None = None
+                        if (
+                            reasoning_deadline
+                            and reasoning_started is not None
+                            and not output_seen
+                            and not reasoning_off
+                        ):
+                            wait = max(
+                                0.0,
+                                reasoning_started
+                                + reasoning_deadline
+                                - time.monotonic(),
+                            )
+                        try:
+                            if wait is None:
+                                chunk = await anext(stream)
+                            else:
+                                chunk = await asyncio.wait_for(anext(stream), wait)
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError:
+                            if wait is None:
+                                raise
+                            finish_reason = "reasoning_deadline"
+                            break
+                        if chunk.reasoning_content and reasoning_started is None:
+                            reasoning_started = time.monotonic()
+                        if chunk.content or chunk.tool_calls:
+                            output_seen = True
                         if chunk.tool_calls:
                             merge_tool_call_fragments(
                                 tool_call_fragments,
                                 chunk.tool_calls,
                             )
+                        if chunk.reasoning_content:
+                            reasoning_chars += len(chunk.reasoning_content)
                         if chunk.content:
                             round_content.append(chunk.content)
                             for visible in visible_text_filter.feed(chunk.content):
@@ -273,6 +461,47 @@ class OrchestratorAgent(ToolUsingAgent):
                 )
                 total_prompt_tokens += round_usage.get("prompt_tokens", 0)
                 total_completion_tokens += round_usage.get("completion_tokens", 0)
+                _log_round(
+                    path="stream",
+                    turn=turns,
+                    model=model,
+                    finish_reason=finish_reason,
+                    visible_chars=(
+                        sum(len(part) for part in visible_parts) - visible_before
+                    ),
+                    tool_names=[
+                        fragment["function"]["name"]
+                        for _, fragment in sorted(tool_call_fragments.items())
+                    ],
+                    usage=round_usage,
+                    reasoning_chars=reasoning_chars,
+                    continuation=continuations,
+                )
+
+                if (
+                    finish_reason in ("length", "reasoning_deadline")
+                    and not tool_call_fragments
+                    and not reasoning_off
+                    and sum(len(part) for part in visible_parts) == visible_before
+                ):
+                    # Nothing but reasoning fit the budget. Reasoning again
+                    # (the continuation nudge below) repeats the wait; ask the
+                    # engine to answer this round, and the turn, without it.
+                    options = (
+                        off_options_fn(model) if callable(off_options_fn) else None
+                    )
+                    if options:
+                        reasoning_off = options
+                        logger.warning(
+                            "agent_reasoning_exhausted path=stream turn=%d "
+                            "model=%s reason=%s reasoning_chars=%d "
+                            "retry=reasoning_off",
+                            turns,
+                            model,
+                            finish_reason,
+                            reasoning_chars,
+                        )
+                        continue
 
                 if (
                     tool_call_fragments
@@ -297,16 +526,33 @@ class OrchestratorAgent(ToolUsingAgent):
 
             tool_calls = _build_tool_calls(tool_call_fragments)
             if tool_calls:
+                round_text = "".join(visible_parts)
                 messages.append(
                     Message(
                         role=Role.ASSISTANT,
-                        content="".join(visible_parts),
+                        content=round_text,
                         tool_calls=tool_calls,
                         metadata=(
                             {"response_items": response_items} if response_items else {}
                         ),
                     )
                 )
+                # The round is known to carry tool calls, so its text is speech
+                # alongside them, never the final answer. Release it now; the
+                # tools start right after without waiting for playback. Text in
+                # the structured answer format is never speech, so it is held.
+                if round_text.strip() and not round_text.lstrip().startswith(
+                    ("{", "[")
+                ):
+                    yield AgentTextDelta(round_text)
+                    turn_spoke = True
+                elif self._progress_speech and not turn_spoke:
+                    # Only while nothing has been said this turn: one clause,
+                    # written from the request, covers every later round.
+                    progress = _progress_clause(tool_calls)
+                    if progress:
+                        yield AgentTextDelta(progress)
+                        turn_spoke = True
                 previous_tool_results = len(all_tool_results)
                 for tool_call in tool_calls:
                     yield AgentToolStarted(tool_call.name)
@@ -339,13 +585,14 @@ class OrchestratorAgent(ToolUsingAgent):
                         )
                     )
                     return
-                content = "".join(visible_parts)
+                content = round_text
                 completed = self._completed_display_batch(tool_calls, new_tool_results)
                 if completed:
                     if any("customer_message" in r.metadata for r in new_tool_results):
                         content = self._display_customer_message(new_tool_results)
-                    if content:
-                        yield AgentTextDelta(content)
+                        if content:
+                            yield AgentTextDelta(content)
+                    # Without a tool message the round text was already released.
                     metadata = {
                         "prompt_tokens": total_prompt_tokens,
                         "completion_tokens": total_completion_tokens,
@@ -368,8 +615,12 @@ class OrchestratorAgent(ToolUsingAgent):
             if intent_state is not None:
                 resolved = intent_state.finish(content)
                 if resolved is None:
+                    _log_final_rejected(turns, intent_state, len(content))
                     messages.append(
-                        Message(role=Role.SYSTEM, content=intent_state.instruction())
+                        Message(
+                            role=Role.SYSTEM,
+                            content=intent_state.final_correction(content),
+                        )
                     )
                     continue
                 content = resolved
@@ -398,12 +649,28 @@ class OrchestratorAgent(ToolUsingAgent):
             "total_tokens": total_prompt_tokens + total_completion_tokens,
             **(intent_state.metadata() if intent_state else {}),
         }
+        logger.warning(
+            "agent_max_turns path=stream turns=%d tool_results=%d "
+            "declared=%s reached=%s",
+            self._max_turns,
+            len(all_tool_results),
+            intent_state.declared if intent_state else None,
+            intent_state.reached if intent_state else None,
+        )
         result = self._max_turns_result(
             all_tool_results,
             self._max_turns,
             content="",
             metadata=metadata,
         )
+        if intent_state is not None:
+            # A customer hears this turn: never the English stub. Report the
+            # goal's own verified message once it landed, otherwise nothing.
+            result.content = (
+                self._reached_customer_message(all_tool_results)
+                if intent_state.reached
+                else ""
+            )
         if result.content:
             yield AgentTextDelta(result.content)
         yield AgentRunCompleted(result)
@@ -668,6 +935,8 @@ class OrchestratorAgent(ToolUsingAgent):
         openai_tools = self._executor.get_openai_tools() if self._tools else []
         if intent_state is not None:
             openai_tools = intent_state.schemas(openai_tools)
+        if self._progress_speech and openai_tools:
+            openai_tools = _with_progress_argument(openai_tools)
         all_tool_results: list[ToolResult] = []
         turns = 0
         total_prompt_tokens = 0
@@ -696,6 +965,15 @@ class OrchestratorAgent(ToolUsingAgent):
 
             content = result.get("content", "")
             raw_tool_calls = result.get("tool_calls", [])
+            _log_round(
+                path="sync",
+                turn=turns,
+                model=self._effective_model(),
+                finish_reason=result.get("finish_reason", ""),
+                visible_chars=len(self._strip_think_tags(content or "")),
+                tool_names=[tc.get("name", "") for tc in raw_tool_calls],
+                usage=usage,
+            )
 
             # No tool calls -> check continuation, then final answer
             if not raw_tool_calls:
@@ -704,9 +982,11 @@ class OrchestratorAgent(ToolUsingAgent):
                 if intent_state is not None:
                     resolved = intent_state.finish(content)
                     if resolved is None:
+                        _log_final_rejected(turns, intent_state, len(content))
                         messages.append(
                             Message(
-                                role=Role.SYSTEM, content=intent_state.instruction()
+                                role=Role.SYSTEM,
+                                content=intent_state.final_correction(content),
                             )
                         )
                         continue
@@ -775,6 +1055,13 @@ class OrchestratorAgent(ToolUsingAgent):
                     metadata=metadata,
                 )
         # Max turns exceeded
+        logger.warning(
+            "agent_max_turns path=sync turns=%d tool_results=%d declared=%s reached=%s",
+            self._max_turns,
+            len(all_tool_results),
+            intent_state.declared if intent_state else None,
+            intent_state.reached if intent_state else None,
+        )
         final_content = self._strip_think_tags(content) if content else ""
         if intent_state is not None and not intent_state.reached:
             final_content = ""
@@ -810,6 +1097,13 @@ class OrchestratorAgent(ToolUsingAgent):
             supplied = provider()
             if isinstance(supplied, dict):
                 runtime_context.update(supplied)
+        conversation_id = current_conversation_id()
+        if conversation_id:
+            background = ACTION_LEDGER.background_for(
+                conversation_id, current_turn_nonce()
+            )
+            if background:
+                runtime_context["background_actions"] = background
         if not runtime_context:
             return
         runtime_context["turn_nonce"] = current_turn_nonce()
@@ -821,7 +1115,15 @@ class OrchestratorAgent(ToolUsingAgent):
                 "Current tool-owned runtime state. Copy verified identifiers, "
                 "revisions and turn_nonce into arguments where a tool contract "
                 "requires them. They are validated by code and may expire when "
-                "this turn or the tool-owned state changes.\n<runtime_context>"
+                "this turn or the tool-owned state changes. background_actions, "
+                "when present, are outcomes of the customer's earlier requests "
+                "that may finish after they spoke again: mention each finished "
+                "one once in your reply and never repeat its action; a running "
+                "one is not done yet. Ones marked already_told were already told "
+                "to the customer: do not mention them again and never repeat "
+                "their action. Never proceed to payment past a failed or "
+                "unknown background action; tell the customer and ask first."
+                "\n<runtime_context>"
                 + json.dumps(runtime_context, ensure_ascii=False, separators=(",", ":"))
                 + "</runtime_context>"
             ),
@@ -880,20 +1182,45 @@ class OrchestratorAgent(ToolUsingAgent):
         loop_guard: Any | None,
         intent_state: Any | None = None,
     ) -> list[tuple[ToolCall, ToolResult]]:
+        if self._progress_speech:
+            tool_calls = [_without_progress(call) for call in tool_calls]
+        deferred: list[ToolCall] = []
         if intent_state is not None:
             try:
-                tool_calls = intent_state.prepare(tool_calls)
-            except (ValueError, TypeError):
+                tool_calls = intent_state.prepare(tool_calls, defer_targets=True)
+                deferred = list(intent_state.deferred)
+            except (ValueError, TypeError) as exc:
+                logger.warning(
+                    "agent_dispatch_blocked tools=%s declared=%s reached=%s "
+                    "target_attempted=%s reason=%s",
+                    ",".join(call.name for call in tool_calls) or "-",
+                    intent_state.declared,
+                    intent_state.reached,
+                    intent_state.target_attempted,
+                    str(exc)[:120],
+                )
+                # The reason is what lets the model change course; a generic
+                # refusal was retried until max_turns in a live turn.
+                if intent_state.reached:
+                    advice = (
+                        "The requested outcome is already done: do not call "
+                        "tools for it again; reply to the customer now."
+                    )
+                elif intent_state.declared is not None:
+                    advice = (
+                        f"Keep _intent={intent_state.declared} on every call this "
+                        "turn, prerequisite reads included; call the target "
+                        "alone once they are verified."
+                    )
+                else:
+                    advice = "Preserve the declared goal and validate prerequisites."
                 return [
                     (
                         call,
                         ToolResult(
                             tool_name=call.name,
                             success=False,
-                            content=(
-                                "intent_dispatch_blocked: preserve the declared "
-                                "goal and validate prerequisites"
-                            ),
+                            content=f"intent_dispatch_blocked: {exc}. {advice}",
                             metadata=intent_state.metadata(),
                         ),
                     )
@@ -913,7 +1240,38 @@ class OrchestratorAgent(ToolUsingAgent):
                         content=f"Loop guard: {verdict.reason}",
                         success=False,
                     )
-            result = self._executor.execute(tc)
+            # Runs on the lease-kept worker thread: the outcome is recorded
+            # even when the customer interrupted and this turn is gone.
+            conversation_id = current_conversation_id()
+            run_id = current_turn_nonce()
+            record = bool(conversation_id) and not self._is_read_only_tool(tc.name)
+            if record:
+                ACTION_LEDGER.start(
+                    conversation_id, call_id=tc.id, tool=tc.name, run_id=run_id
+                )
+            try:
+                result = self._executor.execute(tc)
+            except BaseException:
+                # A BaseException here comes from the pre-dispatch cancellation
+                # checks (ToolExecutor converts a cancellation raised after the
+                # tool started into an outcome_unknown result), so nothing ran.
+                if record:
+                    ACTION_LEDGER.finish(
+                        conversation_id,
+                        call_id=tc.id,
+                        run_id=run_id,
+                        result=ToolResult(
+                            tool_name=tc.name,
+                            content="not dispatched",
+                            success=False,
+                            metadata={"dispatched": False},
+                        ),
+                    )
+                raise
+            if record:
+                ACTION_LEDGER.finish(
+                    conversation_id, call_id=tc.id, run_id=run_id, result=result
+                )
             if loop_guard:
                 loop_guard.note_result(tc.name, tc.arguments, success=result.success)
             return result
@@ -933,6 +1291,26 @@ class OrchestratorAgent(ToolUsingAgent):
         if intent_state is not None:
             for call, result in ordered:
                 intent_state.observe(call, result)
+        if deferred:
+            # The prerequisites above ran and were observed; the target waits
+            # a round so its arguments are chosen with their results in view.
+            held = [
+                (
+                    call,
+                    ToolResult(
+                        tool_name=call.name,
+                        success=False,
+                        content=(
+                            "intent_target_deferred: its prerequisites ran in "
+                            "this round. Call the target alone next, keeping "
+                            f"_intent={intent_state.declared}."
+                        ),
+                        metadata=intent_state.metadata(),
+                    ),
+                )
+                for call in deferred
+            ]
+            ordered = held + ordered
         return ordered
 
     def _display_customer_message(self, tool_results: list[ToolResult]) -> str:
@@ -945,6 +1323,14 @@ class OrchestratorAgent(ToolUsingAgent):
                 and message.strip()
             )
         )
+
+    def _reached_customer_message(self, tool_results: list[ToolResult]) -> str:
+        """The latest successful tool's customer message, or empty."""
+        for result in reversed(tool_results):
+            message = result.metadata.get("customer_message")
+            if result.success and isinstance(message, str) and message.strip():
+                return self._strip_think_tags(message)
+        return ""
 
     def _completed_display_batch(
         self,

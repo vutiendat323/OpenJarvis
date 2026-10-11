@@ -81,6 +81,10 @@ class InstrumentedEngine(InferenceEngine):
     def supports_semantic_reasoning_stream(self, model: str) -> bool:
         return self._inner.supports_semantic_reasoning_stream(model)
 
+    def reasoning_off_options(self, model: str) -> dict[str, Any] | None:
+        options = getattr(self._inner, "reasoning_off_options", None)
+        return options(model) if callable(options) else None
+
     def generate(
         self,
         messages: Sequence[Message],

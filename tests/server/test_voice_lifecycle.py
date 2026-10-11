@@ -20,6 +20,7 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
+    LLMTextFrame,
     TTSSpeakFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -27,7 +28,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from openjarvis.server.voice import lifecycle as lc
-from openjarvis.server.voice.lifecycle import VoiceSessionLifecycle
+from openjarvis.server.voice.lifecycle import REPLY_GRACE_SECS, VoiceSessionLifecycle
 
 IDLE, WARN, LIMIT, ABSENCE, POLL = 0.15, 0.6, 0.9, 0.2, 0.02
 
@@ -355,3 +356,150 @@ def test_kiosk_runtime_reports_customer_presence_from_vision():
     assert runtime.customer_present() is True
     runtime._set_presence_from_event("person_unknown")
     assert runtime.customer_present() is True
+
+
+@pytest.mark.anyio
+async def test_report_speaks_when_nobody_is_talking(harness):
+    proc, pushed, _ = harness
+
+    await proc.report("Đã thêm hai cà phê sữa.")
+
+    assert _spoken(pushed) == ["Đã thêm hai cà phê sữa."]
+
+
+@pytest.mark.anyio
+async def test_report_waits_for_the_bot_to_finish(harness):
+    proc, pushed, _ = harness
+    await proc.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+
+    await proc.report("Đã thêm.")
+    assert _spoken(pushed) == []
+
+    await proc.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+    assert _spoken(pushed) == ["Đã thêm."]
+
+
+def _idle_lifecycle(monkeypatch):
+    monkeypatch.setattr(FrameProcessor, "process_frame", _noop)
+    calls = []
+
+    async def on_idle():
+        calls.append("idle")
+
+    proc = VoiceSessionLifecycle(on_idle=on_idle)
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        del frame, direction
+
+    monkeypatch.setattr(proc, "push_frame", push)
+    return proc, calls
+
+
+@pytest.mark.anyio
+async def test_on_idle_runs_only_when_nobody_is_talking(monkeypatch):
+    proc, calls = _idle_lifecycle(monkeypatch)
+
+    await proc.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    await proc.flush()
+    assert calls == []
+
+    await proc.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+    assert calls == ["idle"]
+
+
+@pytest.mark.anyio
+async def test_on_idle_does_not_run_when_the_customer_stops_speaking(monkeypatch):
+    proc, calls = _idle_lifecycle(monkeypatch)
+
+    await proc.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await proc.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_on_idle_waits_while_the_customer_reply_is_pending(monkeypatch):
+    proc, calls = _idle_lifecycle(monkeypatch)
+
+    await proc.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await proc.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await proc.flush()
+    assert calls == []
+
+    await proc.process_frame(LLMFullResponseStartFrame(), FrameDirection.DOWNSTREAM)
+    await proc.process_frame(LLMFullResponseEndFrame(), FrameDirection.DOWNSTREAM)
+    assert calls == ["idle"]
+
+
+@pytest.mark.anyio
+async def test_on_idle_runs_once_the_reply_grace_has_passed(monkeypatch):
+    proc, calls = _idle_lifecycle(monkeypatch)
+
+    await proc.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await proc.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    proc._user_stopped_at -= REPLY_GRACE_SECS + 0.1
+    await proc.flush()
+
+    assert calls == ["idle"]
+
+
+async def _reply(proc, text):
+    """One Agent response passing through the lifecycle on its way to TTS."""
+    await proc.process_frame(LLMFullResponseStartFrame(), FrameDirection.DOWNSTREAM)
+    await proc.process_frame(LLMTextFrame(text), FrameDirection.DOWNSTREAM)
+    await proc.process_frame(LLMFullResponseEndFrame(), FrameDirection.DOWNSTREAM)
+
+
+@pytest.mark.anyio
+async def test_on_idle_waits_until_a_spoken_reply_has_played(monkeypatch):
+    """At a reply's end frame its text is still in TTS; a report would cut it."""
+    proc, calls = _idle_lifecycle(monkeypatch)
+
+    await _reply(proc, "Dạ, đã thêm hai cà phê sữa.")
+    await proc.flush()
+    assert calls == []
+
+    await proc.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    assert calls == []
+    await proc.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+    assert calls == ["idle"]
+
+
+@pytest.mark.anyio
+async def test_on_idle_runs_at_response_end_when_speech_already_played(monkeypatch):
+    proc, calls = _idle_lifecycle(monkeypatch)
+
+    await proc.process_frame(LLMFullResponseStartFrame(), FrameDirection.DOWNSTREAM)
+    await proc.process_frame(LLMTextFrame("x"), FrameDirection.DOWNSTREAM)
+    await proc.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    await proc.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+    assert calls == []
+
+    await proc.process_frame(LLMFullResponseEndFrame(), FrameDirection.DOWNSTREAM)
+
+    assert calls == ["idle"]
+
+
+@pytest.mark.anyio
+async def test_on_idle_runs_at_the_end_of_a_reply_with_nothing_to_play(monkeypatch):
+    proc, calls = _idle_lifecycle(monkeypatch)
+
+    await _reply(proc, " ")  # a TTS flush marker carries no speech
+
+    assert calls == ["idle"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cut", [InterruptionFrame, UserStartedSpeakingFrame])
+async def test_a_cut_reply_no_longer_holds_on_idle(monkeypatch, cut):
+    proc, calls = _idle_lifecycle(monkeypatch)
+    await _reply(proc, "Dạ.")
+    assert calls == []
+
+    await proc.process_frame(cut(), FrameDirection.DOWNSTREAM)
+    if cut is UserStartedSpeakingFrame:
+        await proc.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        proc._user_stopped_at -= REPLY_GRACE_SECS + 0.1
+    await proc.flush()
+
+    assert calls == ["idle"]

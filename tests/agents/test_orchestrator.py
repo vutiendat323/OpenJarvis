@@ -906,13 +906,18 @@ class TestOrchestratorAgent:
         )
 
         assert len(engine.calls) == 1
+        # The round's own text is released before the tool; the tool's verified
+        # result message follows its completion. Each is spoken once.
+        assert events[0] == AgentTextDelta("Dạ, mình xem nhé.")
         assert isinstance(events[finished + 1], AgentTextDelta)
         assert events[finished + 1].content == "Đã tìm thấy 1 kết quả."
-        assert text == "Đã tìm thấy 1 kết quả."
-        assert events[-1].result.content == text
+        assert text == "Dạ, mình xem nhé.Đã tìm thấy 1 kết quả."
+        assert events[-1].result.content == "Đã tìm thấy 1 kết quả."
 
     @pytest.mark.asyncio
-    async def test_streaming_display_text_finishes_after_the_display_call(self) -> None:
+    async def test_streaming_display_round_text_is_released_once_before_the_call(
+        self,
+    ) -> None:
         engine = StreamingEngine(
             [
                 [
@@ -938,8 +943,9 @@ class TestOrchestratorAgent:
         events = [event async for event in agent.run_stream("show menu")]
 
         assert len(engine.calls) == 1
-        assert type(events[0]).__name__ == "AgentToolStarted"
-        assert events[-2] == AgentTextDelta("Dạ menu đang ở trên màn hình.")
+        assert events[0] == AgentTextDelta("Dạ menu đang ở trên màn hình.")
+        assert type(events[1]).__name__ == "AgentToolStarted"
+        assert [e for e in events if isinstance(e, AgentTextDelta)] == [events[0]]
         assert isinstance(events[-1], AgentRunCompleted)
         assert events[-1].result.content == "Dạ menu đang ở trên màn hình."
 
@@ -1466,10 +1472,10 @@ class TestOrchestratorAgent:
         assert events[-1].result.metadata["max_turns_exceeded"] is True
 
     @pytest.mark.asyncio
-    async def test_orchestrator_stream_keeps_tool_call_arguments_out_of_the_text(
+    async def test_orchestrator_stream_speaks_tool_round_prose_but_never_arguments(
         self,
     ) -> None:
-        """Tool-round prose and arguments stay out of the spoken answer."""
+        """Tool-round prose is spoken before the tool; arguments never are."""
 
         class RecordingCalculator(_CalculatorStub):
             def __init__(self) -> None:
@@ -1519,7 +1525,7 @@ class TestOrchestratorAgent:
         completions = [
             event for event in events if isinstance(event, AgentRunCompleted)
         ]
-        assert deltas == ["Result is 4."]
+        assert deltas == ["Do not mix this answer.", "Result is 4."]
         assert len(completions) == 1
         assert completions[0].result.content == "Result is 4."
         assert '{"expression":"2+2"}' not in "".join(deltas)
@@ -1966,9 +1972,11 @@ class TestOrchestratorAgent:
 
         events = [event async for event in agent.run_stream("Hai cộng hai?")]
 
-        assert type(events[0]).__name__ == "AgentToolStarted"
+        assert events[0] == AgentTextDelta("Dạ để tôi tính. ")
+        assert type(events[1]).__name__ == "AgentToolStarted"
         assert [e.content for e in events if isinstance(e, AgentTextDelta)] == [
-            "Kết quả là 4."
+            "Dạ để tôi tính. ",
+            "Kết quả là 4.",
         ]
         second_messages = engine.calls[1][0]
         assistant = next(

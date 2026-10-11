@@ -99,6 +99,128 @@ def test_contract_metadata_survives_visible_tool_wrappers():
     ]
 
 
+@pytest.mark.parametrize("action", ["view", "remove"])
+def test_standalone_cart_view_and_batch_remove_finish_without_exhausting_turns(action):
+    fixture = OrderingFixture()
+    with conversation_scope("standalone-cart-" + action):
+        fixture.seed(cart=True)
+        assert fixture.cart.edit_without_display(
+            "add",
+            {
+                "items": [
+                    {
+                        "variant_id": variant,
+                        "name": variant,
+                        "unit_price": 52_000,
+                        "quantity": 1,
+                        "note": "",
+                        "size": "",
+                    }
+                    for variant in ("drink-a", "drink-b")
+                ]
+            },
+        ).success
+        arguments = {"action": action, "customer_message": "Mời bạn xem giỏ hàng."}
+        if action == "remove":
+            arguments["line_ids"] = [
+                line["line_id"]
+                for line in fixture.cart.current_snapshot()["lines"]
+                if line["unit_price"] == 52_000
+            ]
+            arguments["customer_message"] = "Đã bỏ hai món giá 52.000đ khỏi giỏ."
+        engine = FakeEngine(
+            [{"tool_calls": [invoke("display_cart", "NONE", **arguments)]}]
+        )
+        result = OrchestratorAgent(
+            engine,
+            "fake",
+            tools=fixture.tools,
+            bus=fixture.bus,
+            max_turns=2,
+            intent_normalization=True,
+        ).run(
+            "mở giỏ hàng nha"
+            if action == "view"
+            else "Trong giỏ hàng bạn loại giúp tôi những món có giá 52.000đ ra."
+        )
+        snapshot = fixture.cart.current_snapshot()
+    assert result.content == arguments["customer_message"]
+    assert result.turns == 1
+    assert not result.metadata.get("max_turns_exceeded")
+    assert result.metadata["terminal_reason"] == "ANSWER"
+    assert all(r.success for r in result.tool_results)
+    assert fixture.displays[-1]["view"] == "cart"
+    assert snapshot["total"] == (206_000 if action == "view" else 102_000)
+    assert len(snapshot["lines"]) == (3 if action == "view" else 1)
+    assert fixture.shop.calls == []
+
+
+@pytest.mark.parametrize(
+    "edit, expected",
+    [
+        ({"action": "update", "quantity": 10}, {"quantity": 10, "total": 350_000}),
+        ({"action": "update", "note": "ít đá"}, {"note": "ít đá"}),
+        (
+            {"action": "set_order_note", "order_note": "giao tại cửa"},
+            {"order_note": "giao tại cửa"},
+        ),
+        (
+            {"action": "set_order_type", "order_type": "take-out"},
+            {"order_type": "take-out"},
+        ),
+        (
+            {"action": "set_table", "table": "table-1", "table_name": "1"},
+            {"table": "table-1", "order_type": "at-table"},
+        ),
+        (
+            {"action": "set_pickup_time", "pickup_minutes": 10},
+            {"pickup_minutes": 10, "order_type": "take-out"},
+        ),
+    ],
+)
+def test_standalone_cart_edits_finish_even_without_a_dining_choice(edit, expected):
+    fixture = OrderingFixture()
+    message = "Đã sửa giỏ hàng. Bạn muốn dùng tại quán hay mang đi?"
+    with conversation_scope("cart-edit-" + json.dumps(edit)):
+        assert fixture.cart.edit_without_display(
+            "add",
+            {
+                "item": {
+                    "variant_id": "americano",
+                    "name": "Cà phê đen Americano",
+                    "unit_price": 35_000,
+                    "quantity": 1,
+                    "note": "",
+                    "size": "",
+                }
+            },
+        ).success
+        arguments = dict(edit, customer_message=message)
+        if edit["action"] == "update":
+            arguments["line_id"] = fixture.cart.current_snapshot()["lines"][0][
+                "line_id"
+            ]
+        result = OrchestratorAgent(
+            FakeEngine([{"tool_calls": [invoke("display_cart", "NONE", **arguments)]}]),
+            "fake",
+            tools=fixture.tools,
+            bus=fixture.bus,
+            max_turns=2,
+            intent_normalization=True,
+        ).run("Điều chỉnh giỏ hàng")
+        snapshot = fixture.cart.current_snapshot()
+    assert result.content == message
+    assert result.turns == 1
+    assert not result.metadata.get("max_turns_exceeded")
+    assert all(r.success for r in result.tool_results)
+    for key, value in expected.items():
+        actual = (
+            snapshot["lines"][0][key] if key in {"quantity", "note"} else snapshot[key]
+        )
+        assert actual == value
+    assert fixture.shop.calls == []
+
+
 def test_verified_menu_skill_finishes_in_one_model_round():
     fixture = OrderingFixture()
     engine = FakeEngine(

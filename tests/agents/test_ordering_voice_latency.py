@@ -6,7 +6,11 @@ import json
 
 import pytest
 
-from openjarvis.agents._stubs import AgentTextDelta, AgentToolFinished
+from openjarvis.agents._stubs import (
+    AgentTextDelta,
+    AgentToolFinished,
+    AgentToolStarted,
+)
 from openjarvis.agents.orchestrator import OrchestratorAgent
 from openjarvis.core.types import ToolResult
 from openjarvis.engine._stubs import StreamChunk
@@ -77,9 +81,16 @@ class DecisionEngine:
         )
 
 
+PREAMBLE = "I will use the website tool now."
+
+
+def _spoken(events):
+    return [event.content for event in events if isinstance(event, AgentTextDelta)]
+
+
 def decision(tool):
     return {
-        "content": "I will use the website tool now.",
+        "content": PREAMBLE,
         "tool_calls": [
             {"id": "site-action", "name": tool.tool_id, "arguments": json.dumps({})}
         ],
@@ -105,13 +116,20 @@ async def test_any_site_terminal_tool_speaks_its_own_response_once(
     events = [event async for event in agent.run_stream("Use the current website")]
     assert engine.calls == 1
     assert events[-1].result.content == response
-    assert [event.content for event in events if isinstance(event, AgentTextDelta)] == [
-        response
-    ]
     if streaming:
-        assert next(
+        # The decision text is released before the tool; the tool's own
+        # message follows its completion. Each is spoken once.
+        assert _spoken(events) == [PREAMBLE, response]
+        first_tool = next(
+            i for i, e in enumerate(events) if isinstance(e, AgentToolStarted)
+        )
+        finished = next(
             i for i, e in enumerate(events) if isinstance(e, AgentToolFinished)
-        ) < next(i for i, e in enumerate(events) if isinstance(e, AgentTextDelta))
+        )
+        assert events.index(AgentTextDelta(PREAMBLE)) < first_tool
+        assert finished < events.index(AgentTextDelta(response))
+    else:
+        assert _spoken(events) == [response]
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -125,7 +143,8 @@ async def test_terminal_tool_with_no_speech_never_reinfers_or_invents_an_ack(str
     ]
     assert engine.calls == 1
     assert events[-1].result.content == ""
-    assert not any(isinstance(event, AgentTextDelta) for event in events)
+    # Only the model's own decision text may be spoken; nothing is invented.
+    assert _spoken(events) == ([PREAMBLE] if streaming else [])
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -143,10 +162,7 @@ async def test_nonterminal_or_failed_site_tool_allows_agent_to_answer(
     events = [event async for event in agent.run_stream("Explain this site result")]
     assert engine.calls == 2
     assert events[-1].result.content == answer
-    assert (
-        "".join(event.content for event in events if isinstance(event, AgentTextDelta))
-        == answer
-    )
+    assert _spoken(events) == ([PREAMBLE, answer] if streaming else [answer])
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -177,6 +193,4 @@ async def test_terminal_site_response_is_not_clipped_or_translated(streaming):
     events = [event async for event in agent.run_stream("Display learning material")]
     assert engine.calls == 1
     assert events[-1].result.content == response
-    assert (
-        "".join(e.content for e in events if isinstance(e, AgentTextDelta)) == response
-    )
+    assert _spoken(events) == ([PREAMBLE, response] if streaming else [response])

@@ -18,6 +18,11 @@ input_schema_json = '''
 }
 '''
 
+[skill.metadata.openjarvis]
+# One GET plus a display of its result: a read, so it never queues behind
+# another turn's cart write (agents/_stubs.py AgentToolGate).
+read_only = true
+
 [skill.metadata.openjarvis.request_recipe]
 origin = "https://trendcoffee.net"
 method = "GET"

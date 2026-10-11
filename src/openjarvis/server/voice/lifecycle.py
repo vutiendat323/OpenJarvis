@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Callable
+from typing import Awaitable, Callable
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
@@ -32,6 +32,7 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
+    LLMTextFrame,
     TTSSpeakFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -47,6 +48,8 @@ GREETING = (
 IDLE_PROMPT = "Bạn muốn đặt món hay xem menu ạ?"
 WARNING = "Phiên gọi món còn một phút nữa ạ."
 GOODBYE = "Cảm ơn bạn đã ghé quán, hẹn gặp lại nhé!"
+# The customer just finished a sentence; their turn is about to be answered.
+REPLY_GRACE_SECS = 2.0
 
 
 class VoiceSessionLifecycle(FrameProcessor):
@@ -59,9 +62,11 @@ class VoiceSessionLifecycle(FrameProcessor):
         limit_secs: float = 600.0,
         absence_secs: float = 10.0,
         poll_secs: float = 0.5,
+        on_idle: Callable[[], Awaitable[None]] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
+        self._on_idle = on_idle
         self._presence = presence
         self._idle_secs = idle_secs
         self._warning_after = warning_after_secs
@@ -71,6 +76,11 @@ class VoiceSessionLifecycle(FrameProcessor):
         self._bot_speaking = False
         self._user_speaking = False
         self._responding = False
+        self._user_stopped_at: float | None = None
+        # A finished reply's text is still on its way through TTS: an event
+        # turn started now would cut the rest of it off.
+        self._response_spoken = False
+        self._awaiting_playback = False
         self._nudged = False
         self._ending = False
         self._warned = False
@@ -101,20 +111,33 @@ class VoiceSessionLifecycle(FrameProcessor):
             self._cancel_idle()
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
+            self._response_spoken = False
+            self._awaiting_playback = False
             await self._flush()
             self._arm_idle()
         elif isinstance(frame, UserStartedSpeakingFrame):
             self._user_speaking, self._nudged = True, False
+            self._awaiting_playback = False
             self._cancel_idle()
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self._user_speaking = False
-            await self._flush()
+            self._user_stopped_at = time.monotonic()
+            # Not idle: the customer just finished a sentence and that turn is
+            # about to be answered; a background report here would be cut by it.
+            await self._flush(idle=False)
             self._arm_idle()
         elif isinstance(frame, LLMFullResponseStartFrame):
             self._responding, self._nudged = True, False
+            self._user_stopped_at = None
+            self._response_spoken = False
             self._cancel_idle()
+        elif isinstance(frame, LLMTextFrame):
+            if frame.text.strip():
+                self._response_spoken = True
         elif isinstance(frame, LLMFullResponseEndFrame):
             self._responding = False
+            if self._response_spoken:
+                self._awaiting_playback = True
             await self.push_frame(frame, direction)
             await self._flush()
             self._arm_idle()
@@ -123,6 +146,7 @@ class VoiceSessionLifecycle(FrameProcessor):
             # Cancelled Agent responses deliberately have no response-end frame.
             self._responding = False
             self._bot_speaking = False
+            self._awaiting_playback = False
             self._arm_idle()
         elif isinstance(frame, (EndFrame, CancelFrame)):
             self.stop_timers()
@@ -187,7 +211,7 @@ class VoiceSessionLifecycle(FrameProcessor):
 
     # -- speech ---------------------------------------------------------------
 
-    async def _flush(self) -> None:
+    async def _flush(self, *, idle: bool = True) -> None:
         """Speak queued messages only once nobody is speaking or replying."""
         while (
             self._pending
@@ -195,6 +219,26 @@ class VoiceSessionLifecycle(FrameProcessor):
             and not (self._bot_speaking or self._user_speaking or self._responding)
         ):
             await self._speak(self._pending.pop(0))
+        if (
+            idle
+            and self._on_idle is not None
+            and not self._ending
+            and not self._awaiting_playback
+            and (
+                self._user_stopped_at is None
+                or time.monotonic() - self._user_stopped_at >= REPLY_GRACE_SECS
+            )
+            and not (self._bot_speaking or self._user_speaking or self._responding)
+        ):
+            await self._on_idle()
+
+    async def report(self, text: str) -> None:
+        """Queue one verified sentence; spoken once nobody is talking."""
+        self._pending.append(text)
+        await self._flush()
+
+    async def flush(self) -> None:
+        await self._flush()
 
     async def _speak(self, text: str) -> None:
         await self.push_frame(TTSSpeakFrame(text), FrameDirection.DOWNSTREAM)

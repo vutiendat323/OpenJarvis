@@ -274,6 +274,33 @@ FLOWS = [
 ]
 
 
+def speech_metrics(
+    speech: list[tuple[float, str]], first_tool_at: float | None
+) -> dict:
+    """Spoken segments relative to the run start, in seconds."""
+    return {
+        "time_to_first_speech_s": round(speech[0][0], 4) if speech else None,
+        "speech_segments": [
+            {"at_s": round(at, 4), "text": text} for at, text in speech
+        ],
+        "segments_before_first_tool": (
+            None
+            if first_tool_at is None
+            else sum(1 for at, _ in speech if at < first_tool_at)
+        ),
+    }
+
+
+class _VoiceTurn:
+    """The Pipecat context shape the voice pipeline hands to ``agent_input``."""
+
+    def __init__(self, query: str) -> None:
+        self._messages = [{"role": "user", "content": query}]
+
+    def get_messages(self) -> list[dict]:
+        return list(self._messages)
+
+
 class MeteredEngine:
     def __init__(self, engine):
         self.inner = engine
@@ -303,6 +330,7 @@ async def benchmark(args):
     from dotenv import load_dotenv
 
     from openjarvis.engine.cloud import CloudEngine
+    from openjarvis.server.voice.llm import agent_input
 
     load_dotenv(ROOT / ".env", override=False)
     cloud = CloudEngine()
@@ -326,10 +354,21 @@ async def benchmark(args):
                     intent_normalization=args.intent_normalization,
                 )
                 times, speech, arguments = [], [], []
+                # Raw text the model wrote in rounds that also called tools,
+                # before any release filter decides whether it is spoken.
+                tool_round_texts = []
                 fixture.bus.subscribe(
                     EventType.TOOL_CALL_START,
                     lambda event: times.append(
                         (time.perf_counter(), event.data["tool"])
+                    ),
+                )
+                fixture.bus.subscribe(
+                    EventType.INFERENCE_END,
+                    lambda event: (
+                        tool_round_texts.append(event.data.get("content", ""))
+                        if event.data.get("tool_calls")
+                        else None
                     ),
                 )
                 fixture.bus.subscribe(
@@ -372,7 +411,12 @@ async def benchmark(args):
                     try:
                         async with asyncio.timeout(args.timeout):
                             events = []
-                            async for event in agent.run_stream(query):
+                            # Same prompt and history shape as a live voice
+                            # turn, including VOICE_SYSTEM_PROMPT.
+                            voice_prompt, voice_context = agent_input(_VoiceTurn(query))
+                            async for event in agent.run_stream(
+                                voice_prompt, voice_context
+                            ):
                                 events.append(event)
                                 if isinstance(event, AgentTextDelta):
                                     speech.append(
@@ -568,10 +612,15 @@ async def benchmark(args):
                             "time_to_final_response_s": round(finished, 4),
                             "spoken_words": len(spoken.split()),
                             "speech": spoken,
+                            "tool_round_texts": tool_round_texts,
                             "speech_before_tool": bool(
                                 times
                                 and speech
                                 and speech[0][0] < times[0][0] - started
+                            ),
+                            **speech_metrics(
+                                speech,
+                                times[0][0] - started if times else None,
                             ),
                             "failed_tools": [
                                 r.tool_name

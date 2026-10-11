@@ -1436,3 +1436,88 @@ class TestSkillTool:
         assert skill_tool.spec.name == "skill_tool_skill"
         result = skill_tool.execute(input="hello")
         assert result.success
+
+    @staticmethod
+    def _checkout_tool(results: list[ToolResult], *methods: str):
+        """A checkout skill whose http steps return ``results`` in order."""
+        from openjarvis.skills.tool_adapter import SkillTool
+
+        cart, http, executor, _ = _checkout_http_harness(results, "GET")
+        manifest = SkillManifest(
+            name="checkout",
+            checkout=True,
+            steps=[
+                SkillStep(
+                    tool_name="http_request",
+                    arguments_template=json.dumps(
+                        {"url": f"https://shop.example/{index}", "method": method}
+                    ),
+                    output_key=f"step_{index}",
+                )
+                for index, method in enumerate(methods)
+            ],
+        )
+        return cart, http, SkillTool(manifest, executor)
+
+    @staticmethod
+    def _run_checkout(cart, tool, conversation):
+        from openjarvis.core.conversation import agent_turn_scope, conversation_scope
+
+        with conversation_scope(conversation):
+            revision = _add_checkout_tea(cart)
+            with agent_turn_scope() as nonce:
+                return tool.execute(turn_nonce=nonce, cart_revision=revision)
+
+    def test_checkout_failing_after_its_order_write_is_an_unknown_outcome(self):
+        """The order POST went out; a later step failing does not undo it."""
+        from openjarvis.agents.action_ledger import ActionLedger
+
+        cart, http, tool = self._checkout_tool(
+            [
+                _http_result(content='{"order_id":"o-1"}'),
+                *[
+                    ToolResult(
+                        tool_name="http_request",
+                        content="Request error: connection reset",
+                        success=False,
+                    )
+                ]
+                * 2,
+            ],
+            "POST",
+            "GET",
+        )
+
+        result = self._run_checkout(cart, tool, "checkout-after-write")
+
+        assert [call["method"] for call in http.calls] == ["POST", "GET", "GET"]
+        assert result.success is False
+        assert result.metadata["outcome_unknown"] is True
+        assert result.content.startswith("Request error: connection reset")
+        assert "outcome is unknown" in result.content
+        assert "do not re-execute" in result.content
+        ledger = ActionLedger()
+        ledger.start("c", call_id="pay", tool=tool.spec.name, run_id="r")
+        ledger.finish("c", call_id="pay", run_id="r", result=result)
+        assert [e.status for e in ledger.entries("c")] == ["unknown"]
+
+    def test_checkout_failing_before_any_order_write_stays_a_failure(self):
+        cart, http, tool = self._checkout_tool(
+            [
+                ToolResult(
+                    tool_name="http_request",
+                    content="Request error: connection reset",
+                    success=False,
+                )
+            ]
+            * 2,
+            "GET",
+            "POST",
+        )
+
+        result = self._run_checkout(cart, tool, "checkout-before-write")
+
+        assert [call["method"] for call in http.calls] == ["GET", "GET"]
+        assert result.success is False
+        assert "outcome_unknown" not in result.metadata
+        assert "outcome is unknown" not in result.content

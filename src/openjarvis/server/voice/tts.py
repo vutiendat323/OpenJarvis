@@ -5,10 +5,15 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
-from pipecat.frames.frames import Frame, TTSAudioRawFrame
+from pipecat.frames.frames import AggregatedTextFrame, Frame, TTSAudioRawFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TTSService
+
+# Set on a text frame that ends a round of speech before a tool runs: the
+# sentence aggregator then synthesizes what it holds instead of waiting for
+# lookahead text that only arrives after the tool.
+FLUSH_TTS_METADATA = "openjarvis_flush_tts"
 
 
 class VieNeuTTSService(TTSService):
@@ -49,7 +54,20 @@ class VieNeuTTSService(TTSService):
         is_current = frame.metadata.pop("openjarvis_is_current", None)
         if callable(is_current) and not is_current():
             return
+        flush = frame.metadata.pop(FLUSH_TTS_METADATA, False)
         await super().process_frame(frame, direction)
+        if flush:
+            # Same flush the base class runs at LLMFullResponseEndFrame, without
+            # ending the response.
+            remaining = await self._text_aggregator.flush()
+            if remaining:
+                await self._push_tts_frames(
+                    AggregatedTextFrame(
+                        remaining.text,
+                        remaining.type,
+                        raw_text=getattr(remaining, "full_match", remaining.text),
+                    )
+                )
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
         """Yield each rendered chunk as soon as it exists."""

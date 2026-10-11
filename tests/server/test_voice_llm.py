@@ -388,6 +388,68 @@ async def test_completed_response_still_flushes_into_tts():
     assert renderer.requests == ["fresh response."]
 
 
+class _ToolPausingBinding:
+    """Release a round's text, start its tool, then hold the tool open."""
+
+    model = "test-model"
+
+    def __init__(self):
+        self.tool_running = asyncio.Event()
+        self.release_tool = asyncio.Event()
+
+    async def run_stream(self, prompt, context):
+        del prompt, context
+        yield AgentTextDelta("Để mình kiểm tra bàn trống nhé. ")
+        yield AgentToolStarted("skill_tables")
+        self.tool_running.set()
+        await self.release_tool.wait()
+        yield AgentToolFinished("skill_tables", ok=True)
+        yield AgentTextDelta("Bàn 1 còn trống.")
+
+
+@pytest.mark.anyio
+async def test_tool_round_text_reaches_tts_while_the_tool_still_runs():
+    binding = _ToolPausingBinding()
+    renderer = _RecordingRenderer()
+    llm = OpenJarvisLLMService(binding)
+    pipeline = Pipeline([llm, VieNeuTTSService(renderer, sample_rate=48_000)])
+    worker = PipelineWorker(
+        pipeline,
+        cancel_on_idle_timeout=False,
+        enable_rtvi=False,
+        enable_turn_tracking=False,
+    )
+    runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
+    spoken_during_tool: list[str] = []
+
+    async def drive_turn():
+        await asyncio.sleep(0.01)
+        await worker.queue_frame(
+            LLMContextFrame(
+                LLMContext(messages=[{"role": "user", "content": "bàn trống?"}])
+            )
+        )
+        await asyncio.wait_for(binding.tool_running.wait(), timeout=_STEP_TIMEOUT_S)
+        try:
+            # Sentence aggregation must not hold the clause until the tool ends.
+            await asyncio.wait_for(renderer.called.wait(), timeout=1.0)
+        except TimeoutError:
+            pass
+        spoken_during_tool.extend(renderer.requests)
+        binding.release_tool.set()
+        await asyncio.sleep(0.2)
+        await worker.queue_frame(EndFrame())
+
+    await runner.add_workers(worker)
+    await asyncio.wait_for(
+        asyncio.gather(runner.run(), drive_turn()),
+        timeout=_TURN_TIMEOUT_S,
+    )
+
+    assert spoken_during_tool == ["Để mình kiểm tra bàn trống nhé."]
+    assert renderer.requests == ["Để mình kiểm tra bàn trống nhé.", "Bàn 1 còn trống."]
+
+
 @pytest.mark.anyio
 async def test_failed_response_discards_partial_text_before_the_next_turn():
     binding = _ErrorThenSuccessBinding()
@@ -428,7 +490,7 @@ async def test_failed_response_discards_partial_text_before_the_next_turn():
 
 
 @pytest.mark.anyio
-async def test_voice_speaks_the_first_tool_round_and_final_answer_only():
+async def test_voice_speaks_every_tool_round_once_in_order():
     speech = await _speech(
         [
             AgentTextDelta("Dạ, em đang tạo đơn. "),
@@ -445,7 +507,87 @@ async def test_voice_speaks_the_first_tool_round_and_final_answer_only():
         ]
     )
 
-    assert speech == "Dạ, em đang tạo đơn. Đơn của bạn đã sẵn sàng."
+    assert " ".join(speech.split()) == (
+        "Dạ, em đang tạo đơn. Đơn đã tạo xong. "
+        "Đơn đã được xác minh. Đơn của bạn đã sẵn sàng."
+    )
+
+
+@pytest.mark.anyio
+async def test_voice_flushes_a_round_once_across_several_tool_starts():
+    speech = await _speech(
+        [
+            AgentTextDelta("Em làm hai việc. "),
+            AgentToolStarted("http_request"),
+            AgentToolStarted("display_menu"),
+            AgentToolFinished("http_request", ok=True),
+            AgentToolFinished("display_menu", ok=True),
+            AgentTextDelta("Xong."),
+            AgentRunCompleted(AgentResult(content="Xong.", turns=2)),
+        ]
+    )
+
+    assert " ".join(speech.split()) == "Em làm hai việc. Xong."
+
+
+class _AgentBinding:
+    model = "test-model"
+
+    def __init__(self, agent):
+        self._agent = agent
+
+    async def run_stream(self, prompt, context):
+        async for event in self._agent.run_stream(prompt, context):
+            yield event
+
+
+@pytest.mark.anyio
+async def test_released_round_is_spoken_before_its_tool_runs():
+    from openjarvis.agents.orchestrator import OrchestratorAgent
+    from openjarvis.core.types import ToolResult
+    from openjarvis.tools._stubs import BaseTool, ToolSpec
+    from tests.agents.test_immediate_response import CALC, _tool_round
+    from tests.agents.test_orchestrator import StreamingEngine, _stream_final_round
+
+    log: list[str] = []
+
+    class RecordingCalculator(BaseTool):
+        tool_id = "calculator"
+
+        @property
+        def spec(self):
+            return ToolSpec(
+                name="calculator",
+                description="Math.",
+                parameters={
+                    "type": "object",
+                    "properties": {"expression": {"type": "string"}},
+                },
+            )
+
+        def execute(self, **params):
+            log.append("tool")
+            return ToolResult(tool_name="calculator", content="4", success=True)
+
+    agent = OrchestratorAgent(
+        StreamingEngine(
+            [
+                _tool_round("Dạ, em tính ngay.", CALC),
+                _stream_final_round("Kết quả là 4."),
+            ]
+        ),
+        "deepseek-v4-flash",
+        tools=[RecordingCalculator()],
+    )
+    service = OpenJarvisLLMService(_AgentBinding(agent))
+    spoken: list[str] = []
+    async for frame in service.stream_agent("tính 2+2", AgentContext()):
+        if isinstance(frame, LLMTextFrame):
+            log.append("speech")
+            spoken.append(frame.text)
+
+    assert " ".join("".join(spoken).split()) == "Dạ, em tính ngay. Kết quả là 4."
+    assert log.index("speech") < log.index("tool")
 
 
 @pytest.mark.anyio

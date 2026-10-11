@@ -7,12 +7,14 @@ Each tool is registered via ``@ToolRegistry.register("name")`` and implements
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import contextvars
 import json
 import time
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
@@ -20,6 +22,21 @@ from uuid import uuid4
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolCall, ToolResult
 from openjarvis.tools import evidence as _evidence
+
+# How long a write from one Agent run waits for another run's write to finish
+# before it is answered "pending" instead of dispatched (spec 2026-10-10 §5.2).
+WRITE_WAIT_SECONDS = 5.0
+
+# True while a tool's own ``execute`` runs. A tool already dispatched runs all
+# its steps (spec 2026-10-10 D2): a skill's later steps call ``ToolExecutor``
+# nested, and an interrupt must not abort them half way.
+_IN_TOOL: ContextVar[bool] = ContextVar("openjarvis_tool_executing", default=False)
+
+
+def tool_is_executing() -> bool:
+    """Return True while the current context is inside a tool's own ``execute``."""
+    return _IN_TOOL.get()
+
 
 # ---------------------------------------------------------------------------
 # ToolSpec — metadata describing a tool's interface
@@ -127,24 +144,84 @@ class ToolExecutor:
             check_agent_cancelled,
         )
 
-        check_agent_cancelled()
-        lease = _RUN_WORKER_LEASE.get()
-        scope = lease.tool_gate.enter(lease) if lease is not None else nullcontext(True)
-        with scope as acquired:
-            if not acquired:
-                return ToolResult(
-                    tool_name=tool_call.name,
-                    success=False,
-                    content=(
-                        "A previous turn's tool operation is still running. "
-                        "No new tool was dispatched. Its outcome is pending, "
-                        "not failed or cancelled. Explain this to the user; "
-                        "do not retry or claim completion."
-                    ),
-                    metadata={"pending_operation": True, "dispatched": False},
-                )
+        in_tool = _IN_TOOL.get()
+        if not in_tool:
             check_agent_cancelled()
-            return self._execute(tool_call)
+        lease = _RUN_WORKER_LEASE.get()
+        tool = self._tools.get(tool_call.name)
+        # Reads cannot disturb another run's write, so they never queue.
+        read_only = tool is not None and tool.spec.metadata.get("read_only") is True
+        unregister = None
+        if lease is None or read_only:
+            scope = nullcontext(True)
+        elif in_tool:
+            # A dispatched tool's own step finishes even after barge-in (D2).
+            scope = lease.tool_gate.enter(lease, wait_seconds=WRITE_WAIT_SECONDS)
+        else:
+            # A queued write of a run the customer cut leaves the queue at once.
+            unregister = lease.register_cancellation(lease.tool_gate.wake)
+            scope = lease.tool_gate.enter(
+                lease,
+                wait_seconds=WRITE_WAIT_SECONDS,
+                cancelled=lambda: lease.is_cancelled,
+            )
+        try:
+            with scope as acquired:
+                if unregister is not None:
+                    unregister()
+                if not acquired:
+                    return ToolResult(
+                        tool_name=tool_call.name,
+                        success=False,
+                        content=(
+                            "A previous turn's tool operation is still running. "
+                            "No new tool was dispatched. Its outcome is pending, "
+                            "not failed or cancelled. Explain this to the user; "
+                            "do not retry or claim completion."
+                        ),
+                        metadata={"pending_operation": True, "dispatched": False},
+                    )
+                if not in_tool:
+                    check_agent_cancelled()
+                    if lease is not None and tool is not None and not read_only:
+                        unsettled = self._earlier_action_unsettled(tool_call)
+                        if unsettled is not None:
+                            return unsettled
+                return self._execute(tool_call)
+        finally:
+            if unregister is not None:
+                unregister()
+
+    @staticmethod
+    def _earlier_action_unsettled(tool_call: ToolCall) -> ToolResult | None:
+        """Hold a write that would act past an earlier failure the model never saw.
+
+        Spec 2026-10-10 D4: when a write this one waited behind failed or ended
+        unknown, nothing more happens (payment included) until the customer
+        was told and answered.
+        """
+        from openjarvis.agents.action_ledger import ACTION_LEDGER
+        from openjarvis.core.conversation import (
+            current_conversation_id,
+            current_turn_nonce,
+        )
+
+        conversation_id = current_conversation_id()
+        if not conversation_id or not ACTION_LEDGER.unseen_failures(
+            conversation_id, current_turn_nonce()
+        ):
+            return None
+        return ToolResult(
+            tool_name=tool_call.name,
+            success=False,
+            content=(
+                "An earlier request's action just finished as failed or with an "
+                "unknown outcome. Nothing was dispatched. Read background_actions, "
+                "tell the customer what happened and ask before continuing; do "
+                "not pay or repeat that action without their answer."
+            ),
+            metadata={"dispatched": False, "earlier_action_unsettled": True},
+        )
 
     def _execute(self, tool_call: ToolCall) -> ToolResult:
         """Parse arguments, dispatch to tool, measure latency, emit events."""
@@ -155,6 +232,7 @@ class ToolExecutor:
                 tool_name=tool_call.name,
                 content=f"Unknown tool: {tool_call.name}",
                 success=False,
+                metadata={"dispatched": False},
             )
 
         from openjarvis.core.conversation import (
@@ -180,6 +258,7 @@ class ToolExecutor:
                 tool_name=tool_call.name,
                 content=f"Invalid arguments JSON: {exc}",
                 success=False,
+                metadata={"dispatched": False},
             )
         if not isinstance(params, dict):
             return ToolResult(
@@ -189,6 +268,7 @@ class ToolExecutor:
                     f"got {type(params).__name__}."
                 ),
                 success=False,
+                metadata={"dispatched": False},
             )
 
         # Boundary guard: scan external tool arguments
@@ -205,12 +285,14 @@ class ToolExecutor:
                             f"got {type(params).__name__}."
                         ),
                         success=False,
+                        metadata={"dispatched": False},
                     )
             except Exception as exc:
                 return ToolResult(
                     tool_name=tool_call.name,
                     content=f"Security block: {exc}",
                     success=False,
+                    metadata={"dispatched": False},
                 )
 
         # RBAC capability check
@@ -238,6 +320,7 @@ class ToolExecutor:
                             f" on tool '{tool_call.name}'."
                         ),
                         success=False,
+                        metadata={"dispatched": False},
                     )
 
         # Taint checking (sink policy)
@@ -261,6 +344,7 @@ class ToolExecutor:
                             tool_name=tool_call.name,
                             content=f"Taint violation: {violation}",
                             success=False,
+                            metadata={"dispatched": False},
                         )
             except ImportError:
                 pass
@@ -279,6 +363,7 @@ class ToolExecutor:
                         " callback is available."
                     ),
                     success=False,
+                    metadata={"dispatched": False},
                 )
             prompt = f"Allow execution of tool '{tool_call.name}' with args {params}?"
             if not self._confirm_callback(prompt):
@@ -286,6 +371,7 @@ class ToolExecutor:
                     tool_name=tool_call.name,
                     content=f"Tool '{tool_call.name}' execution denied by user.",
                     success=False,
+                    metadata={"dispatched": False},
                 )
 
         # Emit start event. ``agent`` carries the managed-agent UUID so the
@@ -318,14 +404,37 @@ class ToolExecutor:
                 # it, cooperative cancellation of long MCP calls).
                 context = contextvars.copy_context()
 
+                started = [False]
+
                 def invoke():
                     from openjarvis.agents._stubs import check_agent_cancelled
 
-                    check_agent_cancelled()
-                    return tool.execute(**params)
+                    if not _IN_TOOL.get():
+                        check_agent_cancelled()
+                    # Dispatch boundary: from here on the tool may have acted.
+                    started[0] = True
+                    token = _IN_TOOL.set(True)
+                    try:
+                        return tool.execute(**params)
+                    finally:
+                        _IN_TOOL.reset(token)
 
                 future = pool.submit(context.run, invoke)
                 result = future.result(timeout=timeout)
+        except asyncio.CancelledError:
+            if not started[0]:
+                # Pre-dispatch cancellation: the caller drops it as not run.
+                raise
+            result = ToolResult(
+                tool_name=tool_call.name,
+                content=(
+                    f"Tool '{tool_call.name}' was interrupted after it started;"
+                    " its outcome is unknown. Observe whether it happened"
+                    " before retrying -- do not re-execute."
+                ),
+                success=False,
+                metadata={"outcome_unknown": True},
+            )
         except concurrent.futures.TimeoutError:
             if self._bus:
                 self._bus.publish(
@@ -337,7 +446,9 @@ class ToolExecutor:
             if isinstance(params, dict):
                 method = str(params.get("method", "")).upper()
             state_changing = method in {"POST", "PUT", "PATCH", "DELETE"}
-            if tool.spec.metadata.get("mutates") or state_changing:
+            # Model-facing wording keeps the explicit-mutation rule.
+            may_have_mutated = bool(tool.spec.metadata.get("mutates") or state_changing)
+            if may_have_mutated:
                 # A mutation that outran its timeout may still have been
                 # dispatched. That is `unknown`, not a retryable failure.
                 content += (
@@ -345,10 +456,16 @@ class ToolExecutor:
                     " its outcome is unknown. Observe whether it happened"
                     " before retrying -- do not re-execute."
                 )
+            # Spec 2026-10-10 §5.1/§6: every tool not marked read_only is a
+            # write, so a write that times out mid-call has an unknown outcome.
+            outcome_unknown = (
+                state_changing or tool.spec.metadata.get("read_only") is not True
+            )
             result = ToolResult(
                 tool_name=tool_call.name,
                 content=content,
                 success=False,
+                metadata={"outcome_unknown": True} if outcome_unknown else {},
             )
         except Exception as exc:
             result = ToolResult(

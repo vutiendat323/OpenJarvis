@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
-from threading import RLock
+from threading import Lock, RLock
 from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
@@ -103,6 +103,8 @@ class PresentationSessionManager:
         self._shared_page = shared_page
         self._current_page_url = current_page_url
         self._lock = RLock()
+        # Serialises ensure() so its slow first navigation can run without _lock.
+        self._ensure_lock = Lock()
         self._session: PresentationSession | None = None
         self._active_generation: str | None = None
         self._initial_display: Callable[[], ToolResult] | None = None
@@ -110,9 +112,13 @@ class PresentationSessionManager:
         self._ui_language: str | None = None
 
     def set_language(self, language: str) -> None:
-        """Update active language for customer presentation."""
-        with self._lock:
-            self._ui_language = language
+        """Update active language for customer presentation.
+
+        Called from async routes on the event loop, so it must never wait for
+        ``_lock``: ``ensure`` holds it across a browser call whose page needs
+        that same loop to load. One attribute assignment is atomic.
+        """
+        self._ui_language = language
 
     def configure_initial_display(self, loader: Callable[[], ToolResult]) -> None:
         """Configure the recipe-backed display load for a newly opened tab."""
@@ -285,28 +291,44 @@ class PresentationSessionManager:
         window and steals OS focus from the operator's kiosk browser.
         """
         origin = _normalize_display_origin(display_origin)
-        with self._lock:
-            if self._session is not None:
-                self.recover_display_tab()
-                return self._session
-            session_id = uuid4().hex
-            display_url = f"{origin}/customer-display?session={session_id}"
-            if self._ui_language:
-                display_url = f"{display_url}&lang={self._ui_language}"
-            session = PresentationSession(
-                session_id=session_id,
-                display_url=display_url,
-            )
-            self._call_tool("browser_navigate", {"url": session.display_url})
-            self._session = session
+        with self._ensure_lock:
+            with self._lock:
+                if self._session is not None:
+                    self.recover_display_tab()
+                    return self._session
+                session_id = uuid4().hex
+                display_url = f"{origin}/customer-display?session={session_id}"
+                if self._ui_language:
+                    display_url = f"{display_url}&lang={self._ui_language}"
+                session = PresentationSession(
+                    session_id=session_id,
+                    display_url=display_url,
+                )
+                # Visible before the page loads: the display connects back here
+                # while this call still waits for it, and every route that reads
+                # this state runs on the event loop that page needs. _lock must
+                # not be held across the navigation.
+                self._session = session
+            try:
+                self._call_tool("browser_navigate", {"url": session.display_url})
+            except BaseException:
+                with self._lock:
+                    if self._session is session:
+                        self._session = None
+                raise
             return session
 
     def publish(self, payload: dict[str, Any]) -> ToolResult:
         """Publish a display event scoped to the active customer session."""
         from openjarvis.agents._stubs import check_agent_cancelled
+        from openjarvis.tools._stubs import tool_is_executing
 
+        # A dispatched tool finishes its display after a barge-in (spec
+        # 2026-10-10 background actions D2); only direct publishes are guarded.
+        guarded = not tool_is_executing()
         with self._lock:
-            check_agent_cancelled()
+            if guarded:
+                check_agent_cancelled()
             if self._session is None or self._client is None:
                 return ToolResult(
                     tool_name="presentation",
@@ -335,7 +357,8 @@ class PresentationSessionManager:
                         )
                 else:
                     self.recover_display_tab()
-            check_agent_cancelled()
+            if guarded:
+                check_agent_cancelled()
             normalized = deepcopy(payload)
             normalized["presentation_session_id"] = self._session.session_id
             if normalized.get("navigate") is not False:

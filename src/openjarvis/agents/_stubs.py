@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import re
 import threading
+import time
 from abc import ABC, abstractmethod
+from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -43,19 +45,49 @@ def _invoke_quietly(callback: Callable[[], None]) -> None:
 class AgentToolGate:
     """Keep shared tools with their owner while conversation can be preempted.
 
-    Nested/parallel calls in the same run are allowed. Another run gets a
-    pending result, never a blocking wait or access to an unsettled resource.
+    Nested/parallel calls in the same run are allowed. Another run either gets
+    a pending result at once (``wait_seconds=0``) or waits, first come first
+    served, up to ``wait_seconds`` for the owner to finish, or until its
+    ``cancelled`` predicate holds when woken (:meth:`wake`). The gate is only
+    entered on worker threads, never on the event loop.
     """
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._cond = threading.Condition()
         self._owner = None
         self._depth = 0
+        self._waiting: deque[object] = deque()
 
     @contextmanager
-    def enter(self, owner):
-        with self._lock:
-            acquired = self._owner is None or self._owner is owner
+    def enter(
+        self,
+        owner,
+        *,
+        wait_seconds: float = 0.0,
+        cancelled: Callable[[], bool] | None = None,
+    ):
+        with self._cond:
+            acquired = self._owner is owner or (
+                self._owner is None and not self._waiting
+            )
+            if not acquired and wait_seconds > 0:
+                ticket = object()
+                self._waiting.append(ticket)
+                deadline = time.monotonic() + wait_seconds
+                try:
+                    while True:
+                        if cancelled is not None and cancelled():
+                            break
+                        if self._owner is None and self._waiting[0] is ticket:
+                            acquired = True
+                            break
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        self._cond.wait(remaining)
+                finally:
+                    self._waiting.remove(ticket)
+                    self._cond.notify_all()
             if acquired:
                 self._owner = owner
                 self._depth += 1
@@ -63,10 +95,16 @@ class AgentToolGate:
             yield acquired
         finally:
             if acquired:
-                with self._lock:
+                with self._cond:
                     self._depth -= 1
                     if not self._depth:
                         self._owner = None
+                        self._cond.notify_all()
+
+    def wake(self) -> None:
+        """Let waiters re-check their ``cancelled`` predicate now."""
+        with self._cond:
+            self._cond.notify_all()
 
 
 class AgentWorkerLease:
@@ -81,6 +119,12 @@ class AgentWorkerLease:
         self._cancel_lock = threading.Lock()
         self._cancel_callbacks: list[Callable[[], None]] = []
         self._cancelled = False
+
+    @property
+    def is_cancelled(self) -> bool:
+        """Return whether the caller walked away from this run."""
+        with self._cancel_lock:
+            return self._cancelled
 
     @property
     def has_pending_workers(self) -> bool:

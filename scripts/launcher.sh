@@ -99,12 +99,19 @@ Commands:
   restart   Same as start
   stop      Stop every stack service
   status    Show each service's process, uptime and health
+  effort    Show or change model reasoning effort while the stack runs
   logs      Show service logs: logs [vision|backend|frontend] [-f]
   help      Show this help
 
 Options:
-  --no-vision   Leave the vision service out (start/restart/stop/status)
-  -f            Follow the logs (logs only)
+  --no-vision            Leave the vision service out (start/restart/stop/status)
+  --deepseek-effort V    DeepSeek thinking: off, low, high or max (default low)
+  --luna-effort V        gpt-6-luna / gpt-5.6-luna: low, medium or high (default low)
+  -f                     Follow the logs (logs only)
+
+effort changes apply to the next model call, with no restart:
+  scripts/launcher.sh effort --deepseek-effort off --luna-effort medium
+start/restart reset effort to the defaults unless the options are given.
 
 Defaults: ordering-kiosk preset, Vision without YOLO, logs in ../.stack-logs.
 OPENJARVIS_* and JARVIS_CONFIG environment variables override these defaults.
@@ -115,18 +122,50 @@ WITH_VISION=1
 ACTION="start"
 LOG_SERVICE=""
 FOLLOW=0
-for arg in "$@"; do
+DEEPSEEK_EFFORT=""
+LUNA_EFFORT=""
+EFFORT_FILE="$LOG_DIR/effort.json"
+DEFAULT_DEEPSEEK_EFFORT="low"
+DEFAULT_LUNA_EFFORT="low"
+
+# Model effort is checked here so a typo never reaches the running backend.
+valid_effort() {
+    case "$1:$2" in
+        deepseek:off|deepseek:low|deepseek:high|deepseek:max) return 0 ;;
+        luna:low|luna:medium|luna:high) return 0 ;;
+    esac
+    return 1
+}
+
+effort_option() {  # name value-or-empty
+    [ -n "$2" ] || { log_error "args: $1 needs a value"; exit 2; }
+}
+
+while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
     case "$arg" in
-        start|restart|stop|status|logs) ACTION="$arg" ;;
+        start|restart|stop|status|logs|effort) ACTION="$arg" ;;
         help|-h|--help) usage; exit 0 ;;
         --no-vision) WITH_VISION=0 ;;
         -f|--follow) FOLLOW=1 ;;
+        --deepseek-effort=*) DEEPSEEK_EFFORT="${arg#*=}" ;;
+        --luna-effort=*) LUNA_EFFORT="${arg#*=}" ;;
+        --deepseek-effort) effort_option "$arg" "${1:-}"; DEEPSEEK_EFFORT="$1"; shift ;;
+        --luna-effort) effort_option "$arg" "${1:-}"; LUNA_EFFORT="$1"; shift ;;
         vision|backend|frontend)
             [ "$ACTION" = logs ] || { log_error "args: '$arg' only goes with logs"; exit 2; }
             LOG_SERVICE="$arg" ;;
         *) log_error "args: unknown argument '$arg'"; usage >&2; exit 2 ;;
     esac
 done
+if [ -n "$DEEPSEEK_EFFORT" ] && ! valid_effort deepseek "$DEEPSEEK_EFFORT"; then
+    log_error "args: --deepseek-effort must be off, low, high or max (got '$DEEPSEEK_EFFORT')"
+    exit 2
+fi
+if [ -n "$LUNA_EFFORT" ] && ! valid_effort luna "$LUNA_EFFORT"; then
+    log_error "args: --luna-effort must be low, medium or high (got '$LUNA_EFFORT')"
+    exit 2
+fi
 [ "$ACTION" = restart ] && ACTION=start
 
 http_ok() { curl -fsS -o /dev/null --max-time 2 "$1" 2>/dev/null; }
@@ -299,6 +338,7 @@ status_stack() {
     status_row frontend "$f_pid" 5173 \
         "$(health_of http://127.0.0.1:5173/kiosk http://127.0.0.1:5173/customer-display)"
     printf '%-9s %s Playwright process(es) on host\n' mcp "$mcp_count"
+    show_effort
 }
 
 logs_stack() {
@@ -320,10 +360,43 @@ logs_stack() {
     done
 }
 
+# Effort lives in a small JSON file the backend re-reads on every model call.
+effort_value() {  # key default
+    local value=""
+    [ -f "$EFFORT_FILE" ] && value="$(sed -n "s/.*\"$1\": *\"\([a-z]*\)\".*/\1/p" "$EFFORT_FILE" | head -n 1)"
+    echo "${value:-$2}"
+}
+
+write_effort() {  # deepseek luna
+    mkdir -p "$LOG_DIR"
+    local tmp="$EFFORT_FILE.tmp.$$"
+    printf '{"deepseek": "%s", "luna": "%s"}\n' "$1" "$2" > "$tmp"
+    mv "$tmp" "$EFFORT_FILE"
+}
+
+show_effort() {
+    printf 'effort    deepseek=%s luna=%s\n' \
+        "$(effort_value deepseek "$DEFAULT_DEEPSEEK_EFFORT")" \
+        "$(effort_value luna "$DEFAULT_LUNA_EFFORT")"
+}
+
+effort_command() {
+    if [ -n "$DEEPSEEK_EFFORT" ] || [ -n "$LUNA_EFFORT" ]; then
+        write_effort \
+            "${DEEPSEEK_EFFORT:-$(effort_value deepseek "$DEFAULT_DEEPSEEK_EFFORT")}" \
+            "${LUNA_EFFORT:-$(effort_value luna "$DEFAULT_LUNA_EFFORT")}"
+        show_effort
+        log_info "effort: applies to the next model call; no restart needed"
+    else
+        show_effort
+    fi
+}
+
 case "$ACTION" in
     stop)   stop_stack; exit 0 ;;
     status) status_stack; exit 0 ;;
     logs)   logs_stack; exit 0 ;;
+    effort) effort_command; exit 0 ;;
 esac
 
 # ---------- preflight: fail loudly now, not silently at runtime ----------
@@ -343,6 +416,13 @@ fi
 set -a
 . "$ENV_FILE"
 set +a
+
+# Reasoning effort is the main share of the wait before the first spoken word
+# (docs/verification/2026-10-10-intent-loop-recovery/report.md). Every start
+# writes the file: the given options, else the defaults (low). The backend
+# re-reads it per model call, so `launcher.sh effort ...` needs no restart.
+write_effort "${DEEPSEEK_EFFORT:-$DEFAULT_DEEPSEEK_EFFORT}" "${LUNA_EFFORT:-$DEFAULT_LUNA_EFFORT}"
+export OPENJARVIS_EFFORT_FILE="$EFFORT_FILE"
 [ -n "${GEMINI_API_KEY:-}" ]   || { log_error "preflight: GEMINI_API_KEY missing in $ENV_FILE (voice STT needs it)"; exit 1; }
 case "$MODEL" in
     openrouter/*)
