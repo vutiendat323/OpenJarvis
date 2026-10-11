@@ -9,6 +9,7 @@ import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
+from importlib.metadata import distribution as _distribution
 from importlib.metadata import version as _package_version
 from pathlib import Path
 from threading import Lock
@@ -22,6 +23,19 @@ _COMMIT_ID_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 _ITERATION_COMPLETE = object()
 _SUPPORTED_VIENEU_VERSION = "3.2.3"
 _VIENEU_CONSTRUCTION_LOCK = Lock()
+
+
+def list_vieneu_voices() -> list[str]:
+    """Read installed presets without importing or loading the speech model."""
+    path = _distribution("vieneu").locate_file("vieneu/assets/voices_v3_turbo.json")
+    return list(json.loads(path.read_text(encoding="utf-8"))["presets"])
+
+
+def selected_vieneu_voice(default: str) -> str:
+    from openjarvis.kiosk.operator_config import load_tts_voice
+
+    voice = load_tts_voice(default)
+    return voice if voice in list_vieneu_voices() else default
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,12 +293,13 @@ class VieNeuRealtimeTts:
         await self._inference_lock.acquire()
         pending: asyncio.Future[Any] | None = None
         try:
+            voice = selected_vieneu_voice(self._artifact.voice)
             pending = asyncio.ensure_future(
                 self._to_thread(
                     lambda: iter(
                         runtime.infer_stream(
                             text,
-                            voice=self._artifact.voice,
+                            voice=voice,
                             style=self._artifact.style,
                         )
                     )

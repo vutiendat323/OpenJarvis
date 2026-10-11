@@ -93,16 +93,28 @@ def load_kiosk_config() -> KioskConfig:
 
 def save_kiosk_config(config: KioskConfig) -> None:
     """Atomically save only transition settings, preserving the rest of the preset."""
+    validate_transition_config(config)
+    _save_settings(transition_values(config))
+
+
+def load_tts_voice(default: str) -> str:
+    return _saved_settings().get("tts_voice", default)
+
+
+def save_tts_voice(voice: str) -> None:
+    _save_settings({"tts_voice": voice})
+
+
+def _save_settings(values: dict) -> None:
     import tomlkit
 
-    validate_transition_config(config)
     path = _settings_path()
     if os.environ.get("OPENJARVIS_CONFIG", "").strip() and not path.is_file():
         raise ValueError("Active OpenJarvis preset does not exist")
     path.parent.mkdir(parents=True, exist_ok=True)
     document = tomlkit.parse(path.read_text()) if path.exists() else tomlkit.document()
     section = document.setdefault("kiosk", tomlkit.table())
-    section.update(transition_values(config))
+    section.update(values)
     descriptor, temporary = tempfile.mkstemp(prefix=".kiosk-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w") as output:

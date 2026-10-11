@@ -5,6 +5,21 @@ import { VisualizerControls } from './VisualizerControls';
 import { VISUALIZER_DEFAULTS } from './types';
 
 describe('VisualizerControls', () => {
+  it('places a labeled voice picker in the kiosk settings panel', () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(VisualizerControls, {
+        settings: VISUALIZER_DEFAULTS,
+        onSettingsChange: vi.fn(),
+        status: 'idle',
+        uiLanguage: 'en',
+        onUiLanguageChange: vi.fn(),
+        initialCollapsed: false,
+      }),
+    );
+    expect(markup).toContain('aria-label="Voice"');
+    expect(markup).toContain('Applies to the next spoken sentence.');
+  });
+
   it('renders collapsed settings toggle button by default', () => {
     const markup = renderToStaticMarkup(
       React.createElement(VisualizerControls, {

@@ -40,6 +40,12 @@ system_prompt_path = "configs/openjarvis/prompts/ordering-kiosk.md"
 max_turns = 8
 context_from_memory = true
 intent_normalization = true
+# Each tool call carries `_progress`, a short clause the model writes from the
+# request; it is spoken while the turn's tools run (see agents/orchestrator.py).
+progress_speech = true
+# A round that is only reasoning after this many seconds is retried with
+# reasoning off (engines that can; see agents/orchestrator.py).
+reasoning_deadline_seconds = 8.0
 # Flipped to true deliberately, with the cost understood. Read the whole note
 # before flipping it back or leaving it.
 #
@@ -223,10 +229,11 @@ servers = '''[{"name": "playwright", "command": "npx", "args": ["-y", "@playwrig
 
 [kiosk]
 approach_threshold_m = 1.0
-approach_entry_debounce = 0.4
-approach_sustain_seconds = 2.0
-leave_sustain_seconds_prompting = 5.0
+approach_entry_debounce = 2.0
+approach_sustain_seconds = 5.0
 leave_sustain_seconds_active = 10.0
 session_max_seconds = 600.0
+leave_sustain_seconds_prompting = 5.0
 popup_timeout = 30.0
 decline_cooldown_seconds = 10.0
+tts_voice = "Thùy Dung"

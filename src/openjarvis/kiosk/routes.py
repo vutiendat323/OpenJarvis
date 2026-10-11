@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import replace
+from pathlib import Path
 from typing import Annotated, Any, Literal, Union
 
 from fastapi import APIRouter, HTTPException, Request
@@ -28,6 +30,51 @@ class EnsurePresentationRequest(BaseModel):
 
 class KioskLanguageRequest(BaseModel):
     language: str
+
+
+class KioskVoiceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    voice: str = Field(min_length=1, max_length=128)
+
+
+@router.get("/api/kiosk/voice")
+async def get_kiosk_voice():
+    from openjarvis.server.voice.tts_engine import (
+        list_vieneu_voices,
+        load_accepted_vieneu_artifact,
+        selected_vieneu_voice,
+    )
+
+    artifact_dir = os.environ.get("OPENJARVIS_LOCAL_TTS_ARTIFACT_DIR", "").strip()
+    if not artifact_dir:
+        raise HTTPException(status_code=503, detail="vieneu_artifact_required")
+    try:
+        artifact = load_accepted_vieneu_artifact(Path(artifact_dir))
+        return {
+            "voice": selected_vieneu_voice(artifact.voice),
+            "voices": list_vieneu_voices(),
+        }
+    except (OSError, ValueError, ImportError) as exc:
+        logger.exception("Cannot load kiosk voices")
+        raise HTTPException(status_code=503, detail="kiosk_voices_unavailable") from exc
+
+
+@router.put("/api/kiosk/voice")
+async def set_kiosk_voice(body: KioskVoiceRequest):
+    from openjarvis.kiosk.operator_config import save_tts_voice
+
+    settings = await get_kiosk_voice()
+    if body.voice not in settings["voices"]:
+        raise HTTPException(status_code=422, detail="unknown_tts_voice")
+    try:
+        save_tts_voice(body.voice)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        logger.exception("Cannot save kiosk voice")
+        raise HTTPException(status_code=500, detail="kiosk_voice_save_failed") from exc
+    return {**settings, "voice": body.voice}
 
 
 class KioskTransitionSettings(BaseModel):

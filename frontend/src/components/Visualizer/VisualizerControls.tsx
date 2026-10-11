@@ -6,6 +6,7 @@ import { VOICE_UI_TEXT } from '@/hooks/voiceUiText';
 import type { UiLanguage } from '@/hooks/useUiLanguage';
 import type { VisualizerSettings, VisualizerStyle, VisualizerTheme, VoiceStatus } from './types';
 import { KioskTransitionSettings } from './KioskTransitionSettings';
+import { KioskVoicePicker } from './KioskVoicePicker';
 
 function ScreenIcon({ size = 13, className }: { size?: number; className?: string }) {
   return (
@@ -165,7 +166,6 @@ export function VisualizerControls({
         <SettingRow compact
           label="Language"
           description={VOICE_UI_TEXT[uiLanguage].languageHelper}
-          last
         >
           <select
             value={uiLanguage}
@@ -184,6 +184,7 @@ export function VisualizerControls({
             <option value="en">{VOICE_UI_TEXT[uiLanguage].language.english}</option>
           </select>
         </SettingRow>
+        <KioskVoicePicker uiLanguage={uiLanguage} />
       </Section>
 
       {/* Card 2: Visualizer & Display */}
