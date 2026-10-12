@@ -38,6 +38,9 @@ class TouchCheckout:
     tables_url: str
     order_url: str  # "{order_id}" is replaced with the displayed order
     fetch_json: Callable[[str], Any] = _fetch_json
+    invoice_url: str = ""
+    print_queue: str = ""
+    print_width_dots: int = 576
 
 
 _PRESENTATION_GENERATION: ContextVar[str | None] = ContextVar(

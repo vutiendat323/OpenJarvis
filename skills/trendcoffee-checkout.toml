@@ -16,6 +16,9 @@ turn_nonce = "turn_nonce"
 [skill.metadata.openjarvis.kiosk]
 tables_url = "https://trendcoffee.net/api/latest/tables?branch=ba9355f797"
 order_url = "https://trendcoffee.net/api/latest/orders/{order_id}"
+invoice_url = "https://trendcoffee.net/api/latest/invoice/export/public"
+print_queue = "GP-C180I"
+print_width_dots = 576
 
 [[skill.steps]]
 tool_name = "http_request"
@@ -91,8 +94,9 @@ assertions_json = '''[
 [[skill.steps]]
 tool_name = "http_request"
 output_key = "created"
-arguments_template = '''{"url":"https://trendcoffee.net/api/latest/orders/public","method":"POST","body":{"$json":{"type":"{order_type}","branch":"ba9355f797","timeLeftTakeOut":"{draft_cart.pickup_minutes}","deliveryTo":"","deliveryPhone":"","table":"{table}","owner":"","approvalBy":"","orderItems":{"$map":"{draft_cart.lines}","as":"line","value":{"quantity":"{line.quantity}","variant":"{line.variant_id}","promotion":null,"note":"{line.note}"}},"voucher":null,"description":"{order_note}"}}}'''
-assertions_json = '''[{"actual":"{created.result.subtotal}","equals":"{draft_cart.total}"},{"actual":"{created.result.type}","equals":"{order_type}"},{"actual":"{created.result.description}","equals":"{order_note}"},{"actual":{"$coalesce":["{created.result.table.slug}",""]},"equals":"{table}"},{"actual":{"$map":"{created.result.orderItems}","as":"line","value":{"variant":"{line.variant.slug}","quantity":"{line.quantity}","note":"{line.note}","unit_price":"{line.variant.price}","promotion":"{line.promotion}"}},"equals":{"$map":"{draft_cart.lines}","as":"line","value":{"variant":"{line.variant_id}","quantity":"{line.quantity}","note":"{line.note}","unit_price":"{line.unit_price}","promotion":null}}}]'''
+# Tag kiosk orders without changing the customer's draft note or adding calls.
+arguments_template = '''{"url":"https://trendcoffee.net/api/latest/orders/public","method":"POST","body":{"$json":{"type":"{order_type}","branch":"ba9355f797","timeLeftTakeOut":"{draft_cart.pickup_minutes}","deliveryTo":"","deliveryPhone":"","table":"{table}","owner":"","approvalBy":"","orderItems":{"$map":"{draft_cart.lines}","as":"line","value":{"quantity":"{line.quantity}","variant":"{line.variant_id}","promotion":null,"note":"{line.note}"}},"voucher":null,"description":{"$join":["AI order","{order_note}"],"separator":" | "}}}}'''
+assertions_json = '''[{"actual":"{created.result.subtotal}","equals":"{draft_cart.total}"},{"actual":"{created.result.type}","equals":"{order_type}"},{"actual":"{created.result.description}","equals":{"$join":["AI order","{order_note}"],"separator":" | "}},{"actual":{"$coalesce":["{created.result.table.slug}",""]},"equals":"{table}"},{"actual":{"$map":"{created.result.orderItems}","as":"line","value":{"variant":"{line.variant.slug}","quantity":"{line.quantity}","note":"{line.note}","unit_price":"{line.variant.price}","promotion":"{line.promotion}"}},"equals":{"$map":"{draft_cart.lines}","as":"line","value":{"variant":"{line.variant_id}","quantity":"{line.quantity}","note":"{line.note}","unit_price":"{line.unit_price}","promotion":null}}}]'''
 
 [[skill.steps]]
 tool_name = "display_bill"

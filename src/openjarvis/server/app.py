@@ -124,6 +124,38 @@ def _restore_sendblue_bindings(app: FastAPI) -> None:
         logger.debug("SendBlue binding restore skipped: %s", exc)
 
 
+def _setup_invoice_printing(app: FastAPI, bus) -> None:
+    """Own the optional native printer worker declared by the checkout recipe."""
+    import asyncio
+    import os
+    from dataclasses import replace
+
+    from openjarvis.core.config import get_config_dir
+    from openjarvis.kiosk.printing import InvoiceAutoPrinter
+
+    app.state.invoice_printer = None
+    presentation = getattr(app.state, "presentation_session_manager", None)
+    checkout = getattr(presentation, "touch_checkout", None)
+    if checkout is None or not checkout.invoice_url:
+        return
+    queue = os.environ.get("KIOSK_PRINT_QUEUE", checkout.print_queue).strip()
+    if not queue:
+        return
+    try:
+        worker = InvoiceAutoPrinter(
+            replace(checkout, print_queue=queue), bus, get_config_dir() / "printing.db"
+        )
+    except (ValueError, OSError):
+        logger.warning("Kiosk auto-print configuration unavailable")
+        return
+    app.state.invoice_printer = worker
+    app.add_event_handler("startup", worker.start)
+
+    @app.on_event("shutdown")
+    async def _stop_invoice_printing() -> None:
+        await asyncio.to_thread(worker.stop)
+
+
 def _setup_kiosk(app: FastAPI, bus, channel_bridge) -> None:
     """Initialize and launch the kiosk main loop + vision client on startup."""
     import asyncio
@@ -136,6 +168,8 @@ def _setup_kiosk(app: FastAPI, bus, channel_bridge) -> None:
     from openjarvis.kiosk.vision_client import VisionClient
 
     config = load_kiosk_config()
+
+    _setup_invoice_printing(app, bus)
 
     vision_url = os.environ.get("KIOSK_VISION_URL", "ws://127.0.0.1:9876")
 

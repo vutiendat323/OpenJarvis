@@ -222,7 +222,7 @@ class _MerchantHttp(RoutedHttp):
                     "status": "pending",
                     "subtotal": 200_000,
                     "type": "at-table",
-                    "description": "",
+                    "description": "AI order",
                     "table": {"name": "73", "slug": "table-73"},
                     "orderItems": [
                         {

@@ -79,6 +79,7 @@ def test_checkout_uses_existing_skills_until_verified_payment_display(query):
     ]
     assert fixture.displays[-1]["view"] == "payment_qr"
     assert fixture.shop.order["type"] == "take-out"
+    assert fixture.shop.order["description"] == "AI order"
     assert fixture.shop.order["orderItems"][0]["quantity"] == 2
     assert len([p for p in fixture.shop.calls if p.get("method") == "POST"]) == 2
     assert "customer_message" not in result.tool_results[0].metadata

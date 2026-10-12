@@ -694,6 +694,40 @@ class TestSkillExecutor:
         )
 
     @pytest.mark.parametrize(
+        ("parts", "expected"),
+        [
+            (["source", ""], "source"),
+            (
+                ["", "source", 'Giữ "nguyên"\n{nội dung}'],
+                'source | Giữ "nguyên"\n{nội dung}',
+            ),
+            ([], ""),
+        ],
+    )
+    def test_join_preserves_text_and_omits_empty_parts(self, parts, expected):
+        assert (
+            SkillExecutor._render_json_value(
+                {"$join": "{parts}", "separator": " | "}, {"parts": parts}
+            )
+            == expected
+        )
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            {"$join": ["text"]},
+            {"$join": ["text"], "separator": 1},
+            {"$join": "text", "separator": " | "},
+            {"$join": ["text", None], "separator": " | "},
+            {"$join": ["text", True], "separator": " | "},
+            {"$join": ["text"], "separator": " | ", "extra": True},
+        ],
+    )
+    def test_join_rejects_invalid_shape_or_non_string_values(self, expression):
+        with pytest.raises(ValueError, match="join"):
+            SkillExecutor._render_json_value(expression, {})
+
+    @pytest.mark.parametrize(
         "expression",
         [
             {"$coalesce": "not-an-array"},

@@ -379,6 +379,7 @@ def _run_checkout(
     requested_type: str = "at-table",
     requested_table: str = "table-73",
     requested_order_note: str = "Làm nhanh giúp mình",
+    response_order_note: str | None = None,
     fresh_price: int = 100_000,
     fresh_available: bool = True,
     fresh_table_status: str = "available",
@@ -465,7 +466,13 @@ def _run_checkout(
                     "createdAt": "Thu Sep 17 2026 19:00:00 GMT+0700 (Indochina Time)",
                     "subtotal": 200_000,
                     "type": response_type,
-                    "description": requested_order_note,
+                    "description": (
+                        response_order_note
+                        if response_order_note is not None
+                        else f"AI order | {requested_order_note}"
+                        if requested_order_note
+                        else "AI order"
+                    ),
                     "table": returned_table,
                     "orderItems": [
                         {
@@ -633,7 +640,7 @@ def test_workspace_checkout_sends_selected_at_table_type_and_slug() -> None:
     assert create_body["type"] == "at-table"
     assert create_body["table"] == "table-73"
     assert create_body["timeLeftTakeOut"] == 0
-    assert create_body["description"] == "Làm nhanh giúp mình"
+    assert create_body["description"] == "AI order | Làm nhanh giúp mình"
     assert create_body["orderItems"] == [
         {
             "quantity": 2,
@@ -697,6 +704,19 @@ def test_workspace_checkout_stops_before_payment_on_table_slug_mismatch() -> Non
     assert len(http.calls) == 3
     assert bill.calls == []
     assert display.calls == []
+
+
+@pytest.mark.parametrize("response_order_note", ["AI order", "Làm nhanh giúp mình"])
+def test_workspace_checkout_stops_before_payment_on_order_note_mismatch(
+    response_order_note,
+) -> None:
+    _tool, result, http, bill, display = _run_checkout(
+        response_type="at-table", response_order_note=response_order_note
+    )
+
+    assert result.success is False
+    assert [call["method"] for call in http.calls] == ["GET", "GET", "POST"]
+    assert bill.calls == display.calls == []
 
 
 def test_workspace_take_out_checkout_accepts_null_returned_table() -> None:

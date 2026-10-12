@@ -628,6 +628,18 @@ class SkillExecutor:
                     SkillExecutor._render_json_value(value["$json"], ctx),
                     ensure_ascii=False,
                 )
+            if "$join" in value:
+                # Join non-empty strings without altering their contents.
+                if set(value) != {"$join", "separator"} or not isinstance(
+                    value["separator"], str
+                ):
+                    raise ValueError("invalid join expression")
+                parts = SkillExecutor._render_json_value(value["$join"], ctx)
+                if not isinstance(parts, list) or not all(
+                    isinstance(part, str) for part in parts
+                ):
+                    raise ValueError("join operands must be an array of strings")
+                return value["separator"].join(part for part in parts if part)
             if "$multiply" in value:
                 operands = value["$multiply"]
                 if (

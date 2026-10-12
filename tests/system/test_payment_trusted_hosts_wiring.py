@@ -21,6 +21,37 @@ def test_parse_trusted_origins_blank_is_empty():
     assert SystemBuilder._parse_trusted_origins("") == ()
 
 
+def test_checkout_metadata_wires_invoice_export_and_local_printer():
+    from types import SimpleNamespace
+
+    from openjarvis.core.events import EventBus
+    from openjarvis.kiosk.presentation import PresentationSessionManager
+
+    tool = SimpleNamespace(
+        execute=lambda **_: None,
+        _manifest=SimpleNamespace(
+            checkout=True,
+            metadata={
+                "openjarvis": {
+                    "kiosk": {
+                        "tables_url": "https://merchant.example/tables",
+                        "order_url": "https://merchant.example/orders/{order_id}",
+                        "invoice_url": "https://merchant.example/invoice/export/public",
+                        "print_queue": "GP-C180I",
+                        "print_width_dots": 512,
+                    }
+                }
+            },
+        ),
+    )
+    presentation = PresentationSessionManager(EventBus(), None)
+    SystemBuilder._configure_touch_checkout(presentation, [tool])
+    checkout = presentation.touch_checkout
+    assert checkout.invoice_url == "https://merchant.example/invoice/export/public"
+    assert checkout.print_queue == "GP-C180I"
+    assert checkout.print_width_dots == 512
+
+
 def test_parse_trusted_origins_normalizes_scheme_host_and_effective_port():
     assert SystemBuilder._parse_trusted_origins(
         " HTTPS://TrendCoffee.net , https://B.example:8443 "

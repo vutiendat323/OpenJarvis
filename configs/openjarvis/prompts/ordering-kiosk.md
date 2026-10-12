@@ -242,6 +242,10 @@ unsupported. Notes are requests to staff, not promises of fulfillment.
 
 Prepared checkout validates the fresh menu, selected table, created order,
 line quantities/notes/prices, amount, payment response and published bill/QR.
+Every order created by this checkout is tagged `AI order` in the merchant's
+whole-order note (`description`). The recipe adds this tag and preserves the
+customer's note. Keep `order_note` as the customer's note; no separate cart
+edit or announcement is needed for the tag.
 Keep all guards: never bypass stale/consumed revisions, expired nonces or
 idempotency. Do not add raw HTTP, draft display or a second model announcement.
 If a write times out or has unknown outcome, never repeat it to “try again”.

@@ -224,6 +224,16 @@ async def kiosk_state(request: Request):
     return {"ok": True, "running": running}
 
 
+@router.get("/api/kiosk/print-jobs")
+async def kiosk_print_jobs(request: Request):
+    """Operator diagnostics for durable original prints; no reprint side effect."""
+    worker = getattr(request.app.state, "invoice_printer", None)
+    if worker is None:
+        return {"enabled": False, "jobs": []}
+    jobs = await run_in_threadpool(worker.jobs)
+    return {"enabled": worker.running, "jobs": jobs}
+
+
 @router.get("/api/kiosk/language")
 async def get_kiosk_language(request: Request):
     """Return the active kiosk UI language ('vi' or 'en')."""

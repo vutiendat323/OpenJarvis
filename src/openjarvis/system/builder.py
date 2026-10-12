@@ -685,6 +685,9 @@ class SystemBuilder:
                         run=tool.execute,
                         tables_url=tables_url,
                         order_url=order_url,
+                        invoice_url=kiosk.get("invoice_url", ""),
+                        print_queue=kiosk.get("print_queue", ""),
+                        print_width_dots=kiosk.get("print_width_dots", 576),
                     )
                 )
                 return
