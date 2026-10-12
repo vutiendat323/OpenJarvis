@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Exercise the real hook's registered RTVI callbacks without opening media.
 const harness = vi.hoisted(() => ({
@@ -70,6 +70,37 @@ beforeEach(() => {
   harness.values.length = 0;
   harness.cursor = 0;
   harness.listeners.clear();
+});
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe('real speech audio level', () => {
+  it('returns silence before a track is attached, without the synthetic idle spectrum', () => {
+    expect(renderVoice(vi.fn()).getAudioLevel()).toBe(0);
+  });
+
+  it('measures the analyser waveform and ignores a suspended audio context', async () => {
+    let sample = 0;
+    const context = {
+      state: 'running',
+      createAnalyser: () => ({
+        frequencyBinCount: 128,
+        getFloatTimeDomainData: (data: Float32Array) => {
+          for (let i = 0; i < data.length; i++) data[i] = i % 2 ? sample : -sample;
+        },
+      }),
+    };
+    vi.stubGlobal('AudioContext', class { constructor() { return context; } });
+    const voice = renderVoice(vi.fn());
+    await voice.start('thread-1', 'test-model');
+    expect(voice.getAudioLevel()).toBe(0);
+    sample = 0.05;
+    expect(voice.getAudioLevel()).toBeCloseTo(0.05, 5);
+    sample = 0.1;
+    expect(voice.getAudioLevel()).toBeCloseTo(0.1, 5);
+    context.state = 'suspended';
+    expect(voice.getAudioLevel()).toBe(0);
+  });
 });
 
 describe('live user transcript events', () => {

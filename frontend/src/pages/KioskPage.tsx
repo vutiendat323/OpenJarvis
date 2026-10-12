@@ -2,11 +2,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate } from 'react-router';
 import { X } from 'lucide-react';
 
-import { AudioVisualizer } from '@/components/Visualizer/AudioVisualizer';
 import { VisualizerControls } from '@/components/Visualizer/VisualizerControls';
+import { isKioskTheme, KIOSK_THEMES } from '@/components/Kiosk/kioskThemes';
+import '@/components/Kiosk/kioskThemes.css';
 import { FloatingCodexPet } from '@/components/Kiosk/Pet/FloatingCodexPet';
 import { SharedBrowserPane } from '@/components/Kiosk/SharedBrowserPane';
 import { VoiceWaveform } from '@/components/Kiosk/VoiceWaveform';
+import { SpeechGlow } from '@/components/Kiosk/SpeechGlow';
 import { ScreensMonitorButton } from '@/components/Kiosk/ScreensMonitorButton';
 import { RemoteCameraButton } from '@/components/Kiosk/RemoteCameraButton';
 import { StackCaption } from '@/components/Kiosk/StackCaption';
@@ -30,30 +32,17 @@ import type { VisualizerSettings, VoiceStatus } from '@/components/Visualizer/ty
 import type { LocalVoiceStatus } from '@/hooks/voiceStatus';
 import { kioskVoiceCommand, type KioskVoiceOwner } from './kioskVoicePolicy';
 
-const GLOW: Record<LocalVoiceStatus, string> = {
-  idle: 'radial-gradient(ellipse 56% 56% at 50% 50%, rgba(0,242,254,0.04) 0%, transparent 70%)',
-  connecting: 'radial-gradient(ellipse 56% 56% at 50% 50%, rgba(0,242,254,0.08) 0%, transparent 70%)',
-  listening: 'radial-gradient(ellipse 56% 56% at 50% 50%, rgba(0,255,100,0.08) 0%, transparent 70%)',
-  speaking: 'radial-gradient(ellipse 56% 56% at 50% 50%, rgba(79,172,254,0.10) 0%, transparent 70%)',
-  busy: 'radial-gradient(ellipse 56% 56% at 50% 50%, rgba(255,180,80,0.08) 0%, transparent 70%)',
-  processing: 'radial-gradient(ellipse 56% 56% at 50% 50%, rgba(0,242,254,0.08) 0%, transparent 70%)',
-  inference: 'radial-gradient(ellipse 56% 56% at 50% 50%, rgba(0,242,254,0.08) 0%, transparent 70%)',
-  tool: 'radial-gradient(ellipse 56% 56% at 50% 50%, rgba(0,242,254,0.08) 0%, transparent 70%)',
-  error: 'radial-gradient(ellipse 56% 56% at 50% 50%, rgba(255,80,80,0.10) 0%, transparent 70%)',
-  ended: 'radial-gradient(ellipse 56% 56% at 50% 50%, rgba(0,242,254,0.04) 0%, transparent 70%)',
-};
-
 const STATUS_COLOR: Record<LocalVoiceStatus, string> = {
-  idle: 'var(--color-text-secondary)',
-  connecting: 'var(--color-accent)',
-  listening: 'var(--color-success)',
-  speaking: 'var(--color-accent)',
-  busy: 'var(--color-warning)',
-  processing: 'var(--color-accent)',
-  inference: 'var(--color-accent)',
-  tool: 'var(--color-accent)',
-  error: 'var(--color-error)',
-  ended: 'var(--color-text-secondary)',
+  idle: '#dae2f4',
+  connecting: '#dae2f4',
+  listening: '#b7ffdd',
+  speaking: '#dce7ff',
+  busy: '#dae2f4',
+  processing: '#ffe6a9',
+  inference: '#ffe6a9',
+  tool: '#ffe6a9',
+  error: '#ffd7df',
+  ended: '#dae2f4',
 };
 
 export const VOICE_STATUS_GLOW_RGB: Record<LocalVoiceStatus, string> = {
@@ -119,7 +108,10 @@ export function KioskPage() {
         if (raw) {
           const saved = JSON.parse(raw);
           return {
-            ...kioskDefaults, ...saved,
+            style: 'screen',
+            theme: isKioskTheme(saved.theme) ? saved.theme : kioskDefaults.theme,
+            showCaptions: typeof saved.showCaptions === 'boolean' ? saved.showCaptions : kioskDefaults.showCaptions,
+            showPet: typeof saved.showPet === 'boolean' ? saved.showPet : kioskDefaults.showPet,
             petScale: saved.petScale === VISUALIZER_DEFAULTS.petScale
               ? kioskDefaults.petScale : saved.petScale ?? kioskDefaults.petScale,
           };
@@ -130,12 +122,13 @@ export function KioskPage() {
   });
 
   const handleSettingsChange = useCallback((next: VisualizerSettings) => {
-    setSettings(next);
+    const screenSettings: VisualizerSettings = { ...next, style: 'screen' };
+    setSettings(screenSettings);
     try {
       const storage = typeof window !== 'undefined' ? window.localStorage : globalThis.localStorage;
       if (storage) {
-        storage.setItem('openjarvis_kiosk_visualizer_settings', JSON.stringify(next));
-        storage.setItem('openjarvis_visualizer_settings', JSON.stringify(next));
+        storage.setItem('openjarvis_kiosk_visualizer_settings', JSON.stringify(screenSettings));
+        storage.setItem('openjarvis_visualizer_settings', JSON.stringify(screenSettings));
       }
     } catch {}
   }, []);
@@ -150,8 +143,8 @@ export function KioskPage() {
   });
 
   const edgeGlowShadow = useMemo(
-    () => computeEdgeGlowShadow(voice.status, settings.glow),
-    [voice.status, settings.glow]
+    () => computeEdgeGlowShadow(voice.status, 20),
+    [voice.status]
   );
   const { state: kioskState, micEnabled } = useKioskState();
   const browser = useSharedBrowser();
@@ -372,10 +365,16 @@ export function KioskPage() {
     y: Math.max(16, Math.round((petBounds.height - 55 * voicePetScale) / 2)),
   }), [petBounds.width, petBounds.height, voicePetScale]);
 
+  const theme = KIOSK_THEMES[settings.theme] ?? KIOSK_THEMES['midnight-blue'];
+  const lightBackground = theme.tone === 'light';
+  const statusColor = lightBackground
+    ? (voice.status === 'error' ? '#760c2c' : '#243b70')
+    : STATUS_COLOR[voice.status];
   const voiceAssistantPane = (
     <aside
       ref={setVoicePane}
       aria-label="Voice assistant"
+      data-kiosk-theme={settings.theme}
       data-pet-boundary
       className={
         !screenVisible || browserMode === 'floating'
@@ -387,7 +386,11 @@ export function KioskPage() {
       style={{
         '--pet-bubble-max-width': `${Math.max(24, Math.min(260, petBounds.width - 40))}px`,
         '--pet-bubble-max-height': `${Math.max(40, petBounds.height - 64)}px`,
-        background: 'linear-gradient(155deg, #0b1e19 0%, #071410 58%, #06110f 100%)',
+        background: theme.background,
+        '--kiosk-foreground': lightBackground ? '#17243b' : '#f0f3fc',
+        '--kiosk-muted': lightBackground ? '#243047' : '#dae2f4',
+        '--kiosk-caption-muted': lightBackground ? '#243047' : '#dae2f4',
+        '--kiosk-caption-secondary': lightBackground ? '#243047' : '#dae2f4',
         ...(screenVisible && browserMode === 'split' && !voiceCollapsed
           ? {
               '--voice-pane-width': `${100 - splitRatio}%`,
@@ -397,20 +400,8 @@ export function KioskPage() {
       } as React.CSSProperties}
     >
       <div className={`relative h-full ${voiceCollapsed ? 'invisible' : ''}`}>
+        <SpeechGlow status={voice.status} getAudioLevel={voice.getAudioLevel} lightBackground={lightBackground} />
 
-        {/* Center ambient glow - intensity dynamically tuned by settings.glow */}
-        <div
-          aria-hidden
-          data-testid="kiosk-center-glow"
-          className="absolute inset-0 pointer-events-none transition-all duration-1000"
-          style={{
-            background: GLOW[voice.status],
-            opacity: settings.glow > 0 ? Math.min(2.0, settings.glow / 20) : 0,
-            zIndex: 0,
-          }}
-        />
-
-        {settings.style === '3d' && !voiceCollapsed && <AudioVisualizer getFrequencyData={voice.getFrequencyData} settings={settings} />}
         <VisualizerControls
           settings={settings}
           onSettingsChange={handleSettingsChange}
@@ -456,7 +447,7 @@ export function KioskPage() {
             background: 'none',
             border: 'none',
             boxShadow: 'none',
-            color: 'var(--color-text-secondary)',
+            color: 'var(--kiosk-muted)',
           }}
         >
           <X size={20} />
@@ -487,13 +478,13 @@ export function KioskPage() {
               )}
               <div
                 className="text-[13px] font-medium transition-all duration-500"
-                style={{ color: STATUS_COLOR[voice.status] }}
+                style={{ color: statusColor }}
               >
                 <span
                   className={voiceStatusShimmers ? 'text-shimmer' : undefined}
                   style={voiceStatusShimmers ? {
-                    '--shimmer-base': STATUS_COLOR[voice.status],
-                    '--shimmer-highlight': 'var(--color-text)',
+                    '--shimmer-base': statusColor,
+                    '--shimmer-highlight': 'var(--kiosk-foreground)',
                   } as React.CSSProperties : undefined}
                 >
                   {voiceStatusLabel(uiLanguage, voice.status, voice.activityDetail)}

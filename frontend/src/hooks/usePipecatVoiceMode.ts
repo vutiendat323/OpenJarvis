@@ -194,6 +194,7 @@ export function usePipecatVoiceMode(options: { onTurn?: (message: ChatMessage) =
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const spectrumRef = useRef(new Uint8Array(128));
+  const waveformRef = useRef(new Float32Array(256));
   const idleRef = useRef({ t: 0, spectrum: new Uint8Array(128) });
   const localAudioSourcesRef = useRef<Set<string>>(new Set());
 
@@ -229,6 +230,17 @@ export function usePipecatVoiceMode(options: { onTurn?: (message: ChatMessage) =
     analyser.getByteFrequencyData(spectrumRef.current);
     return hasAudibleSpectrum(spectrumRef.current) ? spectrumRef.current : idleSpectrum();
   }, [idleSpectrum]);
+
+  /** Real RMS amplitude for the background; silence has no synthetic fallback. */
+  const getAudioLevel = useCallback((): number => {
+    const analyser = analyserRef.current;
+    if (!analyser || audioContextRef.current?.state !== 'running') return 0;
+    const waveform = waveformRef.current;
+    analyser.getFloatTimeDomainData(waveform);
+    let energy = 0;
+    for (const sample of waveform) energy += sample * sample;
+    return Math.min(1, Math.sqrt(energy / waveform.length));
+  }, []);
 
   /** The analyser that drives the visualiser. Playback is the element's job. */
   const ensureAnalyser = useCallback((): AnalyserNode | null => {
@@ -506,5 +518,6 @@ export function usePipecatVoiceMode(options: { onTurn?: (message: ChatMessage) =
     start,
     end,
     getFrequencyData,
+    getAudioLevel,
   };
 }

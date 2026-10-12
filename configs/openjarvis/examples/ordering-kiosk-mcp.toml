@@ -217,4 +217,4 @@ session_max_seconds = 600.0
 leave_sustain_seconds_prompting = 5.0
 popup_timeout = 30.0
 decline_cooldown_seconds = 10.0
-tts_voice = "Thùy Dung"
+tts_voice = "Trúc Ly"

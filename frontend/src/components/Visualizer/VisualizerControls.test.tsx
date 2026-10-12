@@ -92,7 +92,7 @@ describe('VisualizerControls', () => {
 
     // Three distinct card sections
     expect(markup).toContain('Language');
-    expect(markup).toContain('Visualizer &amp; Display');
+    expect(markup).toContain('Kiosk Display');
     expect(markup).toContain('Mascot &amp; Captions');
     expect(markup).toContain('Chuyển trạng thái');
 
@@ -100,15 +100,18 @@ describe('VisualizerControls', () => {
     expect(markup).not.toContain('Voice status');
     expect(markup).toContain('Language');
 
-    // Setting rows in Visualizer & Display
+    // Screen is fixed; only the kiosk background is selectable.
     expect(markup).toContain('Display mode');
     expect(markup).toContain('Screen');
-    expect(markup).toContain('3D Sphere');
+    expect(markup).not.toContain('3D Sphere');
     expect(markup).toContain('Theme');
-    expect(markup).toContain('Size');
-    expect(markup).toContain('Gain');
-    expect(markup).toContain('Speed');
-    expect(markup).toContain('Glow');
+    expect(markup).not.toContain('>Size<');
+    expect(markup).not.toContain('>Gain<');
+    expect(markup).not.toContain('>Speed<');
+    expect(markup).not.toContain('>Glow<');
+    for (const theme of ['Playful', 'Soft Gradient', 'Purple Glow', 'Midnight Blue', 'Pastel']) {
+      expect(markup).toContain(`aria-label="${theme}"`);
+    }
 
     // Setting rows in Mascot & Captions
     expect(markup).toContain('Show Captions');

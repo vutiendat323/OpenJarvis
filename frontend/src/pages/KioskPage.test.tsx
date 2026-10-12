@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +8,7 @@ import type { KioskState } from '@/hooks/useKioskState';
 
 import { KioskPage, computeEdgeGlowShadow } from './KioskPage';
 import type { LocalVoiceStatus } from '@/hooks/voiceStatus';
+import { voiceStatusLabel } from '@/hooks/voiceUiText';
 
 const storageMap = new Map<string, string>();
 let mockUiLanguage = 'vi';
@@ -21,6 +22,7 @@ let mockVoiceState = {
   error: null as string | null,
   assistantCaptionText: '',
   getFrequencyData: () => new Uint8Array(),
+  getAudioLevel: () => 0,
   start: vi.fn().mockResolvedValue(undefined),
   end: vi.fn().mockResolvedValue(undefined),
 };
@@ -60,6 +62,7 @@ beforeEach(() => {
     error: null,
     assistantCaptionText: '',
     getFrequencyData: () => new Uint8Array(),
+    getAudioLevel: () => 0,
     start: vi.fn().mockResolvedValue(undefined),
     end: vi.fn().mockResolvedValue(undefined),
   };
@@ -70,6 +73,60 @@ beforeEach(() => {
 });
 
 afterEach(cleanup);
+
+it.each([
+  ['listening', 'pastel-grid'],
+  ['speaking', 'midnight-blue'],
+  ['speaking', 'purple-glow'],
+] as const)('connects %s audio to the saved %s background without a synthetic silence pulse', (status, theme) => {
+  let volume = 1;
+  let callbacks: FrameRequestCallback[] = [];
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    callbacks.push(callback);
+    return callbacks.length;
+  });
+  vi.stubGlobal('cancelAnimationFrame', () => {});
+  try {
+    mockVoiceState.status = status;
+    mockVoiceState.getAudioLevel = () => volume;
+    storageMap.set('openjarvis_kiosk_visualizer_settings', JSON.stringify({ theme }));
+    const { getByTestId, getByLabelText } = render(<MemoryRouter><KioskPage /></MemoryRouter>);
+    act(() => {
+      const pending = callbacks;
+      callbacks = [];
+      pending.forEach((callback) => callback(40));
+    });
+    expect(getByLabelText('Voice assistant').getAttribute('data-kiosk-theme')).toBe(theme);
+    expect(Number(getByTestId('kiosk-center-glow').style.opacity)).toBeGreaterThan(0);
+    if (theme === 'purple-glow') {
+      const pane = getByLabelText('Voice assistant');
+      const glow = getByTestId('kiosk-center-glow');
+      const alpha = Number(glow.style.opacity);
+      const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+      const luminance = (channels: number[]) => channels.map((value) => {
+        const v = value / 255;
+        return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+      }).reduce((sum, value, i) => sum + value * [0.2126, 0.7152, 0.0722][i], 0);
+      for (const foreground of ['--kiosk-caption-muted', '--kiosk-caption-secondary']) {
+        for (const property of ['--speech-primary', '--speech-secondary']) {
+          const tint = rgb(glow.style.getPropertyValue(property));
+          const blended = rgb('#713cce').map((value, i) => value * (1 - alpha) + tint[i] * alpha);
+          expect((luminance(rgb(pane.style.getPropertyValue(foreground))) + 0.05) / (luminance(blended) + 0.05)).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    }
+    volume = 0;
+    act(() => {
+      const pending = callbacks;
+      callbacks = [];
+      pending.forEach((callback) => callback(80));
+    });
+    expect(Number(getByTestId('kiosk-center-glow').style.opacity)).toBe(0);
+  } finally {
+    cleanup();
+    vi.unstubAllGlobals();
+  }
+});
 
 vi.mock('@/hooks/useKioskState', () => ({
   useKioskState: () => ({ state: mockKioskState, micEnabled: mockKioskState === 'active', respond: vi.fn() }),
@@ -97,9 +154,6 @@ vi.mock('@/lib/kioskPresentation', () => ({
   ensurePresentationSession: vi.fn().mockResolvedValue('display-123'),
   shouldEnsurePresentationSession: vi.fn(() => false),
 }));
-vi.mock('@/components/Visualizer/AudioVisualizer', () => ({
-  AudioVisualizer: () => <div data-testid="mock-audio-visualizer" />,
-}));
 vi.mock('@/components/Visualizer/VisualizerControls', () => ({ VisualizerControls: () => null }));
 vi.mock('@/components/Kiosk/Pet/FloatingCodexPet', () => ({
   FloatingCodexPet: (props: { scale?: number }) => (
@@ -111,6 +165,60 @@ vi.mock('@/components/Kiosk/SharedBrowserPane', () => ({
 }));
 
 describe('KioskPage', () => {
+  it.each([
+    ['purple-glow', 'listening'], ['purple-glow', 'error'],
+    ['midnight-blue', 'listening'], ['midnight-blue', 'error'],
+  ] as const)('keeps %s %s status readable with the app light palette', (theme, status) => {
+    mockKioskState = 'active';
+    mockUiLanguage = 'en';
+    mockVoiceState.status = status;
+    localStorage.setItem('openjarvis_kiosk_visualizer_settings', JSON.stringify({ theme }));
+    const { getByText } = render(<MemoryRouter><KioskPage /></MemoryRouter>);
+    const color = getByText(voiceStatusLabel('en', status)).parentElement!.style.color;
+    const lightAppColors: Record<string, string> = {
+      'var(--color-accent)': '#0891b2',
+      'var(--color-success)': '#16a34a',
+      'var(--color-error)': '#dc2626',
+    };
+    const foreground = lightAppColors[color] ?? color;
+    // The bright regions of these backgrounds must still support small text.
+    const background = theme === 'purple-glow' ? '#713cce' : '#1c326e';
+    const luminance = (value: string) => {
+      const channels = value.startsWith('#')
+        ? [1, 3, 5].map((index) => parseInt(value.slice(index, index + 2), 16))
+        : value.match(/\d+/g)!.slice(0, 3).map(Number);
+      const linear = channels.map((channel) => {
+        const v = channel / 255;
+        return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+      });
+      return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+    };
+    const levels = [luminance(foreground), luminance(background)].sort((a, b) => a - b);
+    expect((levels[1] + 0.05) / (levels[0] + 0.05)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('retains mascot preferences but retires saved sphere settings', () => {
+    localStorage.setItem('openjarvis_kiosk_visualizer_settings', JSON.stringify({
+      style: '3d', theme: 'gold', gain: 4, size: 230,
+      showPet: true, petScale: 3.5,
+    }));
+    const { container, getByLabelText, getByTestId } = render(
+      <MemoryRouter><KioskPage /></MemoryRouter>,
+    );
+
+    expect(container.querySelector('canvas')).toBeNull();
+    expect(getByLabelText('Voice assistant').getAttribute('data-kiosk-theme')).toBe('midnight-blue');
+    expect(getByTestId('mock-floating-codex-pet').getAttribute('data-scale')).toBe('3.5');
+  });
+
+  it.each(['playful', 'soft-gradient', 'purple-glow', 'midnight-blue', 'pastel-grid'])(
+    'restores the saved %s background after reload', (theme) => {
+      localStorage.setItem('openjarvis_kiosk_visualizer_settings', JSON.stringify({ theme }));
+      const { getByLabelText } = render(<MemoryRouter><KioskPage /></MemoryRouter>);
+      expect(getByLabelText('Voice assistant').getAttribute('data-kiosk-theme')).toBe(theme);
+    },
+  );
+
   it.each(['idle', 'approaching', 'prompting', 'cleanup'] as const)(
     'keeps the shared screen hidden and the robot full width in %s',
     (state) => {

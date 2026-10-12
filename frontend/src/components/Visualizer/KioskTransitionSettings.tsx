@@ -153,7 +153,7 @@ export function KioskTransitionSettings({ uiLanguage }: { uiLanguage: UiLanguage
           </p>
           <button type="submit" disabled={saving}
             className="rounded-md px-3 py-1.5 text-xs font-medium cursor-pointer disabled:opacity-50"
-            style={{ background: 'var(--color-accent)', color: 'var(--color-on-accent)' }}>
+            style={{ background: 'color-mix(in srgb, var(--color-accent) 80%, var(--color-text))', color: 'var(--color-on-accent)' }}>
             {saving ? (vi ? 'Đang lưu…' : 'Saving…') : (vi ? 'Lưu chuyển trạng thái' : 'Save transitions')}
           </button>
         </fieldset>

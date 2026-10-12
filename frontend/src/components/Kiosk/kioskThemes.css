@@ -1,0 +1,23 @@
+.kiosk-display-panel {
+  --color-text-secondary: color-mix(in srgb, var(--color-text) 70%, var(--color-bg));
+  --color-text-tertiary: var(--color-text-secondary);
+}
+
+.kiosk-speech-glow {
+  background:
+    radial-gradient(ellipse at var(--speech-position) 45%, var(--speech-primary), transparent 65%),
+    radial-gradient(ellipse at 50% 70%, var(--speech-secondary), transparent 60%);
+  transition: opacity 500ms ease-out, transform 500ms ease-out;
+}
+
+.kiosk-speech-glow[data-speaking="true"] {
+  transition-duration: 220ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kiosk-speech-glow {
+    opacity: 0 !important;
+    transform: none !important;
+    transition: none;
+  }
+}

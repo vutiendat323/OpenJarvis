@@ -45,34 +45,39 @@ def _deepseek_request() -> dict:
 
 def test_file_drives_both_providers(monkeypatch, tmp_path):
     path = tmp_path / "effort.json"
-    _write(path, deepseek="low", luna="medium")
+    _write(path, **{
+        "deepseek": "low", "gpt-6-luna": "medium", "gpt-5.6-luna": "low",
+    })
     monkeypatch.setenv(FILE_ENV, str(path))
 
     assert _deepseek_request() == {"reasoning_effort": "low"}
-    assert _openai_responses_effort() == "medium"
+    assert _openai_responses_effort("gpt-6-luna") == "medium"
+    assert _openai_responses_effort("gpt-5.6-luna") == "low"
+    assert _openai_responses_effort("openrouter/openai/gpt-6-luna") == "medium"
+    assert _openai_responses_effort("openrouter/openai/gpt-5.6-luna") == "low"
 
 
 def test_editing_the_file_applies_to_the_next_call(monkeypatch, tmp_path):
     path = tmp_path / "effort.json"
-    _write(path, deepseek="low", luna="low")
+    _write(path, **{"deepseek": "low", "gpt-6-luna": "low"})
     monkeypatch.setenv(FILE_ENV, str(path))
-    assert _openai_responses_effort() == "low"
+    assert _openai_responses_effort("gpt-6-luna") == "low"
 
-    _write(path, deepseek="off", luna="high")
+    _write(path, **{"deepseek": "off", "gpt-6-luna": "high"})
 
-    assert _openai_responses_effort() == "high"
+    assert _openai_responses_effort("gpt-6-luna") == "high"
     assert _deepseek_request() == {"extra_body": {"thinking": {"type": "disabled"}}}
 
 
 def test_file_wins_over_the_environment(monkeypatch, tmp_path):
     path = tmp_path / "effort.json"
-    _write(path, deepseek="low", luna="low")
+    _write(path, **{"deepseek": "low", "gpt-6-luna": "low"})
     monkeypatch.setenv(FILE_ENV, str(path))
     monkeypatch.setenv(DEEPSEEK_ENV, "max")
     monkeypatch.setenv(OPENAI_ENV, "high")
 
     assert _deepseek_request() == {"reasoning_effort": "low"}
-    assert _openai_responses_effort() == "low"
+    assert _openai_responses_effort("gpt-6-luna") == "low"
 
 
 def test_missing_key_falls_back_to_the_environment_then_the_default(
@@ -82,9 +87,9 @@ def test_missing_key_falls_back_to_the_environment_then_the_default(
     _write(path, deepseek="low")
     monkeypatch.setenv(FILE_ENV, str(path))
 
-    assert _openai_responses_effort() == "high"
+    assert _openai_responses_effort("gpt-6-luna") == "high"
     monkeypatch.setenv(OPENAI_ENV, "medium")
-    assert _openai_responses_effort() == "medium"
+    assert _openai_responses_effort("gpt-6-luna") == "medium"
 
 
 def test_absent_file_keeps_the_environment_behaviour(monkeypatch, tmp_path):
@@ -96,11 +101,11 @@ def test_absent_file_keeps_the_environment_behaviour(monkeypatch, tmp_path):
 
 def test_invalid_value_in_the_file_is_refused(monkeypatch, tmp_path):
     path = tmp_path / "effort.json"
-    _write(path, luna="warp")
+    _write(path, **{"gpt-6-luna": "warp"})
     monkeypatch.setenv(FILE_ENV, str(path))
 
     with pytest.raises(ValueError, match="luna"):
-        _openai_responses_effort()
+        _openai_responses_effort("gpt-6-luna")
 
 
 def test_unreadable_file_is_refused_not_ignored(monkeypatch, tmp_path):
@@ -109,4 +114,4 @@ def test_unreadable_file_is_refused_not_ignored(monkeypatch, tmp_path):
     monkeypatch.setenv(FILE_ENV, str(path))
 
     with pytest.raises(ValueError, match="effort"):
-        _openai_responses_effort()
+        _openai_responses_effort("gpt-6-luna")

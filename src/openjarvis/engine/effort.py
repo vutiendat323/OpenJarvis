@@ -2,7 +2,8 @@
 
 ``scripts/launcher.sh effort ...`` writes a small JSON file and the backend
 reads it on every model call (re-parsed only when the file changes), so a new
-value applies to the next request without a restart. The per-provider
+value applies to the next request without a restart. OpenAI keys are exact
+model IDs; DeepSeek uses its provider key. The per-provider
 environment variables remain the fallback for runs that have no file.
 """
 

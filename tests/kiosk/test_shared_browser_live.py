@@ -6,6 +6,9 @@ import asyncio
 import base64
 import json
 import struct
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 from urllib.request import urlopen
 
 import pytest
@@ -16,6 +19,42 @@ from openjarvis.mcp.transport import StdioTransport
 
 # Launches a real Chrome and Playwright MCP (npx); excluded from default CI.
 pytestmark = pytest.mark.live
+
+
+def test_bridge_navigates_to_local_http_without_a_desktop_keyring(tmp_path) -> None:
+    from openjarvis.kiosk.browser_bridge import BrowserBridge
+
+    (tmp_path / "index.html").write_text(
+        "<title>Local display</title><h1>Customer display works</h1>"
+    )
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        partial(SimpleHTTPRequestHandler, directory=str(tmp_path)),
+    )
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    browser = SharedBrowserProcess(profile_dir=tmp_path / "profile")
+    try:
+        bridge = BrowserBridge(browser.start())
+        url = f"http://127.0.0.1:{server.server_port}/index.html"
+
+        async def exercise() -> None:
+            await bridge.connect()
+            try:
+                await asyncio.wait_for(
+                    bridge.handle({"type": "navigate", "url": url}), timeout=5
+                )
+                assert bridge.state()["url"] == url
+                assert bridge.state()["title"] == "Local display"
+            finally:
+                await bridge.close()
+
+        asyncio.run(exercise())
+    finally:
+        browser.close()
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
 
 
 def _jpeg_dimensions(data: bytes) -> tuple[int, int]:

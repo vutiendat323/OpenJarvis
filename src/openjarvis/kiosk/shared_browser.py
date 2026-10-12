@@ -52,6 +52,8 @@ class SharedBrowserProcess:
                 "--headless=new",
                 "--no-first-run",
                 "--no-default-browser-check",
+                # This headless display cannot unlock the desktop keyring.
+                "--password-store=basic",
                 "--remote-debugging-address=127.0.0.1",
                 "--remote-debugging-port=0",
                 f"--user-data-dir={self._profile_dir}",

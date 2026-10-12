@@ -8,6 +8,7 @@ the first spoken word, mostly hidden reasoning before the first sentence.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest import mock
 
@@ -90,3 +91,63 @@ async def test_unknown_value_is_refused_not_silently_ignored(monkeypatch):
     monkeypatch.setenv(ENV, "fast")
     with pytest.raises(ValueError, match=ENV):
         await _stream_effort()
+
+
+@pytest.mark.asyncio
+async def test_each_model_uses_its_own_effort_in_both_request_paths(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / "effort.json"
+    path.write_text(json.dumps({"gpt-6-luna": "medium", "gpt-5.6-luna": "low"}))
+    monkeypatch.setenv("OPENJARVIS_EFFORT_FILE", str(path))
+
+    for model, expected in [("gpt-6-luna", "medium"), ("gpt-5.6-luna", "low")]:
+        assert await _stream_effort(model) == {"effort": expected}
+        assert _generate_effort(model) == {"effort": expected}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("values, expected", [
+    ({"gpt-5-mini": "medium", "gpt-6-luna": "low"}, "medium"),
+    ({"gpt-6-luna": "low"}, None),
+])
+async def test_chat_completions_only_uses_the_explicit_model_preset(
+    monkeypatch, tmp_path, values, expected
+):
+    path = tmp_path / "effort.json"
+    path.write_text(json.dumps(values))
+    monkeypatch.setenv("OPENJARVIS_EFFORT_FILE", str(path))
+    monkeypatch.setenv(ENV, "high")
+    client = mock.MagicMock()
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content="OK", tool_calls=None),
+            finish_reason="stop",
+        )],
+        usage=None, model="gpt-5-mini",
+    )
+    engine = CloudEngine()
+    engine._openai_client = client
+
+    engine.generate(MESSAGES, model="gpt-5-mini")
+
+    request = client.chat.completions.create.call_args.kwargs
+    assert request.get("reasoning_effort") == expected
+
+    chunk = SimpleNamespace(choices=[SimpleNamespace(
+        delta=SimpleNamespace(content="OK", tool_calls=None), finish_reason="stop",
+    )])
+    client.chat.completions.create.return_value = iter([chunk])
+    _ = [c async for c in engine.stream(MESSAGES, model="gpt-5-mini")]
+    request = client.chat.completions.create.call_args.kwargs
+    assert request.get("reasoning_effort") == expected
+
+    async def chunks():
+        yield chunk
+
+    async_client = mock.MagicMock()
+    async_client.chat.completions.create = mock.AsyncMock(return_value=chunks())
+    engine._openai_async_client = async_client
+    _ = [c async for c in engine.stream_full(MESSAGES, model="gpt-5-mini")]
+    request = async_client.chat.completions.create.call_args.kwargs
+    assert request.get("reasoning_effort") == expected

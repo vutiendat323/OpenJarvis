@@ -139,21 +139,28 @@ def _is_deepseek_model(model: str) -> bool:
 _OPENAI_EFFORT_ENV = "OPENJARVIS_OPENAI_REASONING_EFFORT"
 
 
-def _openai_responses_effort() -> str:
-    """The Luna reasoning effort: ``high`` unless the deployment lowers it.
+def _openai_responses_effort(model: str) -> str:
+    """This model's reasoning effort; environment then ``high`` are fallbacks.
 
     Callers cannot lower it (a verified follow-up keeps full reasoning); the
     operator can, because first-word latency is mostly this reasoning.
     """
-    value = effort_setting("luna", _OPENAI_EFFORT_ENV)
+    name = openrouter_model_id(model).removeprefix("openai/").lower()
+    value = effort_setting(name, _OPENAI_EFFORT_ENV)
     if not value:
         return "high"
     if value not in ("low", "medium", "high"):
         raise ValueError(
-            f"luna effort ({_OPENAI_EFFORT_ENV}) must be low, medium or high, "
+            f"{name} effort ({_OPENAI_EFFORT_ENV}) must be low, medium or high, "
             f"got {value!r}"
         )
     return value
+
+
+def _openai_chat_effort_options(request: Dict[str, Any], model: str) -> None:
+    """Chat Completions only changes when this exact model has a preset."""
+    if effort_setting(model.lower(), ""):
+        request["reasoning_effort"] = _openai_responses_effort(model)
 
 
 _DEEPSEEK_THINKING_ENV = "OPENJARVIS_DEEPSEEK_THINKING"
@@ -764,7 +771,7 @@ class CloudEngine(InferenceEngine):
             "input": input_items,
             "max_output_tokens": max_tokens,
             **kwargs,
-            "reasoning": {"effort": _openai_responses_effort()},
+            "reasoning": {"effort": _openai_responses_effort(model)},
             "include": list(
                 dict.fromkeys([*requested_include, "reasoning.encrypted_content"])
             ),
@@ -871,6 +878,7 @@ class CloudEngine(InferenceEngine):
         }
         if not _is_openai_reasoning_model(model):
             create_kwargs["temperature"] = temperature
+        _openai_chat_effort_options(create_kwargs, model)
 
         # Apply structured output / JSON mode
         if response_format is not None:
@@ -1542,6 +1550,7 @@ class CloudEngine(InferenceEngine):
         }
         if not _is_openai_reasoning_model(model):
             create_kwargs["temperature"] = temperature
+        _openai_chat_effort_options(create_kwargs, model)
         resp = self._openai_client.chat.completions.create(**create_kwargs)
         for chunk in resp:
             delta = chunk.choices[0].delta if chunk.choices else None
@@ -1939,6 +1948,7 @@ class CloudEngine(InferenceEngine):
             }
             if not _is_openai_reasoning_model(model):
                 create_kwargs["temperature"] = temperature
+            _openai_chat_effort_options(create_kwargs, model)
         resp = await client.chat.completions.create(**create_kwargs)
         try:
             async for chunk in resp:
@@ -2006,7 +2016,7 @@ class CloudEngine(InferenceEngine):
             "model": openrouter_model_id(model),
             "input": input_items,
             "max_output_tokens": max_tokens,
-            "reasoning": {"effort": _openai_responses_effort()},
+            "reasoning": {"effort": _openai_responses_effort(model)},
             "include": ["reasoning.encrypted_content"],
             "store": False,
             "stream": True,

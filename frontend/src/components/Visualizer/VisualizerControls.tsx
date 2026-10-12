@@ -1,10 +1,11 @@
 import { Section, SettingRow } from '@/components/Settings/SettingsFields';
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AudioLines, Settings, X } from 'lucide-react';
+import { Settings, X } from 'lucide-react';
 import { VOICE_UI_TEXT } from '@/hooks/voiceUiText';
 import type { UiLanguage } from '@/hooks/useUiLanguage';
-import type { VisualizerSettings, VisualizerStyle, VisualizerTheme, VoiceStatus } from './types';
+import type { VisualizerSettings, VoiceStatus } from './types';
+import { KIOSK_THEMES, type KioskTheme } from '@/components/Kiosk/kioskThemes';
 import { KioskTransitionSettings } from './KioskTransitionSettings';
 import { KioskVoicePicker } from './KioskVoicePicker';
 
@@ -25,18 +26,7 @@ function ScreenIcon({ size = 13, className }: { size?: number; className?: strin
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const THEMES: { key: VisualizerTheme; label: string; gradient: string }[] = [
-  { key: 'gold',   label: 'Gold',   gradient: 'linear-gradient(135deg,#ffd700,#ff9500)' },
-  { key: 'cyan',   label: 'Cyan',   gradient: 'linear-gradient(135deg,#00f2fe,#4facfe)' },
-  { key: 'cyber',  label: 'Cyber',  gradient: 'linear-gradient(135deg,#ff007f,#7f00ff)' },
-  { key: 'aurora', label: 'Aurora', gradient: 'linear-gradient(135deg,#00ff87,#60efff)' },
-  { key: 'sunset', label: 'Sunset', gradient: 'linear-gradient(135deg,#ff0844,#ffb199)' },
-];
-
-const displayOptions: { value: VisualizerStyle; label: string; icon: React.ComponentType<{ size?: number; className?: string }> }[] = [
-  { value: 'screen', label: 'Screen', icon: ScreenIcon },
-  { value: '3d', label: '3D Sphere', icon: AudioLines },
-];
+const themeKeys = Object.keys(KIOSK_THEMES) as KioskTheme[];
 
 // ── Card & Row Components (matching SettingsPage card template) ─────────────
 
@@ -111,9 +101,9 @@ export function VisualizerControls({
           boxShadow: 'none',
         }}
         title="Open panel"
-        aria-label="Open AI Voice Visualizer controls"
+        aria-label="Open kiosk display controls"
       >
-        <Settings size={20} style={{ color: 'var(--color-text-secondary)' }} />
+        <Settings size={20} style={{ color: 'var(--kiosk-muted, var(--color-text-secondary))' }} />
       </button>
     );
   }
@@ -129,7 +119,7 @@ export function VisualizerControls({
         role="dialog"
         aria-modal="true"
         aria-labelledby="voice-visualizer-title"
-        className="relative w-full max-w-lg max-h-[88vh] rounded-2xl flex flex-col gap-3.5 p-5 overflow-y-auto shadow-2xl"
+        className="kiosk-display-panel relative w-full max-w-lg max-h-[88vh] rounded-2xl flex flex-col gap-3.5 p-5 overflow-y-auto shadow-2xl"
         style={panelStyle}
       >
         {/* Header */}
@@ -138,13 +128,10 @@ export function VisualizerControls({
             id="voice-visualizer-title"
             className="text-base font-bold tracking-tight"
             style={{
-              background: 'linear-gradient(120deg,var(--color-accent),var(--color-text) 80%)',
-              WebkitBackgroundClip: 'text',
-              backgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
+              color: 'var(--color-text)',
             }}
           >
-            AI Voice Visualizer
+            Kiosk Display
           </div>
           <button
             onClick={() => setCollapsed(true)}
@@ -168,6 +155,7 @@ export function VisualizerControls({
           description={VOICE_UI_TEXT[uiLanguage].languageHelper}
         >
           <select
+            aria-label="Language"
             value={uiLanguage}
             onChange={(e) => {
               const val = e.target.value;
@@ -187,113 +175,36 @@ export function VisualizerControls({
         <KioskVoicePicker uiLanguage={uiLanguage} />
       </Section>
 
-      {/* Card 2: Visualizer & Display */}
-      <Section compact title="Visualizer & Display">
-        <SettingRow compact
-          label="Display mode"
-          description={
-            settings.style === '3d'
-              ? '3D neon sphere reacts to audio'
-              : 'Screen voice display beside the browser'
-          }
-        >
-          <div className="flex gap-1 p-0.5 rounded-lg shrink-0" style={{ background: 'var(--color-bg-secondary)' }}>
-            {displayOptions.map((opt) => {
-              const isActive = settings.style === opt.value;
-              return (
-                <button
-                  key={opt.value}
-                  onClick={() => set('style', opt.value)}
-                  className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer"
-                  style={{
-                    background: isActive ? 'var(--color-surface)' : 'transparent',
-                    color: isActive ? 'var(--color-text)' : 'var(--color-text-tertiary)',
-                    boxShadow: isActive ? 'var(--shadow-sm)' : 'none',
-                  }}
-                >
-                  <opt.icon size={13} />
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
+      <Section compact title="Display & Background">
+        <SettingRow compact label="Display mode" description="Screen voice display beside the browser">
+          <span className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
+            style={{ background: 'var(--color-bg-secondary)', color: 'var(--color-text)' }}>
+            <ScreenIcon /> Screen
+          </span>
         </SettingRow>
 
-        <SettingRow compact
-          label="Theme"
-          description={THEMES.find((t) => t.key === settings.theme)?.label ?? 'Theme'}
-        >
-          <div className="flex items-center gap-2">
-            {THEMES.map((t) => {
-              const isSelected = settings.theme === t.key;
+        <SettingRow compact label="Theme" last>
+          <div role="group" aria-label="Background theme" className="flex items-center gap-2">
+            {themeKeys.map((key) => {
+              const theme = KIOSK_THEMES[key];
+              const selected = settings.theme === key;
               return (
                 <button
-                  key={t.key}
-                  title={t.label}
-                  onClick={() => set('theme', t.key)}
-                  className="w-5 h-5 rounded-full cursor-pointer transition-transform"
+                  key={key}
+                  type="button"
+                  title={theme.label}
+                  aria-label={theme.label}
+                  aria-pressed={selected}
+                  onClick={() => set('theme', key)}
+                  className="h-6 w-6 shrink-0 rounded-full border-none outline-none cursor-pointer transition-transform focus-visible:brightness-125"
                   style={{
-                    background: t.gradient,
-                    border: 'none',
-                    opacity: isSelected ? 1 : 0.4,
-                    transform: isSelected ? 'scale(1.3)' : 'scale(1)',
+                    background: theme.background,
+                    transform: selected ? 'scale(1.1)' : undefined,
                   }}
                 />
               );
             })}
           </div>
-        </SettingRow>
-
-        <SettingRow compact label="Size" description={`${Math.round(settings.size)}px`}>
-          <input
-            type="range"
-            min={70}
-            max={230}
-            step={1}
-            value={settings.size}
-            onChange={(e) => set('size', parseFloat(e.target.value))}
-            className="w-28 sm:w-32 cursor-pointer accent-[var(--color-accent)]"
-            style={{ accentColor: 'var(--color-accent)' }}
-          />
-        </SettingRow>
-
-        <SettingRow compact label="Gain" description={`${settings.gain.toFixed(1)}x`}>
-          <input
-            type="range"
-            min={0.2}
-            max={4}
-            step={0.1}
-            value={settings.gain}
-            onChange={(e) => set('gain', parseFloat(e.target.value))}
-            className="w-28 sm:w-32 cursor-pointer accent-[var(--color-accent)]"
-            style={{ accentColor: 'var(--color-accent)' }}
-          />
-        </SettingRow>
-
-        <SettingRow compact label="Speed" description={`${settings.speed.toFixed(1)}x`}>
-          <input
-            type="range"
-            min={0.1}
-            max={3.5}
-            step={0.1}
-            value={settings.speed}
-            onChange={(e) => set('speed', parseFloat(e.target.value))}
-            className="w-28 sm:w-32 cursor-pointer accent-[var(--color-accent)]"
-            style={{ accentColor: 'var(--color-accent)' }}
-          />
-        </SettingRow>
-
-        <SettingRow compact label="Glow" description={`${Math.round(settings.glow)}px`} last>
-          <input
-            type="range"
-            min={0}
-            max={50}
-            step={1}
-            value={settings.glow}
-            onChange={(e) => set('glow', parseFloat(e.target.value))}
-            className="w-28 sm:w-32 cursor-pointer accent-[var(--color-accent)]"
-            style={{ accentColor: 'var(--color-accent)' }}
-          />
         </SettingRow>
       </Section>
 
@@ -331,6 +242,7 @@ export function VisualizerControls({
           last
         >
           <input
+            aria-label="Pet Size"
             type="range"
             min={1}
             max={10}

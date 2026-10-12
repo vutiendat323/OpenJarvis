@@ -53,17 +53,20 @@ export function StackCaption({
       {/* 3-line Stack Caption: 1 word per line, compact font sizes */}
       <div className="flex flex-col items-center leading-tight gap-0.5 sm:gap-1" aria-hidden="true">
         {top && (
-          <span className="text-[11px] sm:text-xs font-normal text-white/35 tracking-normal transition-all duration-200">
+          <span className="text-[11px] sm:text-xs font-normal tracking-normal transition-all duration-200"
+            style={{ color: 'var(--kiosk-caption-muted, rgba(255,255,255,.35))' }}>
             {top}
           </span>
         )}
         {mid && (
-          <span className="text-xs sm:text-sm font-medium text-white/65 tracking-tight transition-all duration-200">
+          <span className="text-xs sm:text-sm font-medium tracking-tight transition-all duration-200"
+            style={{ color: 'var(--kiosk-caption-secondary, rgba(255,255,255,.65))' }}>
             {mid}
           </span>
         )}
         {bottom && (
-          <span className="text-base sm:text-lg font-bold text-white tracking-tight drop-shadow-sm transition-all duration-200">
+          <span className="text-base sm:text-lg font-bold tracking-tight drop-shadow-sm transition-all duration-200"
+            style={{ color: 'var(--kiosk-foreground, #fff)' }}>
             {bottom}
           </span>
         )}

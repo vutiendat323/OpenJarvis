@@ -106,12 +106,15 @@ Commands:
 Options:
   --no-vision            Leave the vision service out (start/restart/stop/status)
   --deepseek-effort V    DeepSeek thinking: off, low, high or max (default low)
-  --luna-effort V        gpt-6-luna / gpt-5.6-luna: low, medium or high (default low)
+  --openai-effort M=V    Effort for one exact OpenAI model: low, medium or high
+                        Repeat for multiple models; both Luna presets default low
+                        The model must support reasoning effort
   -f                     Follow the logs (logs only)
 
 effort changes apply to the next model call, with no restart:
-  scripts/launcher.sh effort --deepseek-effort off --luna-effort medium
-start/restart reset effort to the defaults unless the options are given.
+  scripts/launcher.sh effort --openai-effort gpt-6-luna=medium --openai-effort gpt-5.6-luna=low
+start/restart keep saved OpenAI presets and apply any given overrides.
+DeepSeek resets to low on start/restart unless --deepseek-effort is given.
 
 Defaults: ordering-kiosk preset, Vision without YOLO, logs in ../.stack-logs.
 OPENJARVIS_* and JARVIS_CONFIG environment variables override these defaults.
@@ -123,16 +126,16 @@ ACTION="start"
 LOG_SERVICE=""
 FOLLOW=0
 DEEPSEEK_EFFORT=""
-LUNA_EFFORT=""
+OPENAI_EFFORTS=()
 EFFORT_FILE="$LOG_DIR/effort.json"
 DEFAULT_DEEPSEEK_EFFORT="low"
-DEFAULT_LUNA_EFFORT="low"
+DEFAULT_OPENAI_EFFORT="low"
 
 # Model effort is checked here so a typo never reaches the running backend.
 valid_effort() {
     case "$1:$2" in
         deepseek:off|deepseek:low|deepseek:high|deepseek:max) return 0 ;;
-        luna:low|luna:medium|luna:high) return 0 ;;
+        openai:low|openai:medium|openai:high) return 0 ;;
     esac
     return 1
 }
@@ -149,9 +152,9 @@ while [ "$#" -gt 0 ]; do
         --no-vision) WITH_VISION=0 ;;
         -f|--follow) FOLLOW=1 ;;
         --deepseek-effort=*) DEEPSEEK_EFFORT="${arg#*=}" ;;
-        --luna-effort=*) LUNA_EFFORT="${arg#*=}" ;;
+        --openai-effort=*) OPENAI_EFFORTS+=("${arg#*=}") ;;
         --deepseek-effort) effort_option "$arg" "${1:-}"; DEEPSEEK_EFFORT="$1"; shift ;;
-        --luna-effort) effort_option "$arg" "${1:-}"; LUNA_EFFORT="$1"; shift ;;
+        --openai-effort) effort_option "$arg" "${1:-}"; OPENAI_EFFORTS+=("$1"); shift ;;
         vision|backend|frontend)
             [ "$ACTION" = logs ] || { log_error "args: '$arg' only goes with logs"; exit 2; }
             LOG_SERVICE="$arg" ;;
@@ -162,10 +165,15 @@ if [ -n "$DEEPSEEK_EFFORT" ] && ! valid_effort deepseek "$DEEPSEEK_EFFORT"; then
     log_error "args: --deepseek-effort must be off, low, high or max (got '$DEEPSEEK_EFFORT')"
     exit 2
 fi
-if [ -n "$LUNA_EFFORT" ] && ! valid_effort luna "$LUNA_EFFORT"; then
-    log_error "args: --luna-effort must be low, medium or high (got '$LUNA_EFFORT')"
-    exit 2
-fi
+for preset in "${OPENAI_EFFORTS[@]}"; do
+    preset_model="${preset%%=*}"
+    preset_effort="${preset#*=}"
+    if [[ "$preset" != *=* || ! "$preset_model" =~ ^(gpt-[a-z0-9][a-z0-9._-]*|chatgpt-[a-z0-9][a-z0-9._-]*|o[134][a-z0-9._-]*)$ ]] ||
+       ! valid_effort openai "$preset_effort"; then
+        log_error "args: --openai-effort needs OPENAI_MODEL=low|medium|high (got '$preset')"
+        exit 2
+    fi
+done
 [ "$ACTION" = restart ] && ACTION=start
 
 http_ok() { curl -fsS -o /dev/null --max-time 2 "$1" 2>/dev/null; }
@@ -367,24 +375,51 @@ effort_value() {  # key default
     echo "${value:-$2}"
 }
 
-write_effort() {  # deepseek luna
+write_effort() {  # deepseek; OpenAI overrides are in OPENAI_EFFORTS
     mkdir -p "$LOG_DIR"
-    local tmp="$EFFORT_FILE.tmp.$$"
-    printf '{"deepseek": "%s", "luna": "%s"}\n' "$1" "$2" > "$tmp"
-    mv "$tmp" "$EFFORT_FILE"
+    python3 - "$EFFORT_FILE" "$1" "$DEFAULT_OPENAI_EFFORT" "${OPENAI_EFFORTS[@]}" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+values = json.loads(path.read_text()) if path.exists() else {}
+if not isinstance(values, dict):
+    raise ValueError("effort file must hold a JSON object")
+# Split an old shared preset once; later edits never couple these models.
+legacy = values.pop("luna", sys.argv[3])
+for model in ("gpt-6-luna", "gpt-5.6-luna"):
+    values.setdefault(model, legacy)
+values["deepseek"] = sys.argv[2]
+for preset in sys.argv[4:]:
+    model, value = preset.split("=", 1)
+    values[model] = value
+temporary = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+temporary.write_text(json.dumps(values) + "\n")
+os.replace(temporary, path)
+PY
 }
 
 show_effort() {
-    printf 'effort    deepseek=%s luna=%s\n' \
-        "$(effort_value deepseek "$DEFAULT_DEEPSEEK_EFFORT")" \
-        "$(effort_value luna "$DEFAULT_LUNA_EFFORT")"
+    python3 - "$EFFORT_FILE" "$DEFAULT_DEEPSEEK_EFFORT" "$DEFAULT_OPENAI_EFFORT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+values = json.loads(path.read_text()) if path.exists() else {}
+legacy = values.pop("luna", sys.argv[3])
+defaults = {"deepseek": sys.argv[2], "gpt-6-luna": legacy, "gpt-5.6-luna": legacy}
+for model, value in sorted((defaults | values).items()):
+    print(f"effort    {model}={value}")
+PY
 }
 
 effort_command() {
-    if [ -n "$DEEPSEEK_EFFORT" ] || [ -n "$LUNA_EFFORT" ]; then
+    if [ -n "$DEEPSEEK_EFFORT" ] || [ "${#OPENAI_EFFORTS[@]}" -gt 0 ]; then
         write_effort \
-            "${DEEPSEEK_EFFORT:-$(effort_value deepseek "$DEFAULT_DEEPSEEK_EFFORT")}" \
-            "${LUNA_EFFORT:-$(effort_value luna "$DEFAULT_LUNA_EFFORT")}"
+            "${DEEPSEEK_EFFORT:-$(effort_value deepseek "$DEFAULT_DEEPSEEK_EFFORT")}"
         show_effort
         log_info "effort: applies to the next model call; no restart needed"
     else
@@ -419,9 +454,9 @@ set +a
 
 # Reasoning effort is the main share of the wait before the first spoken word
 # (docs/verification/2026-10-10-intent-loop-recovery/report.md). Every start
-# writes the file: the given options, else the defaults (low). The backend
-# re-reads it per model call, so `launcher.sh effort ...` needs no restart.
-write_effort "${DEEPSEEK_EFFORT:-$DEFAULT_DEEPSEEK_EFFORT}" "${LUNA_EFFORT:-$DEFAULT_LUNA_EFFORT}"
+# keeps OpenAI presets and applies the given overrides. DeepSeek defaults to
+# low. The backend re-reads the file per model call, so effort needs no restart.
+write_effort "${DEEPSEEK_EFFORT:-$DEFAULT_DEEPSEEK_EFFORT}"
 export OPENJARVIS_EFFORT_FILE="$EFFORT_FILE"
 [ -n "${GEMINI_API_KEY:-}" ]   || { log_error "preflight: GEMINI_API_KEY missing in $ENV_FILE (voice STT needs it)"; exit 1; }
 case "$MODEL" in

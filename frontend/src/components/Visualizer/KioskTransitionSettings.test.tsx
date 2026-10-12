@@ -39,7 +39,7 @@ describe('Kiosk transition settings', () => {
     );
     await view.findAllByRole('textbox');
     expect(view.container.querySelector('[role="dialog"]')).toBeNull();
-    expect(view.getByRole('dialog', { name: 'AI Voice Visualizer' })).toBeTruthy();
+    expect(view.getByRole('dialog', { name: 'Kiosk Display' })).toBeTruthy();
     fireEvent.click(view.getByRole('button', { name: 'Close' }));
     expect(view.queryByRole('dialog')).toBeNull();
   });
