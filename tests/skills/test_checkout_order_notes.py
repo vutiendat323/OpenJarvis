@@ -12,9 +12,20 @@ from openjarvis.core.conversation import agent_turn_scope, conversation_scope
 @pytest.mark.parametrize(
     ("customer_note", "expected"),
     [
-        ("", "AI order"),
-        ("Làm nhanh giúp mình", "AI order | Làm nhanh giúp mình"),
-        ('Không "đường"\n{giữ nguyên}', 'AI order | Không "đường"\n{giữ nguyên}'),
+        (
+            "",
+            "AI ORDER Vui lòng chờ khoảng 15 phút để nhận món tại quầy nhé.",
+        ),
+        (
+            "Làm nhanh giúp mình",
+            "AI ORDER Vui lòng chờ khoảng 15 phút để nhận món tại quầy nhé."
+            " | Làm nhanh giúp mình",
+        ),
+        (
+            'Không "đường"\n{giữ nguyên}',
+            "AI ORDER Vui lòng chờ khoảng 15 phút để nhận món tại quầy nhé."
+            ' | Không "đường"\n{giữ nguyên}',
+        ),
     ],
 )
 def test_checkout_tags_order_and_preserves_customer_notes(
@@ -59,4 +70,5 @@ def test_checkout_tags_order_and_preserves_customer_notes(
     assert json.loads(writes[0]["body"])["description"] == expected
     assert fixture.shop.order["description"] == expected
     assert fixture.shop.order["orderItems"][0]["note"] == "Ít đá"
+    assert result.metadata["customer_message"] == "Mời bạn quét mã để thanh toán."
     assert fixture.displays[-1]["view"] == "payment_qr"

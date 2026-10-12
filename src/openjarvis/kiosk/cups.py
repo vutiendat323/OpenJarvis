@@ -67,6 +67,9 @@ class CupsPrinter:
                     bitmap = source.read()
                     if len(bitmap) != stride * height:
                         raise ValueError("truncated_invoice_raster")
+                # Trim only the blank PDF tail, through the final black pixel's row.
+                ink_bytes = len(bitmap.rstrip(b"\x00"))
+                height = max(1, (ink_bytes + stride - 1) // stride)
                 # Small strips fit thermal printer buffers; PBM already uses 1=black.
                 for row in range(0, height, 256):
                     rows = min(256, height - row)

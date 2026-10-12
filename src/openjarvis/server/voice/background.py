@@ -11,18 +11,21 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextvars import copy_context
 from typing import Any
 
 from openjarvis.agents.action_ledger import ActionLedger, LedgerEntry
 
 
 def event_text(entry: LedgerEntry) -> str:
-    detail = entry.error or "no confirmation was returned"
+    detail = entry.error or entry.event_context or "no confirmation was returned"
     return (
         "Kiosk event, not the customer's words: an action from the customer's "
         f"earlier request has finished. Tool: {entry.tool}. Status: "
         f"{entry.status}. Detail: {detail}. Tell the customer briefly what "
-        "happened and what they can do next. Do not repeat the action."
+        "happened and what they can do next, following the workflow's instructions "
+        "in your own words and the customer's language. This is a notification, "
+        "not a new request. Do not repeat the action."
     )
 
 
@@ -45,10 +48,12 @@ class BackgroundReporter:
         self._unsubscribe: Callable[[], None] | None = None
         self._event_task: asyncio.Task[Any] | None = None
         self._reporting = False
+        self._context = copy_context()
 
     def start(self) -> None:
         """Subscribe on the event loop; outcomes arrive on worker threads."""
         self._loop = asyncio.get_running_loop()
+        self._context = copy_context()
         self._unsubscribe = self._ledger.subscribe(
             self._conversation_id, self._finished
         )
@@ -67,7 +72,9 @@ class BackgroundReporter:
         loop = self._loop
         if loop is None or loop.is_closed():
             return
-        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._flush()))
+        loop.call_soon_threadsafe(
+            lambda: asyncio.ensure_future(self._flush()), context=self._context
+        )
 
     async def on_idle(self) -> None:
         """Called by the session lifecycle only while nobody is talking.

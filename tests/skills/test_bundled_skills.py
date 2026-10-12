@@ -469,9 +469,16 @@ def _run_checkout(
                     "description": (
                         response_order_note
                         if response_order_note is not None
-                        else f"AI order | {requested_order_note}"
+                        else (
+                            "AI ORDER Vui lòng chờ khoảng 15 phút"
+                            " để nhận món tại quầy nhé."
+                            f" | {requested_order_note}"
+                        )
                         if requested_order_note
-                        else "AI order"
+                        else (
+                            "AI ORDER Vui lòng chờ khoảng 15 phút"
+                            " để nhận món tại quầy nhé."
+                        )
                     ),
                     "table": returned_table,
                     "orderItems": [
@@ -640,7 +647,10 @@ def test_workspace_checkout_sends_selected_at_table_type_and_slug() -> None:
     assert create_body["type"] == "at-table"
     assert create_body["table"] == "table-73"
     assert create_body["timeLeftTakeOut"] == 0
-    assert create_body["description"] == "AI order | Làm nhanh giúp mình"
+    assert create_body["description"] == (
+        "AI ORDER Vui lòng chờ khoảng 15 phút để nhận món tại quầy nhé."
+        " | Làm nhanh giúp mình"
+    )
     assert create_body["orderItems"] == [
         {
             "quantity": 2,

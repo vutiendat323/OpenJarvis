@@ -222,7 +222,9 @@ class _MerchantHttp(RoutedHttp):
                     "status": "pending",
                     "subtotal": 200_000,
                     "type": "at-table",
-                    "description": "AI order",
+                    "description": (
+                        "AI ORDER Vui lòng chờ khoảng 15 phút để nhận món tại quầy nhé."
+                    ),
                     "table": {"name": "73", "slug": "table-73"},
                     "orderItems": [
                         {

@@ -150,12 +150,10 @@ custom_vocabulary = ["bạc xỉu", "cà phê muối", "đá xay", "takeaway"]
     assert transcription.mode == "VERBATIM"
 
 
-def test_ordering_kiosk_preset_biases_only_loanword_vocabulary(monkeypatch):
-    """Bias only English/loanword terms; Vietnamese terms over-bias the decoder.
-
-    Common Vietnamese phrases in the list made Gemini force unclear audio
-    into menu words (e.g. "bạc xỉu").
-    """
+def test_ordering_kiosk_preset_uses_vietnamese_with_essential_ordering_terms(
+    monkeypatch,
+):
+    """Hints cover Vietnamese dining choices and necessary foreign menu terms."""
     project_root = Path(__file__).parents[2]
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv(
@@ -166,23 +164,24 @@ def test_ordering_kiosk_preset_biases_only_loanword_vocabulary(monkeypatch):
     transcription = _transcriber()._build_live_config().input_audio_transcription
 
     assert transcription is not None
-    # en-US as a second hint made short Vietnamese phrases come back as
-    # English ("Về menu" -> "Wallet menu"); the kiosk serves Vietnamese.
     assert transcription.language_codes == ["vi-VN"]
     vocabulary = set(transcription.custom_vocabulary or [])
     assert {
-        "takeaway",
-        "topping",
         "menu",
-        "back menu",
+        "Yaourt",
+        "Lipton",
         "Americano",
         "Espresso",
+        "Latte",
+        "Cold Brew",
         "Croissant",
     } <= vocabulary
-    assert all(term.isascii() for term in vocabulary), sorted(
-        term for term in vocabulary if not term.isascii()
-    )
-    assert len(vocabulary) <= 100
+    vietnamese_choices = {"mang đi", "mang về", "tại bàn"}
+    assert vietnamese_choices <= vocabulary
+    assert all(term.isascii() for term in vocabulary - vietnamese_choices)
+    assert not {"back menu", "takeaway", "topping"} & vocabulary
+    assert len(vocabulary) <= 23
+    assert transcription.mode == "VERBATIM"
 
 
 def test_transcriber_waits_for_the_live_final_transcript(monkeypatch):

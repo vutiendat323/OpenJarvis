@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -560,8 +561,14 @@ def test_live_tables_fail_closed_when_the_merchant_is_unreachable(
 
 def test_payment_check_shows_the_paid_bill_once_the_merchant_confirms(
     bus: EventBus,
+    monkeypatch,
 ) -> None:
     """Would fail if a pending order looked paid or a paid one stayed on the QR."""
+    from openjarvis.agents.action_ledger import ActionLedger
+    from openjarvis.core.conversation import conversation_scope
+
+    ledger = ActionLedger()
+    monkeypatch.setattr(presentation_module, "ACTION_LEDGER", ledger, raising=False)
     order_url = "https://merchant.example/orders/order%2F1"
     merchant = _Merchant(
         {order_url: {"result": {"slug": "order/1", "status": "pending"}}}
@@ -569,26 +576,37 @@ def test_payment_check_shows_the_paid_bill_once_the_merchant_confirms(
     manager, session = _touch_manager(bus, merchant)
     assert manager.check_payment(session.session_id) == "none"
     line = {"name": "Latte", "quantity": 1, "unit_price": 45000, "line_total": 45000}
-    manager.publish(
-        {
-            "view": "payment_qr",
-            "order_id": "order/1",
-            "payment_slug": "payment-1",
-            "status": "pending",
-            "qr_code": "qr",
-            "order_type": "take-out",
-            "branch": "branch-1",
-            "lines": [line],
-            "total": 45000,
-        }
-    )
+    with conversation_scope("payment-owner"):
+        manager.publish(
+            {
+                "view": "payment_qr",
+                "order_id": "order/1",
+                "payment_slug": "payment-1",
+                "status": "pending",
+                "qr_code": "qr",
+                "order_type": "take-out",
+                "branch": "branch-1",
+                "lines": [line],
+                "total": 45000,
+            }
+        )
 
     pending = manager.check_payment(session.session_id)
+    assert ledger.entries("payment-owner") == []
     merchant.responses[order_url] = {"result": {"slug": "order/1", "status": "paid"}}
     paid = manager.check_payment(session.session_id)
     after = manager.check_payment(session.session_id)
 
     assert (pending, paid, after) == ("pending", "paid", "none")
+    [notice] = ledger.unreported_finished("payment-owner")
+    assert notice.customer_message == ""
+    assert notice.tool == "payment_completed" and notice.status == "succeeded"
+    assert json.loads(notice.as_context()["event_context"]) == {
+        "event": "payment_completed",
+        "order_id": "order/1",
+        "payment_status": "paid",
+        "view": "bill",
+    }
     assert merchant.requests == [order_url, order_url]
     assert manager.check_payment("another-session") is None
     bills = [
@@ -608,6 +626,60 @@ def test_payment_check_shows_the_paid_bill_once_the_merchant_confirms(
             "presentation_session_id": session.session_id,
         }
     ]
+
+
+def test_wrong_order_payment_never_confirms_or_notifies(bus, monkeypatch):
+    from openjarvis.agents.action_ledger import ActionLedger
+    from openjarvis.core.conversation import conversation_scope
+
+    ledger = ActionLedger()
+    monkeypatch.setattr(presentation_module, "ACTION_LEDGER", ledger, raising=False)
+    merchant = _Merchant(
+        {
+            "https://merchant.example/orders/order-1": {
+                "result": {"slug": "another-order", "status": "paid"}
+            }
+        }
+    )
+    manager, session = _touch_manager(bus, merchant)
+    with conversation_scope("payment-owner"):
+        manager.publish({"view": "payment_qr", "order_id": "order-1"})
+
+    with pytest.raises(PresentationUnavailableError, match="order"):
+        manager.check_payment(session.session_id)
+
+    assert ledger.entries("payment-owner") == []
+    assert session.last_payload["view"] == "payment_qr"
+
+
+def test_paid_receipt_replay_does_not_repeat_notice_to_another_voice(bus, monkeypatch):
+    from openjarvis.agents.action_ledger import ActionLedger
+    from openjarvis.core.conversation import conversation_scope
+
+    ledger = ActionLedger()
+    monkeypatch.setattr(presentation_module, "ACTION_LEDGER", ledger, raising=False)
+    merchant = _Merchant(
+        {
+            "https://merchant.example/orders/order-1": {
+                "result": {"slug": "order-1", "status": "paid"}
+            }
+        }
+    )
+    manager, session = _touch_manager(bus, merchant)
+    receipt = {"view": "payment_qr", "order_id": "order-1"}
+    with conversation_scope("payment-owner"):
+        manager.publish(receipt)
+    with conversation_scope("poll-request"):
+        assert manager.check_payment(session.session_id) == "paid"
+    [first] = ledger.unreported_finished("payment-owner")
+    ledger.mark_reported("payment-owner", first.key, via="test")
+    with conversation_scope("payment-owner"):
+        manager.publish(receipt)
+    assert manager.check_payment(session.session_id) == "paid"
+
+    assert ledger.unreported_finished("payment-owner") == []
+    assert len(ledger.entries("payment-owner")) == 1
+    assert ledger.entries("poll-request") == []
 
 
 def test_screen_search_exposes_only_shown_menu_rows_until_the_menu_changes(

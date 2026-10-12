@@ -903,7 +903,9 @@ def test_touch_checkout_places_one_order_through_the_real_recipe(touch) -> None:
                 "status": "pending",
                 "subtotal": 90000,
                 "type": "take-out",
-                "description": "",
+                "description": (
+                    "AI ORDER Vui lòng chờ khoảng 15 phút để nhận món tại quầy nhé."
+                ),
                 "table": None,
                 "orderItems": [line],
             }

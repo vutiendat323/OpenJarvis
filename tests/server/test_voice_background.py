@@ -14,6 +14,8 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     LLMContextFrame,
     LLMFullResponseEndFrame,
+    LLMTextFrame,
+    StartFrame,
     TTSSpeakFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -30,6 +32,10 @@ from openjarvis.server.voice.lifecycle import VoiceSessionLifecycle
 from openjarvis.server.voice.llm import OpenJarvisLLMService
 
 CONV = "voice-1"
+PAYMENT_EVENT = (
+    '{"event":"payment_completed","order_id":"order-1",'
+    '"payment_status":"paid","view":"bill"}'
+)
 
 
 def _finish(ledger, call_id, *, success=True, message="", run_id="r1"):
@@ -134,6 +140,66 @@ async def test_a_finished_outcome_from_a_worker_thread_triggers_a_flush():
     assert fakes.flushes == 1
 
 
+@pytest.mark.anyio
+async def test_payment_confirmation_uses_model_event_turn_once_without_fixed_speech():
+    ledger, fakes = ActionLedger(), _Fakes()
+    ledger.start(CONV, call_id="order-1", tool="workflow_result", run_id="payment")
+    ledger.finish(
+        CONV,
+        call_id="order-1",
+        run_id="payment",
+        result=ToolResult(
+            tool_name="workflow_result",
+            content="paid",
+            metadata={"event_context": PAYMENT_EVENT},
+        ),
+    )
+    reporter = _reporter(ledger, fakes)
+
+    await reporter.on_idle()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await reporter.on_idle()
+
+    assert fakes.spoken == []
+    [event] = fakes.events
+    assert "order-1" in event and "paid" in event
+    assert "not the customer's words" in event
+    assert "own words" in event
+    assert ledger.unreported_finished(CONV) == []
+
+
+@pytest.mark.anyio
+async def test_worker_notification_retains_voice_context_instead_of_http_context():
+    from openjarvis.core.conversation import conversation_scope, current_conversation_id
+
+    ledger, fakes = ActionLedger(), _Fakes()
+    contexts = []
+
+    async def flush():
+        contexts.append(current_conversation_id())
+
+    reporter = BackgroundReporter(
+        ledger,
+        CONV,
+        speak=fakes.speak,
+        flush=flush,
+        run_event_turn=fakes.run_event_turn,
+    )
+    with conversation_scope(CONV):
+        reporter.start()
+    try:
+        with conversation_scope("http-request"):
+            await asyncio.to_thread(_finish, ledger, "a", message="Đã thêm.")
+        for _ in range(50):
+            if contexts:
+                break
+            await asyncio.sleep(0.01)
+        assert contexts == [CONV]
+    finally:
+        reporter.stop()
+
+
 def test_event_text_names_tool_status_and_detail_for_the_model():
     ledger = ActionLedger()
     _finish(ledger, "a", success=False)
@@ -146,15 +212,79 @@ def test_event_text_names_tool_status_and_detail_for_the_model():
 class _RecordingBinding:
     model = "test-model"
 
-    def __init__(self):
+    def __init__(self, reply="Dạ."):
+        self.reply = reply
         self.calls = []
         self.done = asyncio.Event()
 
     async def run_stream(self, prompt, context):
         self.calls.append((prompt, [m.text for m in context.conversation.messages]))
-        yield AgentTextDelta("Dạ.")
-        yield AgentRunCompleted(AgentResult(content="Dạ.", turns=1))
+        yield AgentTextDelta(self.reply)
+        yield AgentRunCompleted(AgentResult(content=self.reply, turns=1))
         self.done.set()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "Đã thanh toán. Chờ khoảng 15 phút, nhận món tại quầy nhé.",
+        "Payment confirmed. Collect your order at the counter"
+        " in about fifteen minutes.",
+    ],
+    ids=["vietnamese", "english"],
+)
+async def test_touch_only_payment_speaks_the_model_response_before_any_user_turn(reply):
+    binding = _RecordingBinding(reply)
+    service = OpenJarvisLLMService(binding)
+    texts = []
+    ready = asyncio.Event()
+
+    class Sink(FrameProcessor):
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            if isinstance(frame, StartFrame):
+                ready.set()
+            if isinstance(frame, LLMTextFrame):
+                texts.append(frame.text)
+            await self.push_frame(frame, direction)
+
+    worker = PipelineWorker(
+        Pipeline([service, Sink()]),
+        cancel_on_idle_timeout=False,
+        enable_rtvi=False,
+        enable_turn_tracking=False,
+    )
+    runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
+    ledger = ActionLedger()
+    ledger.start(CONV, call_id="order-1", tool="workflow_result", run_id="payment")
+    ledger.finish(
+        CONV,
+        call_id="order-1",
+        run_id="payment",
+        result=ToolResult(
+            tool_name="workflow_result",
+            content="paid",
+            metadata={"event_context": PAYMENT_EVENT},
+        ),
+    )
+    [entry] = ledger.unreported_finished(CONV)
+    event = event_text(entry)
+    outcome = {}
+
+    async def drive():
+        await asyncio.wait_for(ready.wait(), 2)
+        outcome["completed"] = await service.run_event_turn(event)
+        await worker.queue_frame(EndFrame())
+
+    await runner.add_workers(worker)
+    await asyncio.wait_for(asyncio.gather(runner.run(), drive()), timeout=10)
+
+    assert outcome["completed"] is True
+    assert "".join(texts) == reply
+    [(prompt, history)] = binding.calls
+    assert prompt == event
+    assert event not in history
 
 
 @pytest.mark.anyio

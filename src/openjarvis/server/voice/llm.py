@@ -22,6 +22,7 @@ from pipecat.frames.frames import (
     LLMTextFrame,
     OutputTransportMessageUrgentFrame,
 )
+from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import LLMService
 from pipecat.services.settings import LLMSettings
@@ -556,14 +557,16 @@ class OpenJarvisLLMService(LLMService):
         It never starts while a customer turn is answered: that turn would be
         invalidated and carried over as unfinished. Customer activity or the
         session's end cuts it; it then returns False.
+        Touch-only checkout can finish before any spoken turn; use empty history
+        for that notification.
         """
-        if (
-            self._answering
-            or self._last_context is None
-            or (self._event_task is not None and not self._event_task.done())
+        if self._answering or (
+            self._event_task is not None and not self._event_task.done()
         ):
             return False
-        _, context = agent_input(_EventContext(self._last_context, event))
+        _, context = agent_input(
+            _EventContext(self._last_context or LLMContext(), event)
+        )
         task = asyncio.create_task(self._answer(event, context, nullcontext()))
         self._event_task = task
         try:

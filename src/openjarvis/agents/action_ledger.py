@@ -35,9 +35,13 @@ class LedgerEntry:
     reported: bool = False
     # A customer turn completed after it: told, and no longer carried.
     settled: bool = False
+    # Verified workflow facts for a model-written notification, never spoken text.
+    event_context: str = ""
 
     def as_context(self) -> dict[str, str]:
         item = {"tool": self.tool, "status": self.status}
+        if self.event_context:
+            item["event_context"] = self.event_context
         if self.customer_message:
             item["message"] = self.customer_message
         if self.error:
@@ -113,6 +117,10 @@ class ActionLedger:
             else:
                 entry.status = "failed"
                 entry.error = (result.content or "")[:200]
+            event_context = metadata.get("event_context")
+            entry.event_context = (
+                event_context if isinstance(event_context, str) else ""
+            )
             snapshot = replace(entry)
             listeners = list(self._listeners.get(conversation_id, ()))
         logger.warning(

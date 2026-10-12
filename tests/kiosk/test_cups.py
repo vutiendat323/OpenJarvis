@@ -30,6 +30,47 @@ def test_prepare_keeps_all_pdf_pages_as_native_raster(tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    "bitmap,height,expected_raster",
+    [
+        (
+            b"\x00\x80\x00\x01" + b"\x00" * 600,
+            604,
+            b"\x1dv0\x00\x01\x00\x04\x00\x00\x80\x00\x01",
+        ),
+        (
+            b"\x00" * 600,
+            600,
+            b"\x1dv0\x00\x01\x00\x01\x00\x00",
+        ),
+        (
+            b"\x80" * 300 + b"\x00" * 600,
+            900,
+            b"\x1dv0\x00\x01\x00\x00\x01"
+            + b"\x80" * 256
+            + b"\x1dv0\x00\x01\x00\x2c\x00"
+            + b"\x80" * 44,
+        ),
+    ],
+    ids=["footer-after-internal-whitespace", "blank-page", "multiple-raster-strips"],
+)
+def test_prepare_drops_only_blank_rows_after_last_ink(
+    tmp_path, bitmap, height, expected_raster
+):
+    from openjarvis.kiosk.cups import CupsPrinter
+
+    pdf = tmp_path / "merchant.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fixture")
+
+    def run(args, **kwargs):
+        (tmp_path / "raster-1.pbm").write_bytes(f"P4\n8 {height}\n".encode() + bitmap)
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    payload = CupsPrinter("GP-C180I", width_dots=8, run=run).prepare(pdf, tmp_path)
+
+    assert payload.read_bytes() == b"\x1b@" + expected_raster + b"\n\n\n\x1dV\x00"
+
+
 def test_truncated_raster_never_reaches_spool(tmp_path):
     from openjarvis.kiosk.cups import CupsPrinter
 

@@ -127,54 +127,35 @@ port = 8000
 agent = "orchestrator"
 
 [voice.stt]
-# Gemini Live applies these when the Voice session connects. Keep this local:
-# fetching the menu here would add provider I/O before the WebRTC pipeline can
-# accept speech. Product terms below were refreshed from trendcoffee-menu's
-# read-only endpoint on 2026-09-14. Bias only English/loanword terms: common
-# Vietnamese words here over-bias the decoder, which then forces unclear
-# audio into menu words (e.g. "bạc xỉu"). Vietnamese is left to vi-VN.
-# Vietnamese only: an en-US hint made short Vietnamese phrases come back as
-# English ("Về menu" -> "Wallet menu"). Add it back for an English kiosk.
+# Applied when each Voice session connects. Keep recognition Vietnamese.
+# Hint only common Vietnamese dining choices and necessary foreign menu/kiosk
+# terms; avoid transliterations and English navigation/order commands.
 language_codes = ["vi-VN"]
 mode = "VERBATIM"
 custom_vocabulary = [
-  "takeaway",
-  "topping",
+  "mang đi",
+  "mang về",
+  "tại bàn",
   "menu",
-  "back menu",
-  "Affogato",
-  "Americano",
-  "Choco latte",
-  "Chocolate Coco",
-  "Coffee Trend",
-  "Cold Brew Original",
-  "Espresso",
-  "Latte",
-  "Matcha Coco",
-  "Matcha latte",
-  "Matcha Trend",
-  "Strawberry matcha latte",
-  "Croissant",
-  "Bruschetta",
-  "burrito",
-  "nachos",
-  "quesadillas",
-  "carpaccio",
-  "Carbonara",
-  "Pesto",
-  "Burrata",
-  "Parma",
-  "Tiramisu",
-  "Pannacotta",
-  "Pain suisse",
-  "Cinnamon rolls",
-  "Hickory",
-  "USDA",
-  "Aukube",
-  "Hokube",
   "Yaourt",
   "Lipton",
-  "Yuzu",
+  "Americano",
+  "Espresso",
+  "Latte",
+  "Affogato",
+  "Cold Brew",
+  "Cold Brew Original",
+  "Matcha",
+  "Choco latte",
+  "Chocolate Coco",
+  "Strawberry matcha latte",
+  "Croissant",
+  "Croissant Ham & Cheese",
+  "Matcha ribbon croissant",
+  "Salted egg charcoal croissant",
+  "Tiramisu",
+  "Pain suisse",
+  "Cinnamon rolls",
 ]
 
 [voice.speaker]

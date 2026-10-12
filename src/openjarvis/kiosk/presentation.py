@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -12,6 +13,8 @@ from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
+from openjarvis.agents.action_ledger import ACTION_LEDGER
+from openjarvis.core.conversation import current_conversation_id
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolResult
 
@@ -74,6 +77,7 @@ class PresentationSession:
     tables: dict[str, dict[str, str]] = field(default_factory=dict)
     # The payment receipt on screen until the merchant reports it paid.
     payment: dict[str, Any] | None = None
+    payment_conversation_id: str = ""
     # Menu rows the customer found by typing on the display, in screen order.
     screen_search: list[dict[str, Any]] = field(default_factory=list)
 
@@ -214,6 +218,7 @@ class PresentationSessionManager:
             if self._session is None or self._session.session_id != session_id:
                 return None
             payment = self._session.payment
+            payment_conversation_id = self._session.payment_conversation_id
         if payment is None:
             return "none"
         if checkout is None:
@@ -223,6 +228,8 @@ class PresentationSessionManager:
         )
         try:
             order = checkout.fetch_json(url)["result"]
+            if order.get("slug") != payment["order_id"]:
+                raise ValueError("merchant_order_mismatch")
             status = order["status"]
         except Exception as exc:
             raise PresentationUnavailableError("order_unavailable") from exc
@@ -232,17 +239,51 @@ class PresentationSessionManager:
             # A concurrent poll may already have shown this bill.
             if self._session is None or self._session.payment is not payment:
                 return "none"
-        self.publish(
-            {
-                "view": "bill",
-                "order_id": payment["order_id"],
-                "status": "paid",
-                "order_type": payment.get("order_type", ""),
-                "branch": payment.get("branch", ""),
-                "lines": payment.get("lines", []),
-                "total": payment.get("total", 0),
-            }
-        )
+            shown = self.publish(
+                {
+                    "view": "bill",
+                    "order_id": payment["order_id"],
+                    "status": "paid",
+                    "order_type": payment.get("order_type", ""),
+                    "branch": payment.get("branch", ""),
+                    "lines": payment.get("lines", []),
+                    "total": payment.get("total", 0),
+                }
+            )
+            if (
+                shown.success
+                and payment_conversation_id
+                and not any(
+                    entry.tool == "payment_completed"
+                    and entry.call_id == payment["order_id"]
+                    for entry in ACTION_LEDGER.entries(payment_conversation_id)
+                )
+            ):
+                ACTION_LEDGER.start(
+                    payment_conversation_id,
+                    call_id=payment["order_id"],
+                    tool="payment_completed",
+                    run_id="merchant-payment",
+                )
+                ACTION_LEDGER.finish(
+                    payment_conversation_id,
+                    call_id=payment["order_id"],
+                    run_id="merchant-payment",
+                    result=ToolResult(
+                        tool_name="payment_completed",
+                        content="paid",
+                        metadata={
+                            "event_context": json.dumps(
+                                {
+                                    "event": "payment_completed",
+                                    "order_id": payment["order_id"],
+                                    "payment_status": "paid",
+                                    "view": "bill",
+                                }
+                            )
+                        },
+                    ),
+                )
         return "paid"
 
     def preload_initial_display(self) -> bool:
@@ -380,8 +421,10 @@ class PresentationSessionManager:
                 self._session.screen_search = []
             elif normalized.get("view") == "payment_qr":
                 self._session.payment = normalized
+                self._session.payment_conversation_id = current_conversation_id()
             elif normalized.get("view") == "bill":
                 self._session.payment = None
+                self._session.payment_conversation_id = ""
             self._bus.publish(EventType.DISPLAY_UPDATE, normalized)
             return ToolResult(
                 tool_name="presentation", content="presentation_published"
@@ -419,6 +462,7 @@ class PresentationSessionManager:
             self._session.menu_variants = {}
             self._session.tables = {}
             self._session.payment = None
+            self._session.payment_conversation_id = ""
             self._session.screen_search = []
             self._session.last_payload = {
                 "view": "none",

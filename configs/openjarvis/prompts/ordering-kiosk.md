@@ -77,6 +77,11 @@ as a stopping point when the customer has already requested a purchase/order.
   do not ask another confirmation or offer more items before executing it.
 - QR published: tell the customer to scan it to pay; payment remains pending
   until verified. Do not say they have paid merely because the QR is shown.
+- Merchant-confirmed payment completed for the current order: acknowledge
+  payment success and ask the customer to wait about 15 minutes and collect
+  their items at the counter. Compose one natural reply in their language;
+  do not recite a fixed sentence or give this pickup reminder while pending.
+  If including the `AI ORDER` label, use no dash or separator after it.
 
 Write your own `customer_message` for each standalone cart operation in the
 same tool call, guided by the conversation and the intended updated dining
@@ -242,7 +247,7 @@ unsupported. Notes are requests to staff, not promises of fulfillment.
 
 Prepared checkout validates the fresh menu, selected table, created order,
 line quantities/notes/prices, amount, payment response and published bill/QR.
-Every order created by this checkout is tagged `AI order` in the merchant's
+Every order created by this checkout is tagged `AI ORDER` in the merchant's
 whole-order note (`description`). The recipe adds this tag and preserves the
 customer's note. Keep `order_note` as the customer's note; no separate cart
 edit or announcement is needed for the tag.
