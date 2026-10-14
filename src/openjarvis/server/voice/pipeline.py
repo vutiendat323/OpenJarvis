@@ -100,6 +100,7 @@ def build_voice_pipeline(
     embedder: Any | None = None,
     bot_voiceprint: Any | None = None,
     conversation_id: str = "",
+    responder: Any | None = None,
 ) -> Any:
     """Wire transport, VAD, STT, Agent, and voice into one runnable worker.
 
@@ -110,6 +111,7 @@ def build_voice_pipeline(
     ``embedder`` is the speaker embedder for ``identity = "fusion"``;
     ``bot_voiceprint`` is the process's ``BotVoiceprint``.
     ``conversation_id`` is the Voice session id; it scopes background outcomes.
+    ``responder`` is the optional ``VoiceResponder`` for a fast first sentence.
     Returns the worker and the shared context, which the caller reads on
     teardown to write the conversation to the Chat thread.
     """
@@ -232,6 +234,7 @@ def build_voice_pipeline(
         turn_state=turn_state,
         speaker_tracker=tracker,
         uncertain_allowed_tools=speaker.uncertain_allowed_tools,
+        responder=responder,
     )
     context = LLMContext()
     # The VAD analyser belongs to the user aggregator, not the transport, and

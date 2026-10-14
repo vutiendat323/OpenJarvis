@@ -86,8 +86,8 @@ describe('voice UI translations', () => {
   it('localizes the selector labels, helper text, and compact voice badge', () => {
     expect(VOICE_UI_TEXT.vi.language).toEqual({ vietnamese: 'Tiếng Việt', english: 'English' });
     expect(VOICE_UI_TEXT.en.language).toEqual({ vietnamese: 'Vietnamese', english: 'English' });
-    expect(VOICE_UI_TEXT.vi.languageHelper).toBe('Ngôn ngữ cho lớp phủ Kiosk và trạng thái Voice.');
-    expect(VOICE_UI_TEXT.en.languageHelper).toBe('Language for Kiosk overlay and Voice status.');
+    expect(VOICE_UI_TEXT.vi.languageHelper).toBe('Ngôn ngữ hiển thị của kiosk và trạng thái giọng nói.');
+    expect(VOICE_UI_TEXT.en.languageHelper).toBe('Language for the kiosk interface and voice status.');
     expect(panelStatusLabel('vi', 'thinking')).toBe('Đang xử lý');
     expect(panelStatusLabel('en', 'speaking')).toBe('Speaking');
   });

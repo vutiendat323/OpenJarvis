@@ -78,6 +78,8 @@ class PresentationSession:
     # The payment receipt on screen until the merchant reports it paid.
     payment: dict[str, Any] | None = None
     payment_conversation_id: str = ""
+    # Retain verified print status for this session's receipts across navigation.
+    printing_states: dict[str, str | None] = field(default_factory=dict)
     # Menu rows the customer found by typing on the display, in screen order.
     screen_search: list[dict[str, Any]] = field(default_factory=list)
 
@@ -203,6 +205,28 @@ class PresentationSessionManager:
                 return []
             return [dict(row) for row in self._session.screen_search]
 
+    def shown_payment(self) -> dict[str, Any] | None:
+        """The order this conversation's customer is asked to pay, as shown.
+
+        Only for the conversation that put the payment QR on screen; the QR
+        value itself is left out.
+        """
+        owner = current_conversation_id()
+        with self._lock:
+            if (
+                not owner
+                or self._session is None
+                or self._session.payment is None
+                or self._session.payment_conversation_id != owner
+            ):
+                return None
+            payment = self._session.payment
+            return {
+                key: deepcopy(payment[key])
+                for key in ("order_id", "status", "total", "order_type", "lines")
+                if key in payment
+            }
+
     def table(self, session_id: str, slug: str) -> dict[str, str] | None:
         """Return one table from this session's last live read."""
         with self._lock:
@@ -244,6 +268,11 @@ class PresentationSessionManager:
                     "view": "bill",
                     "order_id": payment["order_id"],
                     "status": "paid",
+                    **(
+                        {"printing_state": payment["printing_state"]}
+                        if "printing_state" in payment
+                        else {}
+                    ),
                     "order_type": payment.get("order_type", ""),
                     "branch": payment.get("branch", ""),
                     "lines": payment.get("lines", []),
@@ -405,6 +434,12 @@ class PresentationSessionManager:
                 check_agent_cancelled()
             normalized = deepcopy(payload)
             normalized["presentation_session_id"] = self._session.session_id
+            if normalized.get("view") in {"bill", "payment_qr"}:
+                order_id = normalized.get("order_id")
+                if isinstance(order_id, str) and order_id:
+                    state = self._session.printing_states.setdefault(order_id, None)
+                    if state is not None:
+                        normalized["printing_state"] = state
             if normalized.get("navigate") is not False:
                 self._session.last_payload = normalized
             elif self._session.last_payload.get("view") == "cart":
@@ -428,6 +463,46 @@ class PresentationSessionManager:
             self._bus.publish(EventType.DISPLAY_UPDATE, normalized)
             return ToolResult(
                 tool_name="presentation", content="presentation_published"
+            )
+
+    def update_print_status(self, data: dict[str, Any]) -> None:
+        """Patch only the owning order's status, without navigation or payment edits."""
+        state = data.get("printing_state")
+        if state not in {"submitted", "processing", "completed", "failed", "unknown"}:
+            return
+        with self._lock:
+            session = self._session
+            if (
+                session is None
+                or session.session_id != data.get("presentation_session_id")
+                or data.get("order_id") not in session.printing_states
+            ):
+                return
+            if (
+                session.printing_states[data["order_id"]] == "completed"
+                and state != "completed"
+            ):
+                return
+            session.printing_states[data["order_id"]] = state
+            if (
+                session.payment is not None
+                and session.payment.get("order_id") == data["order_id"]
+            ):
+                session.payment["printing_state"] = state
+            if (
+                session.last_payload.get("view") not in {"bill", "payment_qr"}
+                or session.last_payload.get("order_id") != data["order_id"]
+            ):
+                return
+            session.last_payload["printing_state"] = state
+            self._bus.publish(
+                EventType.DISPLAY_UPDATE,
+                {
+                    "view": "print_status",
+                    "order_id": data["order_id"],
+                    "printing_state": state,
+                    "presentation_session_id": session.session_id,
+                },
             )
 
     def activate(self, generation: str) -> bool:
@@ -463,6 +538,7 @@ class PresentationSessionManager:
             self._session.tables = {}
             self._session.payment = None
             self._session.payment_conversation_id = ""
+            self._session.printing_states.clear()
             self._session.screen_search = []
             self._session.last_payload = {
                 "view": "none",

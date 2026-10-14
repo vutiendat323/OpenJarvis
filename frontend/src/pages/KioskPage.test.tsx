@@ -331,6 +331,35 @@ describe('KioskPage', () => {
     expect(getByTestId('mock-floating-codex-pet').getAttribute('data-scale')).toBe('10');
   });
 
+  it('keeps background artwork square as the voice pane changes aspect ratio', () => {
+    let bounds = { width: 1920, height: 1080 };
+    let resize = () => {};
+    const rectangle = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(() => new DOMRect(0, 0, bounds.width, bounds.height));
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { resize = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    const { getByLabelText, unmount } = render(<MemoryRouter><KioskPage /></MemoryRouter>);
+    try {
+      const pane = getByLabelText('Voice assistant');
+      expect(pane.style.getPropertyValue('--kiosk-background-size')).toBe('1920px');
+      for (const [width, height, expected] of [
+        [350, 950, '950px'],
+        [950, 350, '950px'],
+        [1440, 900, '1440px'],
+      ] as const) {
+        act(() => { bounds = { width, height }; resize(); });
+        expect(pane.style.getPropertyValue('--kiosk-background-size')).toBe(expected);
+      }
+    } finally {
+      unmount();
+      rectangle.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('hides mascot pet when showPet is false in localStorage', () => {
     localStorage.setItem(
       'openjarvis_kiosk_visualizer_settings',

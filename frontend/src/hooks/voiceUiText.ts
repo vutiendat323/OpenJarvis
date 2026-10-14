@@ -18,7 +18,7 @@ interface VoiceUiCopy {
 export const VOICE_UI_TEXT: Record<UiLanguage, VoiceUiCopy> = {
   vi: {
     language: { vietnamese: 'Tiếng Việt', english: 'English' },
-    languageHelper: 'Ngôn ngữ cho lớp phủ Kiosk và trạng thái Voice.',
+    languageHelper: 'Ngôn ngữ hiển thị của kiosk và trạng thái giọng nói.',
     voiceStatus: {
       idle: 'Jarvis đang chờ khách',
       connecting: 'Kết nối',
@@ -53,7 +53,7 @@ export const VOICE_UI_TEXT: Record<UiLanguage, VoiceUiCopy> = {
   },
   en: {
     language: { vietnamese: 'Vietnamese', english: 'English' },
-    languageHelper: 'Language for Kiosk overlay and Voice status.',
+    languageHelper: 'Language for the kiosk interface and voice status.',
     voiceStatus: {
       idle: 'Jarvis is idle waiting for a guest',
       connecting: 'Connecting',

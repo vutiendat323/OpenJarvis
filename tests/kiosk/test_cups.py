@@ -203,3 +203,142 @@ def test_held_job_verification_accepts_exact_cups_identity():
         return subprocess.CompletedProcess(args, 0, output, b"")
 
     CupsPrinter("GP-C180I", run=run).verify_held("GP-C180I-17", "invoice-order-1")
+
+
+@pytest.mark.parametrize(
+    "state,reasons,expected",
+    [
+        ("pending", "job-incoming", "pending"),
+        ("pending-held", "job-hold-until-specified", "pending-held"),
+        ("processing", "job-printing", "processing"),
+        ("processing-stopped", "printer-stopped", "processing-stopped"),
+        ("completed", "job-completed-successfully", "completed"),
+        ("completed", "completed-successfully", "completed"),
+        ("completed", "job-completed-with-errors", "failed"),
+        ("completed", "completed-with-warnings", "failed"),
+        (
+            "completed",
+            "job-completed-successfully,job-completed-with-warnings",
+            "failed",
+        ),
+        ("completed", "job-completed-successfully,document-format-error", "failed"),
+        ("completed", "job-completed-successfully,queued-in-device", "unknown"),
+        ("completed", "queued-in-device", "unknown"),
+        ("completed", "none", "unknown"),
+        ("completed", None, "unknown"),
+        ("cancelled", "job-canceled-by-user", "failed"),
+        ("canceled", "job-canceled-by-user", "failed"),
+        ("aborted", "aborted-by-system", "failed"),
+        ("unexpected", "job-completed-successfully", "unknown"),
+    ],
+)
+def test_job_state_requires_positive_completion(state, reasons, expected):
+    from pathlib import Path
+
+    from openjarvis.kiosk.cups import CupsPrinter
+
+    def run(args, **kwargs):
+        assert args[:4] == ["ipptool", "-tv", "-T", "5"]
+        assert args[-2] == "ipp://localhost:631/jobs/17"
+        assert "job-state-reasons" in Path(args[-1]).read_text()
+        assert kwargs["check"] is True
+        assert kwargs["timeout"] == 15
+        output = (
+            "job-id (integer) = 17\n"
+            "job-name (nameWithoutLanguage) = invoice-order-1\n"
+            f"job-state (enum) = {state}\n"
+            "job-printer-uri (uri) = ipp://localhost:631/printers/GP-C180I\n"
+        )
+        if reasons is not None:
+            output += f"job-state-reasons (1setOf keyword) = {reasons}\n"
+        return subprocess.CompletedProcess(args, 0, output.encode(), b"")
+
+    printer = CupsPrinter("GP-C180I", run=run)
+    assert printer.job_state("GP-C180I-17", "invoice-order-1") == expected
+
+
+def test_job_state_accepts_canonical_cups_queue_hostname():
+    from openjarvis.kiosk.cups import CupsPrinter
+
+    def run(args, **kwargs):
+        assert args[-2] == "ipp://localhost:631/jobs/17"
+        output = (
+            b"job-id (integer) = 17\n"
+            b"job-name (nameWithoutLanguage) = invoice-order-1\n"
+            b"job-state (enum) = completed\n"
+            b"job-printer-uri (uri) = ipp://kiosk.local/printers/GP-C180I\n"
+            b"job-state-reasons (keyword) = job-completed-successfully\n"
+        )
+        return subprocess.CompletedProcess(args, 0, output, b"")
+
+    assert (
+        CupsPrinter("GP-C180I", run=run).job_state("GP-C180I-17", "invoice-order-1")
+        == "completed"
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("job-id", "18"),
+        ("job-name", "another-document"),
+        ("job-printer-uri", "ipp://localhost:631/printers/OTHER"),
+        ("job-id", None),
+        ("job-name", None),
+        ("job-printer-uri", None),
+        ("job-state", None),
+    ],
+)
+def test_job_state_rejects_bad_or_missing_identity(field, value):
+    from openjarvis.kiosk.cups import CupsPrinter
+
+    values = {
+        "job-id": "17",
+        "job-name": "invoice-order-1",
+        "job-printer-uri": "ipp://localhost:631/printers/GP-C180I",
+        "job-state": "completed",
+        "job-state-reasons": "job-completed-successfully",
+    }
+    values[field] = value
+
+    def run(args, **kwargs):
+        output = "".join(
+            f"{key} (fixture) = {item}\n"
+            for key, item in values.items()
+            if item is not None
+        )
+        return subprocess.CompletedProcess(args, 0, output.encode(), b"")
+
+    with pytest.raises(ValueError, match="identity"):
+        CupsPrinter("GP-C180I", run=run).job_state("GP-C180I-17", "invoice-order-1")
+
+
+@pytest.mark.parametrize("job_id", ["OTHER-17", "17", "GP-C180I-17 -H restart"])
+def test_job_state_rejects_wrong_queue_before_query(job_id):
+    from openjarvis.kiosk.cups import CupsPrinter
+
+    def run(args, **kwargs):
+        pytest.fail("invalid identity must not query CUPS")
+
+    with pytest.raises(ValueError, match="identity"):
+        CupsPrinter("GP-C180I", run=run).job_state(job_id, "invoice-order-1")
+
+
+@pytest.mark.parametrize("failure", ["timeout", "ipp-rejected"])
+def test_job_state_propagates_cups_failures(failure):
+    from openjarvis.kiosk.cups import CupsPrinter
+
+    calls = []
+    error = (
+        subprocess.TimeoutExpired("ipptool", 15)
+        if failure == "timeout"
+        else subprocess.CalledProcessError(1, "ipptool", b"client-error-not-found")
+    )
+
+    def run(args, **kwargs):
+        calls.append(args)
+        raise error
+
+    with pytest.raises(type(error)):
+        CupsPrinter("GP-C180I", run=run).job_state("GP-C180I-17", "invoice-order-1")
+    assert len(calls) == 1

@@ -292,6 +292,11 @@ class AgentContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+# ``AgentContext.metadata`` key: a ``threading.Event`` the voice layer sets once
+# it spoke a preamble for this turn, so the Agent does not add a second one.
+PREAMBLE_SPOKEN = "preamble_spoken"
+
+
 @dataclass(slots=True)
 class AgentResult:
     """Result returned after an agent completes a run."""

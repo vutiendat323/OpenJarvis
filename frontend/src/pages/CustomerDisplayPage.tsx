@@ -28,6 +28,7 @@ import {
   reduceCustomerDisplay,
   waitingState,
   type CustomerDisplayLine,
+  type CustomerPrintingState,
   type CustomerDisplayState,
   type CustomerMenuItem,
 } from './customerDisplayState';
@@ -1056,12 +1057,41 @@ function billStatusLabel(status: string, isVi: boolean): string {
   return status.toUpperCase();
 }
 
+function printingStatusSuffix(state: CustomerPrintingState | undefined, isVi: boolean): string {
+  if (state === undefined) return '';
+  const labels: Record<CustomerPrintingState, string> = isVi ? {
+    submitted: 'ĐÃ GỬI LỆNH IN',
+    processing: 'ĐANG IN',
+    completed: 'ĐÃ IN',
+    failed: 'IN THẤT BẠI',
+    unknown: 'CHƯA RÕ TRẠNG THÁI IN',
+  } : {
+    submitted: 'PRINT SUBMITTED',
+    processing: 'PRINTING',
+    completed: 'PRINTED',
+    failed: 'PRINT FAILED',
+    unknown: 'PRINT STATUS UNKNOWN',
+  };
+  return ` · ${labels[state]}`;
+}
+
 // VIEW 3: BILL (INVOICE LUXURY INVOICE)
+function PaidInvoiceStamp({ isVi }: { isVi: boolean }) {
+  return (
+    <img
+      src="/assets/invoice-paid-stamp.png"
+      alt={isVi ? 'Đã thanh toán — hóa đơn đã in xong' : 'Paid — invoice printing completed'}
+      className="h-36 w-36 shrink-0 object-contain sm:h-44 sm:w-44 lg:h-52 lg:w-52"
+    />
+  );
+}
+
 export function BillView({
   order_id,
   branch,
   order_type,
   status,
+  printing_state,
   lines,
   total,
   uiLanguage = 'en',
@@ -1070,11 +1100,13 @@ export function BillView({
   branch: string;
   order_type?: string;
   status: string;
+  printing_state?: CustomerPrintingState;
   lines: CustomerDisplayLine[];
   total: number;
   uiLanguage?: UiLanguage;
 }) {
   const isVi = uiLanguage === 'vi';
+  const showPaidStamp = status.toLowerCase() === 'paid' && printing_state === 'completed';
   return (
     <div className="mx-auto flex w-full max-w-[680px] lg:max-w-[880px] xl:max-w-[960px] flex-1 flex-col px-6 sm:px-10 py-6 sm:py-8 text-left font-['Josefin_Sans',sans-serif] text-[#783820]">
       <div className="flex items-baseline justify-between border-b-[1.5px] border-[#783820] pb-2 sm:pb-3">
@@ -1083,7 +1115,7 @@ export function BillView({
         </h1>
         <div className="text-right text-[11px] sm:text-[12px] lg:text-[13px] font-semibold tracking-wider uppercase leading-tight">
           <div>{isVi ? 'MÃ HÓA ĐƠN' : 'INVOICE NO.'}: {order_id}</div>
-          <div>{isVi ? 'TRẠNG THÁI' : 'STATUS'}: {billStatusLabel(status, isVi)}</div>
+          <div>{isVi ? 'TRẠNG THÁI' : 'STATUS'}: {billStatusLabel(status, isVi)}{printingStatusSuffix(printing_state, isVi)}</div>
         </div>
       </div>
 
@@ -1151,12 +1183,15 @@ export function BillView({
             <span className="text-[15px] font-extrabold tabular-nums whitespace-nowrap shrink-0 ml-4">{money(total)}</span>
           </div>
         </div>
-        <div className="mt-8 max-w-[440px] space-y-1 text-[10px] font-medium tracking-wider uppercase leading-relaxed">
-          <div>{isVi ? 'THẺ TÍN DỤNG & GHI NỢ: VISA, MASTERCARD, AMERICAN EXPRESS, NAPAS' : 'CREDIT & DEBIT CARDS: VISA, MASTERCARD, AMERICAN EXPRESS, NAPAS'}</div>
-          <div className="pt-2">{isVi ? 'CHUYỂN KHOẢN:' : 'BANK TRANSFER:'}</div>
-          <div>{isVi ? 'TÊN TÀI KHOẢN: CONG TY CO PHAN TREND COFFEE' : 'ACCOUNT NAME: CONG TY CO PHAN TREND COFFEE'}</div>
-          <div>MB BANK: 9999.8888.68</div>
-          <div className="pt-2">{isVi ? 'THANH TOÁN TIỀN MẶT: TẠI QUẦY.' : 'CASH PAYMENTS: IN-PERSON ONLY.'}</div>
+        <div className={cn('mt-8', showPaidStamp && 'flex items-end justify-between gap-6 sm:gap-8')}>
+          <div className="max-w-[440px] min-w-0 space-y-1 text-[10px] font-medium tracking-wider uppercase leading-relaxed">
+            <div>{isVi ? 'THẺ TÍN DỤNG & GHI NỢ: VISA, MASTERCARD, AMERICAN EXPRESS, NAPAS' : 'CREDIT & DEBIT CARDS: VISA, MASTERCARD, AMERICAN EXPRESS, NAPAS'}</div>
+            <div className="pt-2">{isVi ? 'CHUYỂN KHOẢN:' : 'BANK TRANSFER:'}</div>
+            <div>{isVi ? 'TÊN TÀI KHOẢN: CONG TY CO PHAN TREND COFFEE' : 'ACCOUNT NAME: CONG TY CO PHAN TREND COFFEE'}</div>
+            <div>MB BANK: 9999.8888.68</div>
+            <div className="pt-2">{isVi ? 'THANH TOÁN TIỀN MẶT: TẠI QUẦY.' : 'CASH PAYMENTS: IN-PERSON ONLY.'}</div>
+          </div>
+          {showPaidStamp && <PaidInvoiceStamp isVi={isVi} />}
         </div>
       </div>
 
@@ -1171,6 +1206,7 @@ export function PaymentQrView({
   total,
   order_id,
   status,
+  printing_state,
   order_type,
   branch,
   table_name,
@@ -1182,6 +1218,7 @@ export function PaymentQrView({
   total?: number;
   order_id: string;
   status?: string;
+  printing_state?: CustomerPrintingState;
   order_type?: string;
   branch?: string;
   table_name?: string;
@@ -1191,15 +1228,16 @@ export function PaymentQrView({
 }) {
   const isVi = uiLanguage === 'vi';
   const isImage = isSafeQrImageSource(qr_code);
+  const showPaidStamp = status?.toLowerCase() === 'paid' && printing_state === 'completed';
   const [shownAt] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
   const deadline = paymentDeadline(created_at, shownAt);
   const expired = now >= deadline;
   useEffect(() => {
-    if (expired) return;
+    if (expired || showPaidStamp) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [expired]);
+  }, [expired, showPaidStamp]);
   const statusLabel = status?.toLowerCase() === 'pending'
     ? (isVi ? 'CHỜ THANH TOÁN' : 'PENDING PAYMENT')
     : (status?.toUpperCase() ?? (isVi ? 'KHÔNG CÓ TRẠNG THÁI' : 'PAYMENT STATUS UNAVAILABLE'));
@@ -1212,7 +1250,7 @@ export function PaymentQrView({
         </h1>
         <div className="text-right text-[11px] sm:text-[12px] lg:text-[13px] font-semibold tracking-wider uppercase leading-tight">
           <div>{isVi ? 'MÃ HÓA ĐƠN' : 'INVOICE NO.'}: {order_id}</div>
-          <div>{isVi ? 'TRẠNG THÁI' : 'STATUS'}: {statusLabel}</div>
+          <div>{isVi ? 'TRẠNG THÁI' : 'STATUS'}: {statusLabel}{printingStatusSuffix(printing_state, isVi)}</div>
         </div>
       </div>
 
@@ -1291,7 +1329,8 @@ export function PaymentQrView({
             <div>MB BANK: 9999.8888.68</div>
           </div>
           <div className="col-span-5 flex flex-col items-end">
-            <div className="flex flex-col items-center gap-1">
+            {showPaidStamp ? <PaidInvoiceStamp isVi={isVi} /> : (
+              <div className="flex flex-col items-center gap-1">
               <div
                 data-testid="payment-countdown"
                 className={`text-center text-[10px] sm:text-[11px] lg:text-[12px] font-bold tracking-wider uppercase ${expired ? 'text-[#9a2b12]' : 'whitespace-nowrap'}`}
@@ -1311,7 +1350,8 @@ export function PaymentQrView({
                   {isVi ? 'KHÔNG THỂ HIỂN THỊ MÃ QR XÁC THỰC.' : 'UNABLE TO DISPLAY A VERIFIED QR CODE.'}
                 </div>
               )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1538,6 +1578,10 @@ export function CustomerDisplayPage({
       setState((current) => reduceCustomerDisplay(current, event, sessionId));
       return;
     }
+    if (event.type === 'display_update' && event.data?.view === 'print_status') {
+      setState((current) => reduceCustomerDisplay(current, event, sessionId));
+      return;
+    }
     setManualTab(null);
     if (event.type === 'display_update' && event.data) {
       const data = event.data as Record<string, unknown>;
@@ -1730,6 +1774,7 @@ export function CustomerDisplayPage({
                 branch={visibleState.branch}
                 order_type={visibleState.order_type}
                 status={visibleState.status}
+                printing_state={visibleState.printing_state}
                 lines={visibleState.lines}
                 total={visibleState.total}
                 uiLanguage={uiLanguage}
@@ -1742,6 +1787,7 @@ export function CustomerDisplayPage({
                 total={visibleState.total}
                 order_id={visibleState.order_id}
                 status={visibleState.status}
+                printing_state={visibleState.printing_state}
                 order_type={visibleState.order_type}
                 branch={visibleState.branch}
                 table_name={visibleState.table_name}
@@ -1761,7 +1807,7 @@ export function CustomerDisplayPage({
       {manualTab === 'help' && (
         <div role="dialog" aria-modal="true" aria-label={isVi ? 'Hỗ trợ khách hàng' : 'Customer help'} className="fixed inset-0 z-40 flex items-center justify-center bg-[#3d1b0c]/35 p-6">
           <div className="w-full max-w-md border-2 border-[#68341a] bg-[#fae7cd] p-8 text-center shadow-[0_18px_40px_rgba(60,25,10,0.28)]">
-            <div className="font-['Playfair_Display',serif] text-3xl tracking-wide text-[#68341a]">{isVi ? 'Cần hỗ trợ?' : 'Need a hand?'}</div>
+            <div className="text-3xl font-bold tracking-[0.16em] uppercase text-[#68341a]">{isVi ? 'Cần hỗ trợ?' : 'Need a hand?'}</div>
             <p className="mt-3 text-sm font-semibold tracking-wide text-[#783820]">{isVi ? 'Bạn có thể nói với trợ lý để xem thực đơn, cập nhật giỏ hàng hoặc thanh toán.' : 'You can ask the voice assistant to browse the menu, update your cart, or start checkout.'}</p>
             <button type="button" onClick={() => setManualTab(null)} className="mt-6 border border-[#68341a] px-5 py-2 font-['Playfair_Display',serif] text-sm font-bold tracking-[0.18em] text-[#68341a] active:scale-95">{isVi ? 'ĐÓNG' : 'CLOSE'}</button>
           </div>

@@ -31,6 +31,14 @@ export interface CustomerDisplayLine {
   line_total?: number;
 }
 
+export type CustomerPrintingState = 'submitted' | 'processing' | 'completed' | 'failed' | 'unknown';
+
+function pickPrintingState(value: unknown): CustomerPrintingState | undefined {
+  if (value === 'submitted' || value === 'processing' || value === 'completed'
+    || value === 'failed' || value === 'unknown') return value;
+  return undefined;
+}
+
 export type CustomerDisplayState =
   | { view: 'waiting' }
   | {
@@ -57,6 +65,7 @@ export type CustomerDisplayState =
       view: 'bill';
       order_id: string;
       status: string;
+      printing_state?: CustomerPrintingState;
       order_type: string;
       branch: string;
       lines: CustomerDisplayLine[];
@@ -67,6 +76,7 @@ export type CustomerDisplayState =
       order_id: string;
       payment_slug: string;
       status: string;
+      printing_state?: CustomerPrintingState;
       qr_code: string;
       order_type?: string;
       branch?: string;
@@ -246,6 +256,13 @@ export function reduceCustomerDisplay(
   if (!data || typeof data.view !== 'string') return state;
   if (data.view === 'none') return waitingState;
 
+  const printingState = pickPrintingState(data.printing_state);
+  if (data.view === 'print_status') {
+    if ((state.view !== 'bill' && state.view !== 'payment_qr')
+      || data.order_id !== state.order_id || printingState === undefined) return state;
+    return { ...state, printing_state: printingState };
+  }
+
   if (data.view === 'menu') {
     const items = pickRows(data.items, pickMenuItem);
     const menuItems = pickRows(data.menu_items, pickMenuItem);
@@ -295,6 +312,7 @@ export function reduceCustomerDisplay(
       view: 'bill',
       order_id: data.order_id,
       status: data.status,
+      ...(printingState !== undefined ? { printing_state: printingState } : {}),
       order_type: data.order_type,
       branch: data.branch,
       lines,
@@ -318,6 +336,7 @@ export function reduceCustomerDisplay(
       order_id: data.order_id,
       payment_slug: data.payment_slug,
       status: data.status,
+      ...(printingState !== undefined ? { printing_state: printingState } : {}),
       qr_code: data.qr_code,
       ...(optionalString(data, 'order_type') !== undefined
         ? { order_type: optionalString(data, 'order_type') }

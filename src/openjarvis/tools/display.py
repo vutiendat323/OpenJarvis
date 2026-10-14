@@ -1206,6 +1206,12 @@ class DisplayCartTool(_DisplayTool):
             _CHECKOUT_REVISION.set(revision)
             return snapshot
 
+    def shown_order(self) -> dict[str, Any] | None:
+        """The order this conversation already put on screen to be paid."""
+        if self._presentation is None:
+            return None
+        return self._presentation.shown_payment()
+
     def checkout_write_allowed(self) -> bool:
         """Only the reserved composite worker may issue its dependent writes."""
         from openjarvis.core.conversation import (

@@ -148,12 +148,37 @@ def _setup_invoice_printing(app: FastAPI, bus) -> None:
     except (ValueError, OSError):
         logger.warning("Kiosk auto-print configuration unavailable")
         return
+    from openjarvis.core.events import EventType
+
+    def on_print_event(event) -> None:
+        update = getattr(presentation, "update_print_status", None)
+        if callable(update):
+            update(event.data)
+        runtime = getattr(app.state, "native_agent_runtime", None)
+        if event.event_type == EventType.PRINT_COMPLETED and runtime is not None:
+            runtime.record_background_event(
+                event.data["conversation_id"],
+                event_id=(
+                    f"print:{event.data['merchant']}:{event.data['order_id']}"
+                    f":{event.data['job_id']}"
+                ),
+                event_context={
+                    key: value
+                    for key, value in event.data.items()
+                    if key not in {"conversation_id", "presentation_session_id"}
+                },
+            )
+
+    bus.subscribe(EventType.PRINT_STATUS_CHANGED, on_print_event)
+    bus.subscribe(EventType.PRINT_COMPLETED, on_print_event)
     app.state.invoice_printer = worker
     app.add_event_handler("startup", worker.start)
 
     @app.on_event("shutdown")
     async def _stop_invoice_printing() -> None:
         await asyncio.to_thread(worker.stop)
+        bus.unsubscribe(EventType.PRINT_STATUS_CHANGED, on_print_event)
+        bus.unsubscribe(EventType.PRINT_COMPLETED, on_print_event)
 
 
 def _setup_kiosk(app: FastAPI, bus, channel_bridge) -> None:

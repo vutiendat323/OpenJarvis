@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import threading
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from dataclasses import dataclass, field
@@ -18,6 +20,7 @@ from openjarvis.agents._stubs import (
     AgentWorkerLease,
     BaseAgent,
 )
+from openjarvis.core.types import ToolResult
 from openjarvis.tools.mcp_adapter import MCPToolAdapter
 from openjarvis.traces.collector import TraceCollector
 
@@ -50,6 +53,15 @@ class AgentExecutionBinding:
     @property
     def model(self) -> str:
         return self.snapshot.model
+
+    def with_model(self, model: str) -> "AgentExecutionBinding":
+        """Bind the same runtime for one caller without changing other callers."""
+        return self._runtime.bind(model=model)
+
+    def streams_tool_starts(self) -> bool:
+        """Whether the bound Agent reports each tool before running it."""
+        check = getattr(self._runtime.agent, "streams_tool_starts", None)
+        return bool(callable(check) and check(self.model))
 
     async def run_stream(
         self,
@@ -103,12 +115,43 @@ class NativeAgentRuntime:
         self._agent = agent
         self._trace_collector = TraceCollector(agent, store=trace_store, bus=bus)
         self._lock = asyncio.Lock()
+        self._background_event_lock = threading.Lock()
         self._tool_gate = AgentToolGate()
         self._retained_leases: set[AgentWorkerLease] = set()
         self._staged_persistence: dict[str, AgentPersistenceStaging] = {}
         self._data_source_configuration = data_source_configuration or (
             DataSourceConfigurationSnapshot(False, "", 0, 0.0, 0)
         )
+
+    def record_background_event(
+        self, conversation_id: str, *, event_id: str, event_context: dict[str, Any]
+    ) -> None:
+        """Deliver verified workflow facts through the existing outcome ledger."""
+        from openjarvis.agents.action_ledger import ACTION_LEDGER
+
+        if not conversation_id or not event_id:
+            return
+        run_id = "background-event"
+        with self._background_event_lock:
+            if any(
+                entry.key == f"{run_id}:{event_id}"
+                for entry in ACTION_LEDGER.entries(conversation_id)
+            ):
+                return
+            tool = str(event_context["event"])
+            ACTION_LEDGER.start(
+                conversation_id, call_id=event_id, tool=tool, run_id=run_id
+            )
+            ACTION_LEDGER.finish(
+                conversation_id,
+                call_id=event_id,
+                run_id=run_id,
+                result=ToolResult(
+                    tool_name=tool,
+                    content="verified workflow event",
+                    metadata={"event_context": json.dumps(event_context)},
+                ),
+            )
 
     @property
     def agent(self) -> BaseAgent:

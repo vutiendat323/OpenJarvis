@@ -113,6 +113,34 @@ class CupsPrinter:
 
     def verify_held(self, job_id: str, title: str) -> None:
         """Reject missing/reused IDs before releasing a persisted invoice job."""
+        values = self._job_attributes(job_id, title)
+        if values["job-state"] != "pending-held":
+            raise ValueError("cups_job_identity_mismatch")
+
+    def job_state(self, job_id: str, title: str) -> str:
+        """Read one identified job; completion requires explicit CUPS success."""
+        values = self._job_attributes(job_id, title)
+        state = values["job-state"]
+        if state in {"canceled", "cancelled", "aborted"}:
+            return "failed"
+        if state == "completed":
+            reasons = set(re.split(r"[,\s]+", values["job-state-reasons"]))
+            if any(
+                reason.endswith(("-error", "-errors", "-warning", "-warnings"))
+                for reason in reasons
+            ):
+                return "failed"
+            if "queued-in-device" not in reasons and reasons & {
+                "job-completed-successfully",
+                "completed-successfully",
+            }:
+                return "completed"
+            return "unknown"
+        if state in {"pending", "pending-held", "processing", "processing-stopped"}:
+            return state
+        return "unknown"
+
+    def _job_attributes(self, job_id: str, title: str) -> dict[str, str]:
         if not re.fullmatch(rf"{re.escape(self.queue)}-\d+", job_id):
             raise ValueError("cups_job_identity_mismatch")
         number = job_id.rsplit("-", 1)[1]
@@ -125,7 +153,7 @@ class CupsPrinter:
                 "ATTR uri job-uri $uri\n"
                 "ATTR name requesting-user-name $user\n"
                 "ATTR keyword requested-attributes "
-                "job-id,job-name,job-state,job-printer-uri\n"
+                "job-id,job-name,job-state,job-printer-uri,job-state-reasons\n"
                 "STATUS successful-ok\nEXPECT job-id\nEXPECT job-name\n"
                 "EXPECT job-state\nEXPECT job-printer-uri\n}\n"
             )
@@ -141,16 +169,19 @@ class CupsPrinter:
             )
         output = result.stdout.decode("utf-8", errors="replace")
         values = {}
-        for field in ("job-id", "job-name", "job-state", "job-printer-uri"):
+        for field in (
+            "job-id", "job-name", "job-state", "job-printer-uri", "job-state-reasons"
+        ):
             match = re.search(rf"^\s*{field} \([^)]*\) = (.*)$", output, re.MULTILINE)
             values[field] = match.group(1).strip() if match else ""
         if (
             values["job-id"] != number
             or values["job-name"] != title
-            or values["job-state"] != "pending-held"
+            or not values["job-state"]
             or urlsplit(values["job-printer-uri"]).path != f"/printers/{self.queue}"
         ):
             raise ValueError("cups_job_identity_mismatch")
+        return values
 
 
 __all__ = ["CupsPrinter"]

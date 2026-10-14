@@ -163,3 +163,33 @@ def test_blocking_path_strips_the_clause_too():
 def test_kiosk_config_enables_progress_speech():
     path = Path("configs/openjarvis/examples/ordering-kiosk-mcp.toml")
     assert load_config(path=path).agent.progress_speech is True
+
+
+@pytest.mark.asyncio
+async def test_clause_is_not_spoken_after_the_voice_layer_spoke_a_preamble():
+    import threading
+
+    from openjarvis.agents._stubs import PREAMBLE_SPOKEN, AgentContext
+
+    spoken = threading.Event()
+    spoken.set()  # the fast responder already acknowledged this turn
+    tool = ExistingTool("lookup")
+    engine = StreamingEngine(
+        [
+            _tool_round("", ("lookup", _args(_progress="Mình xem bàn 57"))),
+            _stream_final_round("Xong."),
+        ]
+    )
+    agent = _agent(engine, [tool], progress_speech=True)
+    events = [
+        event
+        async for event in agent.run_stream(
+            "request", AgentContext(metadata={PREAMBLE_SPOKEN: spoken})
+        )
+    ]
+
+    # The tool still runs and its own result is still spoken; only the
+    # second acknowledgement is dropped.
+    assert "Mình xem bàn 57" not in _spoken(events)
+    assert _spoken(events)
+    assert any(isinstance(e, AgentToolStarted) for e in events)

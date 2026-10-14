@@ -93,6 +93,24 @@ def _url_origin(url: object) -> str:
     return f"{parsed.scheme.lower()}://{host}{f':{port}' if port is not None else ''}"
 
 
+def _with_shown_order(cart: Any, content: str) -> str:
+    """A refused or failed checkout, plus the order already awaiting payment.
+
+    The refusals ("cart revision already consumed", a repeated order POST) say
+    why nothing was sent but not that the earlier order exists, and the model
+    told a customer with its QR on screen that no order was made (2026-10-13).
+    """
+    shown = getattr(cart, "shown_order", None)
+    order = shown() if callable(shown) else None
+    if not order:
+        return content
+    return (
+        f"{content}\nshown_order: {json.dumps(order, ensure_ascii=False)} "
+        "(an order from this conversation is on the customer's screen with its "
+        "payment QR, awaiting payment)"
+    )
+
+
 class SkillExecutor:
     """Execute a skill manifest step-by-step.
 
@@ -156,7 +174,9 @@ class SkillExecutor:
                 success=False,
                 step_results=[
                     ToolResult(
-                        tool_name=manifest.name, content=str(exc), success=False
+                        tool_name=manifest.name,
+                        content=_with_shown_order(cart, str(exc)),
+                        success=False,
                     ),
                 ],
             )
@@ -164,6 +184,9 @@ class SkillExecutor:
         try:
             ctx["_checkout_write_attempted"] = False
             result = self._run_steps(manifest, initial_context=ctx)
+            if not result.success and result.step_results:
+                last = result.step_results[-1]
+                last.content = _with_shown_order(cart, last.content)
             return result
         finally:
             cart.end_checkout(

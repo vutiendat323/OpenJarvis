@@ -15,6 +15,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
+from openjarvis.core.conversation import current_conversation_id
 from openjarvis.core.events import Event, EventBus, EventType
 from openjarvis.kiosk.cups import CupsPrinter
 
@@ -61,7 +62,9 @@ class InvoiceAutoPrinter:
         self._owns_client = client is None
         self._client = client or httpx.Client(timeout=5, follow_redirects=False)
         self._poll_seconds = poll_seconds
-        self._pending: queue.SimpleQueue[tuple[str, str]] = queue.SimpleQueue()
+        self._pending: queue.SimpleQueue[tuple[str, str, str, str]] = (
+            queue.SimpleQueue()
+        )
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
@@ -81,7 +84,14 @@ class InvoiceAutoPrinter:
             return
         order, payment = data.get("order_id"), data.get("payment_slug")
         if self._valid_id(order) and self._valid_id(payment):
-            self._pending.put((order, payment))
+            self._pending.put(
+                (
+                    order,
+                    payment,
+                    current_conversation_id(),
+                    str(data.get("presentation_session_id", "")),
+                )
+            )
             self._wake.set()
 
     def start(self) -> None:
@@ -136,12 +146,31 @@ class InvoiceAutoPrinter:
                 "CREATE TABLE IF NOT EXISTS print_jobs ("
                 "merchant TEXT NOT NULL, order_id TEXT NOT NULL, "
                 "payment_id TEXT NOT NULL, invoice_id TEXT, "
+                "conversation_id TEXT NOT NULL DEFAULT '', "
+                "presentation_session_id TEXT NOT NULL DEFAULT '', "
+                "completion_published INTEGER NOT NULL DEFAULT 0, "
                 "state TEXT NOT NULL DEFAULT 'waiting', job_id TEXT, "
                 "title TEXT NOT NULL, pdf_sha256 TEXT, "
                 "error TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, "
                 "created_at REAL NOT NULL, next_check REAL NOT NULL DEFAULT 0, "
                 "PRIMARY KEY (merchant, order_id), UNIQUE (merchant, invoice_id))"
             )
+            for name, definition in (
+                ("conversation_id", "TEXT NOT NULL DEFAULT ''"),
+                ("presentation_session_id", "TEXT NOT NULL DEFAULT ''"),
+                ("completion_published", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                columns = {r[1] for r in db.execute("PRAGMA table_info(print_jobs)")}
+                if name not in columns:
+                    try:
+                        db.execute(
+                            f"ALTER TABLE print_jobs ADD COLUMN {name} {definition}"
+                        )
+                    except sqlite3.OperationalError:
+                        if name not in {
+                            r[1] for r in db.execute("PRAGMA table_info(print_jobs)")
+                        }:
+                            raise
             # Either operation could have reached CUPS before the process died.
             db.execute(
                 "UPDATE print_jobs SET state='needs_review', error='restart_uncertain' "
@@ -156,7 +185,7 @@ class InvoiceAutoPrinter:
         db = self._connect()
         try:
             while not self._pending.empty():
-                order, payment = self._pending.get_nowait()
+                order, payment, conversation, session = self._pending.get_nowait()
                 title = (
                     "openjarvis-invoice-"
                     + hashlib.sha256(f"{self._merchant}/{order}".encode()).hexdigest()[
@@ -165,13 +194,24 @@ class InvoiceAutoPrinter:
                 )
                 db.execute(
                     "INSERT OR IGNORE INTO print_jobs "
-                    "(merchant,order_id,payment_id,title,created_at) "
-                    "VALUES (?,?,?,?,?)",
-                    (self._merchant, order, payment, title, time.time()),
+                    "(merchant,order_id,payment_id,title,created_at,"
+                    "conversation_id,presentation_session_id) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (
+                        self._merchant,
+                        order,
+                        payment,
+                        title,
+                        time.time(),
+                        conversation,
+                        session,
+                    ),
                 )
             rows = db.execute(
                 "SELECT * FROM print_jobs WHERE merchant=? "
-                "AND state IN ('waiting','held') AND next_check<=? "
+                "AND ((state IN ('waiting','held','submitted','processing') "
+                "AND next_check<=?) "
+                "OR (state='completed' AND completion_published=0)) "
                 "ORDER BY created_at DESC",
                 (self._merchant, time.time()),
             ).fetchall()
@@ -180,7 +220,12 @@ class InvoiceAutoPrinter:
             for row in rows:
                 if self._stop.is_set():
                     break
-                self._process(db, row)
+                if row["state"] == "completed":
+                    self._publish_completion(db, row)
+                elif row["state"] in {"submitted", "processing"}:
+                    self._check_completion(db, row)
+                else:
+                    self._process(db, row)
         finally:
             db.close()
 
@@ -189,6 +234,83 @@ class InvoiceAutoPrinter:
             "UPDATE print_jobs SET state=?,error=? WHERE merchant=? AND order_id=?",
             (state, error, self._merchant, row["order_id"]),
         )
+        if state == "submitted":
+            current = db.execute(
+                "SELECT * FROM print_jobs WHERE merchant=? AND order_id=?",
+                (self._merchant, row["order_id"]),
+            ).fetchone()
+            self._emit_status(current, "submitted")
+        elif state == "needs_review":
+            self._emit_status(row, "unknown")
+
+    def _emit_status(self, row, state: str) -> None:
+        self.bus.publish(
+            EventType.PRINT_COMPLETED
+            if state == "completed"
+            else EventType.PRINT_STATUS_CHANGED,
+            {
+                "event": "PRINT_COMPLETED"
+                if state == "completed"
+                else "PRINT_STATUS_CHANGED",
+                "merchant": self._merchant,
+                "order_id": row["order_id"],
+                "invoice_id": row["invoice_id"],
+                "job_id": row["job_id"],
+                "printing_state": state,
+                "conversation_id": row["conversation_id"],
+                "presentation_session_id": row["presentation_session_id"],
+                **(
+                    {"verification": "cups_job_completed_successfully"}
+                    if state == "completed"
+                    else {}
+                ),
+            },
+        )
+
+    def _publish_completion(self, db, row) -> None:
+        # Retry delivery after subscriber failure; runtime dedupes the stable
+        # job event ID. Claiming before publish could silently lose the event.
+        self._emit_status(row, "completed")
+        db.execute(
+            "UPDATE print_jobs SET completion_published=1 "
+            "WHERE merchant=? AND order_id=? AND state='completed'",
+            (self._merchant, row["order_id"]),
+        )
+
+    def _check_completion(self, db, row) -> None:
+        try:
+            observed = self.printer.job_state(row["job_id"], row["title"])
+        except Exception as exc:
+            db.execute(
+                "UPDATE print_jobs SET error=?,next_check=? "
+                "WHERE merchant=? AND order_id=? "
+                "AND state IN ('submitted','processing')",
+                (
+                    type(exc).__name__,
+                    time.time() + max(self._poll_seconds, 2),
+                    self._merchant,
+                    row["order_id"],
+                ),
+            )
+            self._emit_status(row, "unknown")
+            return
+        state = {
+            "completed": "completed",
+            "processing": "processing",
+            "failed": "failed",
+        }.get(observed, "submitted")
+        claimed = db.execute(
+            "UPDATE print_jobs SET state=?,error='',next_check=? "
+            "WHERE merchant=? AND order_id=? "
+            "AND state IN ('submitted','processing')",
+            (state, time.time() + self._poll_seconds, self._merchant, row["order_id"]),
+        ).rowcount
+        if not claimed:
+            return
+        if state == "completed":
+            self._publish_completion(db, row)
+        else:
+            self._emit_status(row, "unknown" if observed == "unknown" else state)
 
     def _process(self, db, row) -> None:
         try:
@@ -367,7 +489,11 @@ class InvoiceAutoPrinter:
         db.row_factory = sqlite3.Row
         try:
             return [
-                dict(row)
+                {
+                    key: row[key]
+                    for key in row.keys()
+                    if key not in {"conversation_id", "presentation_session_id"}
+                }
                 for row in db.execute(
                     "SELECT * FROM print_jobs WHERE merchant=? "
                     "ORDER BY created_at DESC LIMIT 50",

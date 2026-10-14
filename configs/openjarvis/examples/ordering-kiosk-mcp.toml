@@ -45,7 +45,10 @@ intent_normalization = true
 progress_speech = true
 # A round that is only reasoning after this many seconds is retried with
 # reasoning off (engines that can; see agents/orchestrator.py).
-reasoning_deadline_seconds = 8.0
+# 2026-10-13: 8 -> 3. deepseek-flash reasons ~680 chars/s; 4/58 rounds hit 8 s
+# (5,099-5,834 chars), and 14/44 finished rounds reasoned past ~2,100 chars, so
+# about a third of rounds now answer without reasoning after 3 s.
+reasoning_deadline_seconds = 3.0
 # Flipped to true deliberately, with the cost understood. Read the whole note
 # before flipping it back or leaving it.
 #
@@ -158,6 +161,24 @@ custom_vocabulary = [
   "Cinnamon rolls",
 ]
 
+[voice.responder]
+# A fast model speaks one neutral acknowledgement while the Agent's first round
+# reasons and calls tools (OpenAI's chat-supervisor/preamble pattern). Measured
+# 2026-10-13 on synthetic Vietnamese requests, full line: gpt-6-luna p50 2.72 s,
+# p90 3.63 s, 16/16 correct skips (it reasons at the launcher's effort; there is
+# no switch to turn that off). deepseek-flash (thinking off) p50 0.73 s but
+# 15/24 skips; gemini-flash-lite-latest p50 0.99 s, 24/24. Live deepseek-flash
+# 14:01-14:06: p50 0.93 s; live gpt-6-luna 14:20-14:26: p50 2.20 s, 5/14 too
+# late. Chosen: deepseek-flash, the fastest and cheapest (thinking is turned off
+# through the engine's reasoning_off_options). With the prompt that names the
+# customer's request: p50 0.84 s, p90 0.99 s, 22/24 skips, 0/24 register slips.
+# Empty disables it. Applied when each Voice session connects.
+model = "deepseek-flash"
+# What the acknowledgement may say is this business's wording, so it lives in a
+# file like the Agent's prompt. Read at each session; unset uses the generic
+# built-in prompt.
+prompt_file = "configs/openjarvis/prompts/voice-responder.md"
+
 [voice.speaker]
 # Target-speaker gate (docs spec 2026-09-25). Off until a diarizer ships:
 # with no speaker evidence every turn is accepted, exactly as before. An
@@ -210,11 +231,11 @@ servers = '''[{"name": "playwright", "command": "npx", "args": ["-y", "@playwrig
 
 [kiosk]
 approach_threshold_m = 1.0
-approach_entry_debounce = 2.0
+approach_entry_debounce = 5.0
 approach_sustain_seconds = 5.0
 leave_sustain_seconds_active = 10.0
 session_max_seconds = 600.0
 leave_sustain_seconds_prompting = 5.0
 popup_timeout = 30.0
 decline_cooldown_seconds = 10.0
-tts_voice = "Trúc Ly"
+tts_voice = "Mai Anh"

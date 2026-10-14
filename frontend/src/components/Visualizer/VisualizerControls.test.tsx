@@ -31,10 +31,10 @@ describe('VisualizerControls', () => {
       })
     );
 
-    expect(markup).toContain('title="Open panel"');
+    expect(markup).toContain('title="Cài đặt kiosk"');
   });
 
-  it('renders uncollapsed panel with Show Mascot toggle and Pet Size slider', () => {
+  it('renders uncollapsed panel with Nhân vật toggle and Kích thước slider', () => {
     const markup = renderToStaticMarkup(
       React.createElement(VisualizerControls, {
         settings: {
@@ -50,9 +50,9 @@ describe('VisualizerControls', () => {
       })
     );
 
-    expect(markup).toContain('Show Captions');
-    expect(markup).toContain('Show Mascot');
-    expect(markup).toContain('Pet Size');
+    expect(markup).toContain('Phụ đề');
+    expect(markup).toContain('Nhân vật');
+    expect(markup).toContain('Kích thước');
     expect(markup).toContain('2.5x');
     expect(markup).toContain('min="1"');
     expect(markup).toContain('max="10"');
@@ -78,7 +78,7 @@ describe('VisualizerControls', () => {
     expect(markup).toContain('3.4x');
   });
 
-  it('renders all three modular card sections with setting rows matching chat mode template', () => {
+  it('renders four kiosk settings sections', () => {
     const markup = renderToStaticMarkup(
       React.createElement(VisualizerControls, {
         settings: VISUALIZER_DEFAULTS,
@@ -90,21 +90,20 @@ describe('VisualizerControls', () => {
       })
     );
 
-    // Three distinct card sections
-    expect(markup).toContain('Language');
-    expect(markup).toContain('Kiosk Display');
-    expect(markup).toContain('Mascot &amp; Captions');
-    expect(markup).toContain('Chuyển trạng thái');
+    // Four distinct card sections
+    expect(markup).toContain('Ngôn ngữ UI');
+    expect(markup).toContain('Cài đặt kiosk');
+    expect(markup).toContain('Trợ lý');
+    expect(markup).toContain('Phiên khách hàng');
 
     // Setting rows in Language
     expect(markup).not.toContain('Voice status');
-    expect(markup).toContain('Language');
+    expect(markup).toContain('Ngôn ngữ UI');
 
-    // Screen is fixed; only the kiosk background is selectable.
-    expect(markup).toContain('Display mode');
-    expect(markup).toContain('Screen');
+    // Appearance exposes the selectable assistant background.
+    expect(markup).not.toContain('Display mode');
     expect(markup).not.toContain('3D Sphere');
-    expect(markup).toContain('Theme');
+    expect(markup).toContain('Nền');
     expect(markup).not.toContain('>Size<');
     expect(markup).not.toContain('>Gain<');
     expect(markup).not.toContain('>Speed<');
@@ -114,9 +113,9 @@ describe('VisualizerControls', () => {
     }
 
     // Setting rows in Mascot & Captions
-    expect(markup).toContain('Show Captions');
-    expect(markup).toContain('Show Mascot');
-    expect(markup).toContain('Pet Size');
+    expect(markup).toContain('Phụ đề');
+    expect(markup).toContain('Nhân vật');
+    expect(markup).toContain('Kích thước');
   });
 
   it('renders centered popup dialog with [X] close button matching chatgpt modal style', () => {
@@ -134,8 +133,8 @@ describe('VisualizerControls', () => {
     // Centered modal overlay & dialog
     expect(markup).toContain('fixed inset-0');
     expect(markup).toContain('role="dialog"');
-    expect(markup).toContain('title="Close"');
-    expect(markup).toContain('aria-label="Close"');
+    expect(markup).toContain('title="Đóng"');
+    expect(markup).toContain('aria-label="Đóng"');
     expect(markup).not.toContain('Hide');
   });
 });

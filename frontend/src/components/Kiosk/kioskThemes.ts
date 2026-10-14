@@ -12,7 +12,7 @@ export const KIOSK_THEMES = {
   'purple-glow': {
     label: 'Purple Glow',
     tone: 'dark',
-    background: 'radial-gradient(ellipse at 50% 110%, #713cce 0%, #302052 30%, transparent 65%), linear-gradient(145deg, #14121c, #100e18)',
+    background: 'radial-gradient(ellipse 70% 18% at 100% 100%, #fff6df 0%, #f1d4fb 18%, #bb8bfa 42%, rgba(142,85,235,0.3) 64%, transparent 100%), radial-gradient(ellipse 100% 62% at 82% 110%, #925aff 0%, #663bbb 30%, rgba(58,36,92,0.7) 55%, transparent 80%), linear-gradient(135deg, #0b0713 0%, #1e1d24 62%, #16101e 100%)',
   },
   'midnight-blue': {
     label: 'Midnight Blue',

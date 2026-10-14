@@ -1525,7 +1525,8 @@ class TestOrchestratorAgent:
         completions = [
             event for event in events if isinstance(event, AgentRunCompleted)
         ]
-        assert deltas == ["Do not mix this answer.", "Result is 4."]
+        # Prose leaves with its chunks and is not repeated when the round ends.
+        assert deltas == ["Do not mix", " this answer.", "Result is 4."]
         assert len(completions) == 1
         assert completions[0].result.content == "Result is 4."
         assert '{"expression":"2+2"}' not in "".join(deltas)
