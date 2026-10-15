@@ -51,7 +51,12 @@ VOICE_SYSTEM_PROMPT = (
     "Text you write alongside a tool call is spoken immediately, before that "
     "tool runs; never state that tool's outcome in it. In later rounds say "
     "only what is new; what you already said is in the history above. The "
-    "final answer states only confirmed results."
+    "final answer states only confirmed results. "
+    # Speech recognition passes noise and half-words through as text; acting on
+    # them re-ran a checkout on 2026-10-13.
+    "If the user's latest words are unclear, garbled or not a request you can "
+    "understand, ask them to say it again: do not call a tool or repeat an "
+    "earlier action for them."
 )
 
 

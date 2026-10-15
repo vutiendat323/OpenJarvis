@@ -240,6 +240,24 @@ class IntentState:
             self.continuing = result.metadata.get("continue_agent") is True
         result.metadata.update(self.metadata())
 
+    def _accepts_state(self, declared: Any, state: Any) -> bool:
+        valid_states = {"NEEDS_INPUT", "FAILED"}
+        if declared == "NONE":
+            valid_states.add("ANSWER")
+        return state in valid_states
+
+    def accepts_final(self, declared: Any, state: Any) -> bool:
+        """Whether a final answer with this intent and state passes ``finish``.
+
+        ``_intent`` and ``state`` are written before ``message``, so a caller
+        can ask this before any of the message exists. It has no side effects.
+        """
+        if not isinstance(declared, str) or declared not in ["NONE", *self.targets]:
+            return False
+        if self.declared is not None and declared != self.declared:
+            return False
+        return self._accepts_state(declared, state)
+
     def finish(self, content: str) -> str | None:
         try:
             value = json.loads(content)
@@ -250,12 +268,9 @@ class IntentState:
         if self.reached and not {"state", "message"}.issubset(value):
             return content
         declared = value.get("_intent", self.declared)
-        valid_states = {"NEEDS_INPUT", "FAILED"}
-        if declared == "NONE":
-            valid_states.add("ANSWER")
         message = value.get("message")
         if (
-            value.get("state") not in valid_states
+            not self._accepts_state(declared, value.get("state"))
             or not isinstance(message, str)
             or not message.strip()
         ):

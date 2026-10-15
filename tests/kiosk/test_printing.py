@@ -58,6 +58,7 @@ class Printer:
         self.fail_hold = False
         self.fail_release = False
         self.fail_verify = False
+        self.cups_state = "pending"
 
     def prepare(self, pdf, directory):
         self.documents.append(pdf.read_bytes())
@@ -73,6 +74,11 @@ class Printer:
         self.released.append(job_id)
         if self.fail_release:
             raise TimeoutError("release acknowledgment lost")
+
+    def job_state(self, job_id, title):
+        if isinstance(self.cups_state, Exception):
+            raise self.cups_state
+        return self.cups_state
 
     def verify_held(self, job_id, title):
         if self.fail_verify:
@@ -508,3 +514,97 @@ def test_two_successful_workers_claim_one_original_print(harness):
     assert len(printer.held) + len(other_printer.held) == 1
     assert len(printer.released) + len(other_printer.released) == 1
     assert worker.jobs()[0]["state"] == "submitted"
+
+
+def test_verified_completion_emits_once_without_resubmission(harness):
+    from openjarvis.core.conversation import conversation_scope
+
+    worker, _, printer, bus, *_ = harness
+    events = []
+    bus.subscribe(EventType.PRINT_COMPLETED, events.append)
+    with conversation_scope("original-customer"):
+        publish(bus, presentation_session_id="original-display")
+    worker.process_once()
+    assert worker.jobs()[0]["state"] == "submitted"
+    assert events == []
+    printer.cups_state = "processing"
+    worker.process_once()
+    assert worker.jobs()[0]["state"] == "processing"
+    assert events == []
+    printer.cups_state = "completed"
+    worker.process_once()
+    worker.process_once()
+    assert worker.jobs()[0]["state"] == "completed"
+    assert len(events) == 1
+    assert events[0].data["conversation_id"] == "original-customer"
+    assert events[0].data["presentation_session_id"] == "original-display"
+    assert events[0].data["job_id"] == "GP-C180I-17"
+    assert len(printer.held) == len(printer.released) == 1
+
+
+@pytest.mark.parametrize(
+    "state", ["pending", "unknown", "failed", TimeoutError("CUPS unavailable")]
+)
+def test_unverified_completion_never_emits_success(harness, state):
+    worker, _, printer, bus, *_ = harness
+    events = []
+    bus.subscribe(EventType.PRINT_COMPLETED, events.append)
+    publish(bus)
+    worker.process_once()
+    printer.cups_state = state
+    worker.process_once()
+    assert events == []
+    assert worker.jobs()[0]["state"] != "completed"
+    assert len(printer.held) == len(printer.released) == 1
+
+
+def test_submitted_job_completion_resumes_after_restart(harness):
+    from openjarvis.core.conversation import conversation_scope
+    from openjarvis.kiosk.printing import InvoiceAutoPrinter
+
+    worker, _, printer, bus, checkout, client = harness
+    events = []
+    bus.subscribe(EventType.PRINT_COMPLETED, events.append)
+    with conversation_scope("before-restart"):
+        publish(bus, presentation_session_id="before-display")
+    worker.process_once()
+    worker.stop()
+    restarted = InvoiceAutoPrinter(
+        checkout, bus, worker.db_path, printer=printer, client=client, poll_seconds=0
+    )
+    try:
+        printer.cups_state = "completed"
+        restarted.process_once()
+        restarted.process_once()
+        assert len(events) == 1
+        assert events[0].data["conversation_id"] == "before-restart"
+        assert restarted.jobs()[0]["state"] == "completed"
+        assert "conversation_id" not in restarted.jobs()[0]
+        assert "presentation_session_id" not in restarted.jobs()[0]
+        assert len(printer.held) == len(printer.released) == 1
+    finally:
+        restarted.stop()
+
+
+def test_completion_delivery_retries_without_reprinting(harness):
+    worker, _, printer, bus, *_ = harness
+    deliveries = []
+
+    def receive(event):
+        deliveries.append(event)
+        if len(deliveries) == 1:
+            raise RuntimeError("temporary subscriber failure")
+
+    bus.subscribe(EventType.PRINT_COMPLETED, receive)
+    publish(bus)
+    worker.process_once()
+    printer.cups_state = "completed"
+    with pytest.raises(RuntimeError, match="subscriber failure"):
+        worker.process_once()
+    assert worker.jobs()[0]["state"] == "completed"
+    assert worker.jobs()[0]["completion_published"] == 0
+    worker.process_once()
+    worker.process_once()
+    assert len(deliveries) == 2
+    assert worker.jobs()[0]["completion_published"] == 1
+    assert len(printer.held) == len(printer.released) == 1

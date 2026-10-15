@@ -31,6 +31,7 @@ class KioskRuntime:
     last_decline_at: float | None
     warning_sent: bool
     deps: KioskDependencies
+    session_track_id: int | None = None
 
 
 async def kiosk_main(
@@ -102,7 +103,9 @@ async def kiosk_main(
                     result = task.result()
                     if isinstance(result, dict) and "event" in result:
                         # It's a vision event
-                        event = _dict_to_vision_event(result)
+                        event = _dict_to_vision_event(
+                            result, session_track_id=runtime.session_track_id
+                        )
                         runtime.history.push(event)
                         _set_presence_from_event(event.kind)
                     elif result in ("accept", "decline"):
@@ -134,6 +137,10 @@ async def kiosk_main(
             _set_state(new_state)
             if new_state == "active":
                 runtime.session_start = now
+                last = runtime.history.last_event()
+                runtime.session_track_id = (
+                    last.track_id if last is not None and last.track_id >= 0 else None
+                )
                 runtime.warning_sent = False
                 runtime.prompting_started_at = None
                 runtime.last_decline_at = None
@@ -141,6 +148,9 @@ async def kiosk_main(
                 runtime.prompting_started_at = now
             elif new_state == "cleanup":
                 runtime.session_start = None
+                runtime.session_track_id = None
+                # A waiting customer's observations belong to a new session.
+                runtime.history = EventHistory(max_age_seconds=PRESENCE_HISTORY_SECONDS)
                 runtime.warning_sent = False
             elif new_state == "idle":
                 runtime.session_start = None
@@ -216,9 +226,31 @@ async def push_user_response(response: UserResponse) -> None:
         await _current_response_queue.put(response)
 
 
-def _dict_to_vision_event(d: dict):
-    """Convert a raw dict from the vision WS into a VisionEvent."""
+def _dict_to_vision_event(d: dict, *, session_track_id: int | None = None):
+    """Use the session owner's presence while active, the nearest face otherwise."""
     from openjarvis.kiosk.events import VisionEvent
+
+    if session_track_id is not None:
+        tracks = d.get("tracks")
+        if tracks is None:
+            # Older Vision servers only report the nearest face. A different
+            # person's face or unassigned body cannot keep this session alive.
+            tracks = [{"track_id": d.get("track_id"), "distance_m": d.get("nearest_m")}]
+        owner = next((p for p in tracks if p["track_id"] == session_track_id), None)
+        distance = (owner.get("distance_m") or 0.0) if owner else 0.0
+        body = (owner.get("body_m") or -1.0) if owner else -1.0
+        return VisionEvent(
+            kind="no_person"
+            if owner is None
+            else ("person_near" if distance > 0 else "person_unknown"),
+            ts=d.get("ts", time.time()),
+            nearest_m=distance,
+            track_id=session_track_id if owner is not None else -1,
+            # A measured face decides whether its ID has crossed the boundary.
+            # Only an unknown face distance may use that same track's body.
+            body_m=-1.0 if distance > 0 else body,
+            facing=distance > 0,
+        )
 
     raw_event = d.get("event", "no_person")
     if raw_event == "person_present":

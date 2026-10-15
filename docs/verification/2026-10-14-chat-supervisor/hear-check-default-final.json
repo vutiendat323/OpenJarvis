@@ -1,0 +1,74 @@
+[
+  {
+    "utterance": "Alo, cho mình một cà phê sữa",
+    "expected": "delegate",
+    "route": "delegate",
+    "text": "Mình đang xem yêu cầu gọi món của bạn ngay đây ạ.",
+    "decision": 0.9276742890069727,
+    "argument_chars": 66,
+    "language_ok": true,
+    "agreement": false,
+    "meta": false,
+    "details": []
+  },
+  {
+    "utterance": "Can you hear me? One latte please.",
+    "expected": "delegate",
+    "route": "delegate",
+    "text": "I can hear you. Let me check on that latte for you.",
+    "decision": 0.8111813090072246,
+    "argument_chars": 100,
+    "language_ok": true,
+    "agreement": false,
+    "meta": false,
+    "details": []
+  },
+  {
+    "utterance": "Alo alo",
+    "expected": "answer",
+    "route": "answer",
+    "text": "Tôi nghe rõ bạn ạ.",
+    "decision": 0.8743979629944079,
+    "argument_chars": 0,
+    "language_ok": true,
+    "agreement": false,
+    "meta": false,
+    "details": []
+  },
+  {
+    "utterance": "Alo",
+    "expected": "answer",
+    "route": "answer",
+    "text": "Tôi nghe rõ ạ.",
+    "decision": 0.722388537004008,
+    "argument_chars": 0,
+    "language_ok": true,
+    "agreement": false,
+    "meta": false,
+    "details": []
+  },
+  {
+    "utterance": "Nghe không?",
+    "expected": "answer",
+    "route": "answer",
+    "text": "Tôi nghe rõ ạ.",
+    "decision": 0.8072328129928792,
+    "argument_chars": 0,
+    "language_ok": true,
+    "agreement": false,
+    "meta": false,
+    "details": []
+  },
+  {
+    "utterance": "Can you hear me?",
+    "expected": "answer",
+    "route": "answer",
+    "text": "I can hear you fine.",
+    "decision": 0.7823720739979763,
+    "argument_chars": 0,
+    "language_ok": true,
+    "agreement": false,
+    "meta": false,
+    "details": []
+  }
+]

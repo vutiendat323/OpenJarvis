@@ -39,18 +39,17 @@ describe('Kiosk transition settings', () => {
     );
     await view.findAllByRole('textbox');
     expect(view.container.querySelector('[role="dialog"]')).toBeNull();
-    expect(view.getByRole('dialog', { name: 'Kiosk Display' })).toBeTruthy();
-    fireEvent.click(view.getByRole('button', { name: 'Close' }));
+    expect(view.getByRole('dialog', { name: 'Cài đặt kiosk' })).toBeTruthy();
+    fireEvent.click(view.getByRole('button', { name: 'Đóng' }));
     expect(view.queryByRole('dialog')).toBeNull();
   });
   it('loads actual backend values and exposes only transition boundaries', async () => {
     const view = render(<KioskTransitionSettings uiLanguage="vi" />);
-    const distance = await view.findByRole('textbox', { name: /Khoảng cách tiếp cận/ });
+    const distance = await view.findByRole('textbox', { name: /Khoảng cách/ });
     expect(distance.getAttribute('value')).toBe('1');
     expect(view.getAllByRole('textbox')).toHaveLength(5);
-    expect(view.getByRole('textbox', { name: /Thời gian đứng trong vùng để bắt đầu/ }).getAttribute('value')).toBe('5');
-    expect(view.getByText('approaching → active / idle')).toBeTruthy();
-    expect(view.getByText(/Cleanup → idle tự động/)).toBeTruthy();
+    expect(view.getByRole('textbox', { name: /Chờ bắt đầu/ }).getAttribute('value')).toBe('5');
+    expect(view.getByText('Chờ trong vùng để bắt đầu')).toBeTruthy();
     expect(view.queryByRole('textbox', { name: /chờ xác nhận|sau từ chối|vắng khi chờ xác nhận/i })).toBeNull();
     expect(view.queryByText(/cảnh báo/i)).toBeNull();
     expect(apiFetch).toHaveBeenCalledWith('/api/kiosk/settings');
@@ -58,11 +57,11 @@ describe('Kiosk transition settings', () => {
 
   it('saves edited values to the backend and displays the confirmed result', async () => {
     const view = render(<KioskTransitionSettings uiLanguage="vi" />);
-    const duration = await view.findByRole('textbox', { name: /Thời lượng phiên tối đa/ });
+    const duration = await view.findByRole('textbox', { name: /Thời lượng tối đa/ });
     fireEvent.change(duration, { target: { value: '180' } });
     const values = { ...defaults, session_max_seconds: 180 };
     vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify(values)));
-    fireEvent.click(view.getByRole('button', { name: 'Lưu chuyển trạng thái' }));
+    fireEvent.click(view.getByRole('button', { name: 'Lưu' }));
     await view.findByText('Đã lưu và áp dụng.');
     expect(apiFetch).toHaveBeenLastCalledWith('/api/kiosk/settings', {
       method: 'PUT',
@@ -75,23 +74,23 @@ describe('Kiosk transition settings', () => {
 
   it('rejects debounce greater than the approach hold without sending a save', async () => {
     const view = render(<KioskTransitionSettings uiLanguage="vi" />);
-    const debounce = await view.findByRole('textbox', { name: /Thời gian xác nhận tiếp cận/ });
+    const debounce = await view.findByRole('textbox', { name: /Xác nhận khách/ });
     fireEvent.change(debounce, { target: { value: '6' } });
-    fireEvent.click(view.getByRole('button', { name: 'Lưu chuyển trạng thái' }));
+    fireEvent.click(view.getByRole('button', { name: 'Lưu' }));
     expect(view.getByRole('alert').textContent).toContain('nhỏ hơn hoặc bằng');
     expect(apiFetch).toHaveBeenCalledTimes(1);
   });
 
   it.each(['0.7', '0,7'])('allows direct decimal entry %s and saves a number', async (entry) => {
     const view = render(<KioskTransitionSettings uiLanguage="vi" />);
-    const debounce = await view.findByRole('textbox', { name: /Thời gian xác nhận tiếp cận/ });
+    const debounce = await view.findByRole('textbox', { name: /Xác nhận khách/ });
     expect(view.queryAllByRole('spinbutton')).toHaveLength(0);
     fireEvent.change(debounce, { target: { value: '0.' } });
     expect(debounce.getAttribute('value')).toBe('0.');
     fireEvent.change(debounce, { target: { value: entry } });
     const values = { ...defaults, approach_entry_debounce: 0.7 };
     vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify(values)));
-    fireEvent.click(view.getByRole('button', { name: 'Lưu chuyển trạng thái' }));
+    fireEvent.click(view.getByRole('button', { name: 'Lưu' }));
     await view.findByText('Đã lưu và áp dụng.');
     expect(apiFetch).toHaveBeenLastCalledWith('/api/kiosk/settings', {
       method: 'PUT',
@@ -103,7 +102,7 @@ describe('Kiosk transition settings', () => {
 
   it.each(['', 'abc', '9999'])('rejects invalid direct entry %s without saving', async (entry) => {
     const view = render(<KioskTransitionSettings uiLanguage="vi" />);
-    const duration = await view.findByRole('textbox', { name: /Thời lượng phiên tối đa/ });
+    const duration = await view.findByRole('textbox', { name: /Thời lượng tối đa/ });
     fireEvent.change(duration, { target: { value: entry } });
     fireEvent.submit(duration.closest('form')!);
     expect(view.getByRole('alert').textContent).toContain('khoảng cho phép');
@@ -114,7 +113,7 @@ describe('Kiosk transition settings', () => {
     const view = render(<KioskTransitionSettings uiLanguage="vi" />);
     await view.findAllByRole('textbox');
     vi.mocked(apiFetch).mockResolvedValueOnce(new Response('{}', { status: 409 }));
-    fireEvent.click(view.getByRole('button', { name: 'Lưu chuyển trạng thái' }));
+    fireEvent.click(view.getByRole('button', { name: 'Lưu' }));
     await waitFor(() => expect(view.getByRole('alert').textContent).toContain('kết thúc phiên'));
     expect(view.queryByText('Đã lưu và áp dụng.')).toBeNull();
   });

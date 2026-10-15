@@ -1,0 +1,46 @@
+[skill]
+name = "trendcoffee-order-payment"
+description = "Read one existing order from runtime_context.created_orders. To pay an earlier order, pass its exact order_id; this reads its current state and shows its existing verified QR or paid bill without creating an order or initiating payment. Use _intent=NONE. Use display=false for status without selecting another order's screen; a currently displayed QR is removed if no longer payable. Never use checkout to pay an existing order."
+input_schema_json = '''{"type":"object","properties":{"order_id":{"type":"string","minLength":1},"display":{"type":"boolean"}},"required":["order_id"],"additionalProperties":false}'''
+
+[skill.metadata.openjarvis]
+existing_order = true
+read_only = true
+
+[skill.metadata.openjarvis.input_defaults]
+display = true
+
+[[skill.steps]]
+tool_name = "http_request"
+output_key = "fresh_order"
+arguments_template = '''{"url":"https://trendcoffee.net/api/latest/orders/{selected_order.order_id|urlencode}","method":"GET","headers":{"Accept":"application/json"},"timeout":5}'''
+assertions_json = '''[{
+  "actual":"{fresh_order.result.slug}","equals":"{selected_order.order_id}"
+},{
+  "actual":{"$coalesce":["{fresh_order.result.payment.amount}","{fresh_order.result.subtotal}"]},
+  "equals":"{fresh_order.result.subtotal}"
+}]'''
+
+[[skill.steps]]
+tool_name = "display_existing_order"
+arguments_template = '''{
+  "order_id":"{fresh_order.result.slug}",
+  "read_token":"{selected_order.read_token}",
+  "status":"{fresh_order.result.status}",
+  "payment_status":{"$coalesce":["{fresh_order.result.payment.statusCode}",""]},
+  "payment_slug":{"$coalesce":["{fresh_order.result.payment.slug}",""]},
+  "qr_code":{"$coalesce":["{fresh_order.result.payment.qrCode}",""]},
+  "total":"{fresh_order.result.subtotal}",
+  "order_type":"{fresh_order.result.type}",
+  "branch":"ba9355f797",
+  "table_name":{"$coalesce":["{fresh_order.result.table.name}",""]},
+  "created_at":{"$coalesce":["{fresh_order.result.createdAt}",""]},
+  "payment_window_seconds":900,
+  "display":"{display}",
+  "lines":{"$map":"{fresh_order.result.orderItems}","as":"line","value":{
+    "line_id":"{line.variant.slug}","name":"{line.variant.product.name}",
+    "size":"{line.variant.size.name}","note":"{line.note}",
+    "quantity":"{line.quantity}","unit_price":"{line.variant.price}",
+    "line_total":{"$multiply":["{line.variant.price}","{line.quantity}"]}
+  }}
+}'''

@@ -384,7 +384,7 @@ def test_the_claim_interface_does_not_accept_headers():
     parameters = inspect.signature(evidence.claim_mutation).parameters
 
     assert "headers" not in parameters
-    assert set(parameters) == {"method", "url", "body"}
+    assert set(parameters) == {"method", "url", "body", "scope"}
 
 
 def test_a_claim_retains_no_raw_body():

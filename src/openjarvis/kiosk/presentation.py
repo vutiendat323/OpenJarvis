@@ -8,13 +8,14 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from threading import Lock, RLock
 from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 from openjarvis.agents.action_ledger import ACTION_LEDGER
-from openjarvis.core.conversation import current_conversation_id
+from openjarvis.core.conversation import conversation_scope, current_conversation_id
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolResult
 
@@ -61,6 +62,20 @@ def presentation_generation(generation: str | None) -> Iterator[None]:
         _PRESENTATION_GENERATION.reset(token)
 
 
+_ORDER_FIELDS = (
+    "order_id",
+    "payment_slug",
+    "status",
+    "payment_status",
+    "total",
+    "order_type",
+    "branch",
+    "table_name",
+    "lines",
+    "created_at",
+)
+
+
 @dataclass(slots=True)
 class PresentationSession:
     """State isolated to one customer-display browser page."""
@@ -78,6 +93,13 @@ class PresentationSession:
     # The payment receipt on screen until the merchant reports it paid.
     payment: dict[str, Any] | None = None
     payment_conversation_id: str = ""
+    # CART retains its last draft/invoice while the customer browses the menu.
+    cart_snapshot: dict[str, Any] | None = None
+    cart_conversation_id: str = ""
+    # QR-free references survive navigation and later orders, owned by Voice.
+    orders: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Retain verified print status for this session's receipts across navigation.
+    printing_states: dict[str, str | None] = field(default_factory=dict)
     # Menu rows the customer found by typing on the display, in screen order.
     screen_search: list[dict[str, Any]] = field(default_factory=list)
 
@@ -203,6 +225,137 @@ class PresentationSessionManager:
                 return []
             return [dict(row) for row in self._session.screen_search]
 
+    def shown_payment(self) -> dict[str, Any] | None:
+        """The order this conversation's customer is asked to pay, as shown.
+
+        Only for the conversation that put the payment QR on screen; the QR
+        value itself is left out.
+        """
+        owner = current_conversation_id()
+        with self._lock:
+            if (
+                not owner
+                or self._session is None
+                or self._session.payment is None
+                or self._session.payment_conversation_id != owner
+            ):
+                return None
+            payment = self._session.payment
+            return {
+                key: deepcopy(payment[key])
+                for key in ("order_id", "status", "total", "order_type", "lines")
+                if key in payment
+            }
+
+    def restore_cart_receipt(self) -> ToolResult | None:
+        """Show CART's retained invoice for its owner, without checkout or edits."""
+        with self._lock:
+            session = self._session
+            if (
+                session is None
+                or not current_conversation_id()
+                or session.cart_conversation_id != current_conversation_id()
+                or session.cart_snapshot is None
+                or session.cart_snapshot.get("view") not in {"bill", "payment_qr"}
+            ):
+                return None
+            receipt = deepcopy(session.cart_snapshot)
+            result = self.publish(receipt)
+            if result.success:
+                result.content = json.dumps(
+                    {
+                        "shown": receipt["view"],
+                        "order": {
+                            key: receipt[key] for key in _ORDER_FIELDS if key in receipt
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            return result
+
+    def remember_cart(self, cart: dict[str, Any]) -> None:
+        """Retain a touch draft without publishing or selecting a screen."""
+        with self._lock:
+            generation = _PRESENTATION_GENERATION.get()
+            if (
+                self._session is not None
+                and current_conversation_id()
+                and (generation is None or generation == self._active_generation)
+            ):
+                self._session.cart_snapshot = {"view": "cart", **deepcopy(cart)}
+                self._session.cart_conversation_id = current_conversation_id()
+
+    def known_orders(self) -> list[dict[str, Any]]:
+        """Created receipts belonging to the current Voice conversation."""
+        owner = current_conversation_id()
+        with self._lock:
+            if not owner or self._session is None:
+                return []
+            return [
+                {key: deepcopy(row[key]) for key in _ORDER_FIELDS if key in row}
+                for row in self._session.orders.values()
+                if row.get("_owner") == owner
+            ]
+
+    def update_order(self, order_id: str, data: dict[str, Any]) -> bool:
+        """Refresh an owned reference without changing the selected screen."""
+        owner = current_conversation_id()
+        with self._lock:
+            if not owner or self._session is None:
+                return False
+            generation = _PRESENTATION_GENERATION.get()
+            if generation is not None and generation != self._active_generation:
+                return False
+            row = self._session.orders.get(order_id)
+            if row is None or row.get("_owner") != owner:
+                return False
+            row.update(
+                {key: deepcopy(data[key]) for key in _ORDER_FIELDS if key in data}
+            )
+            return True
+
+    def begin_order_read(self, order_id: str) -> dict[str, Any] | None:
+        """Reserve the latest read of an owned order before its network request."""
+        with self._lock:
+            selected = next(
+                (row for row in self.known_orders() if row["order_id"] == order_id),
+                None,
+            )
+            if selected is None:
+                return None
+            token = uuid4().hex
+            self._session.orders[order_id]["_read_token"] = token
+            return {**selected, "read_token": token}
+
+    @contextmanager
+    def order_read_scope(self, order_id: str, token: str) -> Iterator[bool]:
+        """Apply the latest read atomically with its corresponding display update."""
+        with self._lock:
+            row = self._session.orders.get(order_id) if self._session else None
+            generation = _PRESENTATION_GENERATION.get()
+            yield bool(
+                token
+                and row
+                and row.get("_owner") == current_conversation_id()
+                and row.get("_read_token") == token
+                and (generation is None or generation == self._active_generation)
+            )
+
+    def invalidate_order_qr(self, order_id: str, receipt: dict[str, Any]) -> None:
+        """Remove an invalidated QR without selecting a different order's screen."""
+        with self._lock:
+            session = self._session
+            if not session or not session.payment:
+                return
+            if session.payment.get("order_id") != order_id:
+                return
+            if session.last_payload.get("view") == "payment_qr" and (
+                session.last_payload.get("order_id") == order_id
+            ):
+                self.publish({"view": "bill", **receipt})
+            else:
+                self.publish({"view": "bill", **receipt, "navigate": False})
+
     def table(self, session_id: str, slug: str) -> dict[str, str] | None:
         """Return one table from this session's last live read."""
         with self._lock:
@@ -239,17 +392,26 @@ class PresentationSessionManager:
             # A concurrent poll may already have shown this bill.
             if self._session is None or self._session.payment is not payment:
                 return "none"
-            shown = self.publish(
-                {
-                    "view": "bill",
-                    "order_id": payment["order_id"],
-                    "status": "paid",
-                    "order_type": payment.get("order_type", ""),
-                    "branch": payment.get("branch", ""),
-                    "lines": payment.get("lines", []),
-                    "total": payment.get("total", 0),
-                }
-            )
+            # Browser polling has no ambient Voice owner; retain the owner
+            # captured when this QR was shown, including read invalidation.
+            with conversation_scope(payment_conversation_id):
+                shown = self.publish(
+                    {
+                        "view": "bill",
+                        "navigate": False,
+                        "order_id": payment["order_id"],
+                        "status": "paid",
+                        **(
+                            {"printing_state": payment["printing_state"]}
+                            if "printing_state" in payment
+                            else {}
+                        ),
+                        "order_type": payment.get("order_type", ""),
+                        "branch": payment.get("branch", ""),
+                        "lines": payment.get("lines", []),
+                        "total": payment.get("total", 0),
+                    }
+                )
             if (
                 shown.success
                 and payment_conversation_id
@@ -405,9 +567,61 @@ class PresentationSessionManager:
                 check_agent_cancelled()
             normalized = deepcopy(payload)
             normalized["presentation_session_id"] = self._session.session_id
+            if normalized.get("view") == "payment_qr":
+                # A QR without merchant time still gets one fixed deadline;
+                # browsing/reopening must never restart its payment window.
+                try:
+                    created = datetime.fromisoformat(normalized.get("created_at", ""))
+                except (TypeError, ValueError):
+                    try:
+                        created = datetime.strptime(
+                            str(normalized.get("created_at", "")).split(" (")[0],
+                            "%a %b %d %Y %H:%M:%S GMT%z",
+                        )
+                    except ValueError:
+                        created = None
+                if created is None or created.tzinfo is None:
+                    previous = self._session.orders.get(normalized.get("order_id"), {})
+                    normalized["created_at"] = (
+                        previous.get("created_at")
+                        if previous.get("_owner") == current_conversation_id()
+                        else None
+                    ) or datetime.now(timezone.utc).isoformat()
+            if normalized.get("view") in {"bill", "payment_qr"}:
+                order_id = normalized.get("order_id")
+                if isinstance(order_id, str) and order_id:
+                    owner = current_conversation_id()
+                    if owner:
+                        row = self._session.orders.setdefault(
+                            order_id, {"_owner": owner}
+                        )
+                        if row.get("_owner") == owner:
+                            # A newly displayed receipt (including paid polling)
+                            # supersedes in-flight reads of the previous state.
+                            row.pop("_read_token", None)
+                            row.update(
+                                {
+                                    key: deepcopy(normalized[key])
+                                    for key in _ORDER_FIELDS
+                                    if key in normalized
+                                }
+                            )
+                        while len(self._session.orders) > 20:
+                            self._session.orders.pop(next(iter(self._session.orders)))
+                    state = self._session.printing_states.setdefault(order_id, None)
+                    if state is not None:
+                        normalized["printing_state"] = state
             if normalized.get("navigate") is not False:
                 self._session.last_payload = normalized
-            elif self._session.last_payload.get("view") == "cart":
+            elif (
+                normalized.get("view") == "cart"
+                and self._session.last_payload.get("view") == "cart"
+            ) or (
+                normalized.get("view") == "bill"
+                and self._session.last_payload.get("view") in {"bill", "payment_qr"}
+                and self._session.last_payload.get("order_id")
+                == normalized.get("order_id")
+            ):
                 # A reconnect replays the screen: keep the open receipt current
                 # without letting a background update choose the screen.
                 self._session.last_payload = {
@@ -425,9 +639,72 @@ class PresentationSessionManager:
             elif normalized.get("view") == "bill":
                 self._session.payment = None
                 self._session.payment_conversation_id = ""
+            if normalized.get("view") in {"cart", "bill", "payment_qr"} and (
+                normalized.get("navigate") is not False
+                or normalized.get("view") == "cart"
+                or (
+                    self._session.cart_snapshot is not None
+                    and self._session.cart_snapshot.get("order_id")
+                    == normalized.get("order_id")
+                )
+            ):
+                self._session.cart_snapshot = {
+                    key: deepcopy(value)
+                    for key, value in normalized.items()
+                    if key != "navigate"
+                }
+                self._session.cart_conversation_id = current_conversation_id()
+            elif normalized.get("view") == "none":
+                self._session.cart_snapshot = None
+                self._session.cart_conversation_id = ""
             self._bus.publish(EventType.DISPLAY_UPDATE, normalized)
             return ToolResult(
                 tool_name="presentation", content="presentation_published"
+            )
+
+    def update_print_status(self, data: dict[str, Any]) -> None:
+        """Patch only the owning order's status, without navigation or payment edits."""
+        state = data.get("printing_state")
+        if state not in {"submitted", "processing", "completed", "failed", "unknown"}:
+            return
+        with self._lock:
+            session = self._session
+            if (
+                session is None
+                or session.session_id != data.get("presentation_session_id")
+                or data.get("order_id") not in session.printing_states
+            ):
+                return
+            if (
+                session.printing_states[data["order_id"]] == "completed"
+                and state != "completed"
+            ):
+                return
+            session.printing_states[data["order_id"]] = state
+            if (
+                session.payment is not None
+                and session.payment.get("order_id") == data["order_id"]
+            ):
+                session.payment["printing_state"] = state
+            changed = False
+            for receipt in (session.last_payload, session.cart_snapshot):
+                if (
+                    receipt is not None
+                    and receipt.get("view") in {"bill", "payment_qr"}
+                    and receipt.get("order_id") == data["order_id"]
+                ):
+                    receipt["printing_state"] = state
+                    changed = True
+            if not changed:
+                return
+            self._bus.publish(
+                EventType.DISPLAY_UPDATE,
+                {
+                    "view": "print_status",
+                    "order_id": data["order_id"],
+                    "printing_state": state,
+                    "presentation_session_id": session.session_id,
+                },
             )
 
     def activate(self, generation: str) -> bool:
@@ -463,6 +740,10 @@ class PresentationSessionManager:
             self._session.tables = {}
             self._session.payment = None
             self._session.payment_conversation_id = ""
+            self._session.cart_snapshot = None
+            self._session.cart_conversation_id = ""
+            self._session.printing_states.clear()
+            self._session.orders.clear()
             self._session.screen_search = []
             self._session.last_payload = {
                 "view": "none",
@@ -476,8 +757,15 @@ class PresentationSessionManager:
         with self._lock:
             if self._session is None or self._session.session_id != session_id:
                 return None
-            payload = deepcopy(self._session.last_payload)
+            last = self._session.last_payload
+            # Touch MENU is browser-local. A later silent add replaces CART,
+            # even if the server's last foreground event was an older invoice.
+            if last.get("view") in {"cart", "bill", "payment_qr"}:
+                last = self._session.cart_snapshot or last
+            payload = deepcopy(last)
             payload["presentation_session_id"] = self._session.session_id
+            if payload.get("view") == "menu":
+                payload["cart_snapshot"] = deepcopy(self._session.cart_snapshot)
             return payload
 
     def mark_display_connected(self, session_id: str) -> bool:

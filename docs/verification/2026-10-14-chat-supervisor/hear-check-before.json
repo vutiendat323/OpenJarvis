@@ -1,0 +1,38 @@
+[
+  {
+    "utterance": "Alo alo",
+    "expected": "answer",
+    "route": "answer",
+    "text": "Mình nghe rõ bạn, bạn muốn dùng gì hôm nay ạ?",
+    "decision": 1.0729959849995794,
+    "argument_chars": 0,
+    "language_ok": true,
+    "agreement": false,
+    "meta": false,
+    "details": []
+  },
+  {
+    "utterance": "Alo alo",
+    "expected": "answer",
+    "route": "delegate",
+    "text": "Mình đang kiểm tra bạn vừa nói gì nhé.",
+    "decision": 1.0170932400069432,
+    "argument_chars": 63,
+    "language_ok": true,
+    "agreement": false,
+    "meta": false,
+    "details": []
+  },
+  {
+    "utterance": "Alo alo",
+    "expected": "answer",
+    "route": "answer",
+    "text": "Mình nghe rõ bạn, bạn muốn dùng gì hôm nay ạ?",
+    "decision": 0.6783962110057473,
+    "argument_chars": 0,
+    "language_ok": true,
+    "agreement": false,
+    "meta": false,
+    "details": []
+  }
+]

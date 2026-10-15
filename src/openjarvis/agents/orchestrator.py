@@ -20,11 +20,12 @@ import json
 import logging
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
 from typing import Any, List, Optional
 
 from openjarvis.agents._stubs import (
+    PREAMBLE_SPOKEN,
     AgentContext,
     AgentResult,
     AgentRunCompleted,
@@ -142,6 +143,12 @@ def _progress_clause(tool_calls: list[ToolCall]) -> str:
     return ""
 
 
+def _preamble_spoken(context: AgentContext | None) -> bool:
+    """Whether the voice layer already spoke this turn's preamble."""
+    spoken = context.metadata.get(PREAMBLE_SPOKEN) if context is not None else None
+    return spoken is not None and spoken.is_set()
+
+
 def _without_progress(call: ToolCall) -> ToolCall:
     try:
         arguments = json.loads(call.arguments or "{}")
@@ -243,6 +250,18 @@ class OrchestratorAgent(ToolUsingAgent):
         conversation_id = current_conversation_id()
         if conversation_id:
             ACTION_LEDGER.mark_run_completed(conversation_id, current_turn_nonce())
+
+    def streams_tool_starts(self, model: str | None = None) -> bool:
+        """Whether ``run_stream`` reports each tool before running it.
+
+        The structured mode and engines without a semantic reasoning stream use
+        the compatibility path, which runs the whole turn, tools included,
+        before it yields anything (see ``_run_stream_in_turn``).
+        """
+        if self._mode == "structured":
+            return False
+        supports = getattr(self._engine, "supports_semantic_reasoning_stream", None)
+        return callable(supports) and bool(supports(model or self._model))
 
     def _is_read_only_tool(self, name: str) -> bool:
         tool = self._executor.get_tool(name)
@@ -352,6 +371,12 @@ class OrchestratorAgent(ToolUsingAgent):
         reasoning_off: dict[str, Any] = {}
         # Only worth arming when the engine can actually answer without it.
         off_options_fn = getattr(self._engine, "reasoning_off_options", None)
+        if (
+            context is not None
+            and context.metadata.get("voice_event_turn")
+            and callable(off_options_fn)
+        ):
+            reasoning_off = off_options_fn(model) or {}
         reasoning_deadline = (
             self._reasoning_deadline
             if callable(off_options_fn) and off_options_fn(model)
@@ -371,6 +396,10 @@ class OrchestratorAgent(ToolUsingAgent):
 
             visible_parts: list[str] = []
             continuations = 0
+            speech = _SpeechStream(
+                plain=intent_state is None or intent_state.reached,
+                accepts=intent_state.accepts_final if intent_state else None,
+            )
 
             while True:
                 tool_call_fragments: dict[int, dict[str, Any]] = {}
@@ -435,11 +464,13 @@ class OrchestratorAgent(ToolUsingAgent):
                             round_content.append(chunk.content)
                             for visible in visible_text_filter.feed(chunk.content):
                                 visible_parts.append(visible)
-                                # Tools may still arrive in later chunks. Hold
-                                # speech until the decision resolves; without
-                                # tools, preserve immediate text streaming.
                                 if not openai_tools and intent_state is None:
                                     yield AgentTextDelta(visible)
+                                elif released := speech.feed(visible):
+                                    # Speech leaves with the first tokens; the
+                                    # round's end only releases what is left.
+                                    turn_spoke = True
+                                    yield AgentTextDelta(released)
                         if chunk.finish_reason:
                             finish_reason = chunk.finish_reason
                         if chunk.usage:
@@ -451,6 +482,9 @@ class OrchestratorAgent(ToolUsingAgent):
                     visible_parts.append(trailing_visible)
                     if not openai_tools and intent_state is None:
                         yield AgentTextDelta(trailing_visible)
+                    elif released := speech.feed(trailing_visible):
+                        turn_spoke = True
+                        yield AgentTextDelta(released)
 
                 self._emit_stream_inference_end(
                     model=model,
@@ -544,9 +578,14 @@ class OrchestratorAgent(ToolUsingAgent):
                 if round_text.strip() and not round_text.lstrip().startswith(
                     ("{", "[")
                 ):
-                    yield AgentTextDelta(round_text)
+                    if rest := speech.remainder(round_text):
+                        yield AgentTextDelta(rest)
                     turn_spoke = True
-                elif self._progress_speech and not turn_spoke:
+                elif (
+                    self._progress_speech
+                    and not turn_spoke
+                    and not _preamble_spoken(context)
+                ):
                     # Only while nothing has been said this turn: one clause,
                     # written from the request, covers every later round.
                     progress = _progress_clause(tool_calls)
@@ -625,7 +664,8 @@ class OrchestratorAgent(ToolUsingAgent):
                     continue
                 content = resolved
             if (openai_tools or intent_state is not None) and content:
-                yield AgentTextDelta(content)
+                if rest := speech.remainder(content):
+                    yield AgentTextDelta(rest)
             metadata = {
                 "prompt_tokens": total_prompt_tokens,
                 "completion_tokens": total_completion_tokens,
@@ -1459,6 +1499,125 @@ class _VisibleTextFilter:
         if visible:
             visible_parts.append(visible)
         return visible_parts
+
+
+class _SpeechStream:
+    """Release a round's visible text for speech while the model writes it.
+
+    A plain answer is spoken as written. With intent normalization the final
+    answer is one JSON object and only its ``message`` is speech. ``plain``
+    says whether plain text can be accepted as the final answer: when it
+    cannot, the contract is certain to reject it, so it is held rather than
+    spoken, and only a tool round's accompanying text releases it at the end.
+    Anything else opening with a bracket is held for the round's end too.
+    """
+
+    _MESSAGE_KEY = re.compile(r'"message"\s*:\s*"')
+    _ESCAPES = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+
+    def __init__(
+        self,
+        *,
+        plain: bool,
+        accepts: Callable[[str, str], bool] | None = None,
+    ) -> None:
+        self._plain = plain
+        self._accepts = accepts
+        self._raw = ""
+        self._mode = ""
+        self._cleared = False
+        self.spoken = ""
+
+    def feed(self, text: str) -> str:
+        """The part of the stream that is speech now, or an empty string."""
+        self._raw += text
+        if not self._mode:
+            head = self._raw.lstrip()
+            if not head:
+                return ""
+            if head[0] == "{" and self._accepts is not None:
+                self._mode = "json"
+            elif head[0] in "{[" or not self._plain:
+                self._mode = "held"
+            else:
+                self._mode = "plain"
+                self.spoken = self._raw
+                return self._raw
+        if self._mode == "plain":
+            self.spoken += text
+            return text
+        if self._mode == "json" and self._clear_to_speak():
+            message = self._message()
+            if len(message) > len(self.spoken) and message.startswith(self.spoken):
+                released = message[len(self.spoken) :]
+                self.spoken = message
+                return released
+        return ""
+
+    def _clear_to_speak(self) -> bool:
+        """Whether the answer's intent and state, written first, are accepted.
+
+        Nothing is spoken before both are seen. An answer that writes its
+        message first, or whose fields the contract would reject, is held for
+        the round's end, where the contract decides as before.
+        """
+        if self._cleared:
+            return True
+        found = self._MESSAGE_KEY.search(self._raw)
+        if found is None:
+            return False
+        head = self._raw[: found.start()]
+        intent = re.search(r'"_intent"\s*:\s*"([^"\\]*)"', head)
+        state = re.search(r'"state"\s*:\s*"([^"\\]*)"', head)
+        if intent is None or state is None or self._accepts is None:
+            self._mode = "held"
+            return False
+        if not self._accepts(intent.group(1), state.group(1)):
+            self._mode = "held"
+            return False
+        self._cleared = True
+        return True
+
+    def remainder(self, full: str) -> str:
+        """The part of the round's complete speech that has not been released."""
+        if not self.spoken:
+            return full
+        return full[len(self.spoken) :] if full.startswith(self.spoken) else ""
+
+    def _message(self) -> str:
+        """The ``message`` string decoded so far, without an unfinished escape."""
+        found = self._MESSAGE_KEY.search(self._raw)
+        if found is None:
+            return ""
+        text, index = self._raw, found.end()
+        decoded: list[str] = []
+        while index < len(text):
+            char = text[index]
+            if char == '"':
+                break
+            if char != "\\":
+                decoded.append(char)
+                index += 1
+                continue
+            if index + 1 >= len(text):
+                break
+            code = text[index + 1]
+            if code == "u":
+                digits = text[index + 2 : index + 6]
+                if len(digits) < 4:
+                    break
+                try:
+                    decoded.append(chr(int(digits, 16)))
+                except ValueError:
+                    break
+                index += 6
+                continue
+            decoded.append(self._ESCAPES.get(code, code))
+            index += 2
+        message = "".join(decoded)
+        if message and 0xD800 <= ord(message[-1]) <= 0xDBFF:
+            message = message[:-1]  # first half of a pair; the rest is coming
+        return message.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
 
 
 def _partial_tag_suffix_length(text: str, tag: str) -> int:

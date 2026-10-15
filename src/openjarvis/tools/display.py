@@ -535,7 +535,9 @@ class DisplayCartTool(_DisplayTool):
                 "(line_id alone edits a single line). Save the whole-order "
                 "note, at-table/take-out choice, a verified table selection, and "
                 "a take-out pickup time separately. Adding does not place "
-                "an order or start payment. Supply your own customer_message "
+                "an order or start payment. View reopens the latest invoice "
+                "until a new draft is started; clear starts an empty new draft. "
+                "Supply your own customer_message "
                 "for standalone operations; without one, return verified state "
                 "for the agent to write its reply. Resolve item "
                 "facts from fresh menu evidence; do not invent them."
@@ -711,6 +713,23 @@ class DisplayCartTool(_DisplayTool):
             )
 
         with self._cart_lock:
+            if action == "view" and display and self._presentation is not None:
+                receipt = self._presentation.restore_cart_receipt()
+                if receipt is not None:
+                    metadata = dict(receipt.metadata)
+                    completed = bool(
+                        receipt.success and finish_turn and customer_message
+                    )
+                    metadata["continue_agent"] = not completed
+                    if completed:
+                        metadata["completed_display"] = True
+                        metadata["customer_message"] = customer_message.strip()
+                    return ToolResult(
+                        tool_name=self.spec.name,
+                        content=receipt.content,
+                        success=receipt.success,
+                        metadata=metadata,
+                    )
             if action != "view" and conversation_id in self._checkout_pending:
                 return ToolResult(
                     tool_name=self.spec.name,
@@ -998,6 +1017,8 @@ class DisplayCartTool(_DisplayTool):
                 "table_name": table_name,
                 "pickup_minutes": pickup_minutes,
             }
+            if not display and self._presentation is not None:
+                self._presentation.remember_cart(cart)
             metadata["cart_revision"] = revision
             metadata["continue_agent"] = not (
                 display and finish_turn and customer_message
@@ -1206,6 +1227,12 @@ class DisplayCartTool(_DisplayTool):
             _CHECKOUT_REVISION.set(revision)
             return snapshot
 
+    def shown_order(self) -> dict[str, Any] | None:
+        """The order this conversation already put on screen to be paid."""
+        if self._presentation is None:
+            return None
+        return self._presentation.shown_payment()
+
     def checkout_write_allowed(self) -> bool:
         """Only the reserved composite worker may issue its dependent writes."""
         from openjarvis.core.conversation import (
@@ -1221,6 +1248,10 @@ class DisplayCartTool(_DisplayTool):
                 and turn_nonce_is_active(current_turn_nonce())
             )
 
+    def checkout_write_scope(self) -> str:
+        """Deduplicate within this reserved draft, not across new purchases."""
+        return str(_CHECKOUT_REVISION.get()) if self.checkout_write_allowed() else ""
+
     def end_checkout(self, *, release_claim: bool = False) -> None:
         """Release edits, retaining claims once a merchant write was attempted."""
         with self._cart_lock:
@@ -1234,7 +1265,23 @@ class DisplayCartTool(_DisplayTool):
     def agent_context(self) -> dict[str, Any]:
         """Supply the current draft to the first inference without a tool round."""
         snapshot = self.current_snapshot()
-        return {"draft_cart": snapshot} if snapshot and snapshot["lines"] else {}
+        context = {"draft_cart": snapshot} if snapshot and snapshot["lines"] else {}
+        orders = self.known_orders()
+        if orders:
+            context["created_orders"] = orders
+        return context
+
+    def known_orders(self) -> list[dict[str, Any]]:
+        return (
+            self._presentation.known_orders() if self._presentation is not None else []
+        )
+
+    def begin_order_read(self, order_id: str) -> dict[str, Any] | None:
+        return (
+            self._presentation.begin_order_read(order_id)
+            if self._presentation is not None
+            else None
+        )
 
     def settle_current(self) -> bool:
         """Forget the current draft after its merchant payment is verified."""
@@ -1309,7 +1356,8 @@ class DisplayCartMemoryTool(BaseTool):
                 "Manage the local draft cart. Direct add items must use exact "
                 "variant IDs and prices from runtime_context.displayed_menu or "
                 "customer_screen_search.visible_items; otherwise use the "
-                "prepared menu skill. Other cart actions use the saved draft."
+                "prepared menu skill. View reopens the latest draft or invoice; "
+                "clear starts a new empty draft. Other edits use the saved draft."
             ),
         )
 
@@ -1559,7 +1607,7 @@ class DisplayPaymentQrTool(_DisplayTool):
                 content="payment_evidence_missing",
                 success=False,
             )
-        if self._cart_settler is not None:
+        if self._cart_settler is not None and not params.get("preserve_draft", False):
             self._cart_settler()
         result = self._publish({"view": "payment_qr", **payment})
         message = params.get("customer_message")

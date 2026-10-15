@@ -1,0 +1,438 @@
+{
+  "cutoff_local": "2026-10-15 08:45:50",
+  "timezone": "Asia/Ho_Chi_Minh",
+  "note": "Warnings lack timestamps; nearest preceding timestamp is an anchor, not exact decision wall-clock time. No customer content retained in event list.",
+  "logs": {
+    "backend.log.1": {
+      "counts": {
+        "delegated": 29,
+        "delegated_no_filler": 2,
+        "answered": 1,
+        "cancelled": 1
+      },
+      "attempts": 33,
+      "events": [
+        {
+          "nearest_timestamp": "2026-10-14 23:36:11.630",
+          "source_line": 17195,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 0.87
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:36:36.754",
+          "source_line": 17270,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 0.85
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:36:40.418",
+          "source_line": 17312,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.21
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:37:46.949",
+          "source_line": 17591,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.35
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:38:09.004",
+          "source_line": 17664,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.15
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:38:31.371",
+          "source_line": 17763,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.04
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:38:42.200",
+          "source_line": 17828,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.09
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:39:08.804",
+          "source_line": 17928,
+          "model": "deepseek-flash",
+          "outcome": "delegated_no_filler",
+          "decision_seconds": 0.93
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:39:27.525",
+          "source_line": 18020,
+          "model": "deepseek-flash",
+          "outcome": "delegated_no_filler",
+          "decision_seconds": 0.88
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:39:41.757",
+          "source_line": 18083,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.2
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:39:55.584",
+          "source_line": 18128,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 0.89
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:42:11.713",
+          "source_line": 18287,
+          "model": "deepseek-flash",
+          "outcome": "answered",
+          "decision_seconds": 1.18
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:42:22.122",
+          "source_line": 18330,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.15
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:42:42.408",
+          "source_line": 18388,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 0.99
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:42:59.790",
+          "source_line": 18463,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.04
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:46:17.909",
+          "source_line": 18806,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.09
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:46:28.461",
+          "source_line": 18852,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 0.9
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:47:00.038",
+          "source_line": 18973,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.06
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:47:15.304",
+          "source_line": 19036,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 0.96
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:47:58.317",
+          "source_line": 19231,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.06
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:48:19.009",
+          "source_line": 19406,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.16
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:48:41.190",
+          "source_line": 19504,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.0
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:55:56.850",
+          "source_line": 20825,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.06
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:56:21.121",
+          "source_line": 20909,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 0.72
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:56:50.803",
+          "source_line": 21082,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.28
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:57:05.744",
+          "source_line": 21174,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 0.97
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:57:32.719",
+          "source_line": 21289,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 0.91
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:57:59.599",
+          "source_line": 21454,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.1
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:58:23.813",
+          "source_line": 21525,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 0.75
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:58:27.570",
+          "source_line": 21564,
+          "model": "deepseek-flash",
+          "outcome": "cancelled",
+          "decision_seconds": 0.44
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:58:29.512",
+          "source_line": 21584,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.25
+        },
+        {
+          "nearest_timestamp": "2026-10-14 23:58:43.879",
+          "source_line": 21642,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 0.89
+        },
+        {
+          "nearest_timestamp": "2026-10-15 00:00:13.768",
+          "source_line": 21807,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.1
+        }
+      ]
+    },
+    "backend.log": {
+      "counts": {
+        "timeout": 14,
+        "delegated": 6,
+        "cancelled": 3
+      },
+      "attempts": 23,
+      "events": [
+        {
+          "nearest_timestamp": "2026-10-15 08:32:44.856",
+          "source_line": 17205,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:33:01.066",
+          "source_line": 17273,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.5
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:33:31.980",
+          "source_line": 17387,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:34:00.595",
+          "source_line": 17459,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:34:17.067",
+          "source_line": 17513,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.39
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:34:33.594",
+          "source_line": 17589,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:34:50.928",
+          "source_line": 17645,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:35:16.108",
+          "source_line": 17774,
+          "model": "deepseek-flash",
+          "outcome": "cancelled",
+          "decision_seconds": 0.22
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:35:19.208",
+          "source_line": 17804,
+          "model": "deepseek-flash",
+          "outcome": "cancelled",
+          "decision_seconds": 0.86
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:35:23.635",
+          "source_line": 17865,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.96
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:35:48.842",
+          "source_line": 18080,
+          "model": "deepseek-flash",
+          "outcome": "cancelled",
+          "decision_seconds": 0.89
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:35:50.362",
+          "source_line": 18094,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:37:53.019",
+          "source_line": 18750,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:38:16.102",
+          "source_line": 18807,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.66
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:38:26.446",
+          "source_line": 18855,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:38:50.857",
+          "source_line": 18938,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:39:05.542",
+          "source_line": 18990,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:44:29.705",
+          "source_line": 19490,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:44:50.509",
+          "source_line": 19554,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.77
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:45:04.298",
+          "source_line": 19623,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:45:09.435",
+          "source_line": 19662,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:45:28.065",
+          "source_line": 19729,
+          "model": "deepseek-flash",
+          "outcome": "delegated",
+          "decision_seconds": 1.54
+        },
+        {
+          "nearest_timestamp": "2026-10-15 08:45:46.214",
+          "source_line": 19797,
+          "model": "deepseek-flash",
+          "outcome": "timeout",
+          "decision_seconds": 2.0
+        }
+      ]
+    }
+  },
+  "menu_example": {
+    "trace_id": "34fe09125e044ba4b7fe8a143da53fcc",
+    "inference_triggered": "2026-10-15 08:38:50.807",
+    "responder_outcome": "timeout",
+    "responder_deadline_seconds": 2.0,
+    "agent_trace_started": "2026-10-15 08:38:52.811",
+    "first_agent_tts_request": "2026-10-15 08:38:55.850",
+    "bot_started_speaking": "2026-10-15 08:38:56.050",
+    "agent_final_tts_request": "2026-10-15 08:38:56.512"
+  },
+  "synthetic_probe": {
+    "first_text_ms": 0,
+    "test_deadline_ms": 50,
+    "responder_text_sent_to_tts": "",
+    "route": "agent",
+    "elapsed_ms": 50,
+    "stream_cancelled": true
+  }
+}

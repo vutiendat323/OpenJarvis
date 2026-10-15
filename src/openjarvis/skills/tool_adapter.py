@@ -37,6 +37,14 @@ def _validate_parameters(
     if "enum" in schema and value not in schema["enum"]:
         return f"{path} is not an allowed enum value"
 
+    if "oneOf" in schema:
+        matches = sum(
+            not _validate_parameters({"type": schema_type, **branch}, value, path)
+            for branch in schema["oneOf"]
+        )
+        if matches != 1:
+            return f"{path} must match exactly one of {schema['oneOf']}"
+
     if schema_type == "object":
         properties = schema.get("properties", {})
         for name in schema.get("required", []):
@@ -136,8 +144,10 @@ class SkillTool(BaseTool):
         produced: Set[str] = {"today"}
         if self._manifest.checkout:
             produced.add("draft_cart")
-        input_params: List[str] = []
-        seen: Set[str] = set()
+        input_params: List[str] = list(
+            self._manifest.metadata.get("openjarvis", {}).get("input_defaults", {})
+        )
+        seen: Set[str] = set(input_params)
 
         for step in self._manifest.steps:
             # Find all {placeholder} tokens in this step's template
@@ -205,6 +215,10 @@ class SkillTool(BaseTool):
                 name
                 for name in properties
                 if name not in {"cart_revision", "cart_lines", "update_order_type"}
+                and name
+                not in self._manifest.metadata.get("openjarvis", {}).get(
+                    "input_defaults", {}
+                )
             ]
             if self._manifest.accepts_cart_lines:
                 parameters["oneOf"] = [
@@ -218,6 +232,9 @@ class SkillTool(BaseTool):
     def agent_context(self) -> Dict[str, Any]:
         if not self._manifest.checkout:
             steps = self._manifest.steps
+            if self._manifest.metadata.get("openjarvis", {}).get("existing_order"):
+                cart = self._executor._tool_executor.get_tool("display_cart")
+                return cart.agent_context() if cart is not None else {}
             if not any(step.tool_name == "display_menu" for step in steps):
                 return {}
             get_tool = getattr(self._executor._tool_executor, "get_tool", None)
@@ -327,6 +344,12 @@ class SkillTool(BaseTool):
                 metadata = self._build_result_metadata(
                     steps_run=len(result.step_results)
                 )
+                if (
+                    result.step_results
+                    and result.step_results[-1].metadata.get("execution_started")
+                    is False
+                ):
+                    metadata["execution_started"] = False
                 if result.context.get("_checkout_write_attempted"):
                     # The order write went out before a later step failed, so
                     # the order may exist: unknown, not a retryable failure.
@@ -353,6 +376,7 @@ class SkillTool(BaseTool):
                         key: last_step.metadata[key]
                         for key in (
                             "customer_message",
+                            "cart_revision",
                             "completed_display",
                             "continue_agent",
                             "result_complete",

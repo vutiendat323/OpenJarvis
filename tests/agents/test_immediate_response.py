@@ -221,7 +221,7 @@ async def test_blocked_dispatch_after_released_round_ends_without_success():
 
 
 @pytest.mark.asyncio
-async def test_engine_error_before_round_completes_releases_nothing():
+async def test_engine_error_mid_round_keeps_what_was_already_spoken():
     class DroppingEngine(StreamingEngine):
         async def stream_full(self, messages, **kwargs):
             self.calls.append((messages, kwargs))
@@ -234,8 +234,11 @@ async def test_engine_error_before_round_completes_releases_nothing():
         async for event in agent.run_stream("request"):
             events.append(event)
 
-    assert _texts(events) == []
+    # Speech leaves with the first tokens; the voice layer resets its
+    # aggregation when the run errors, so the rest is never spoken.
+    assert _texts(events) == ["Em đang "]
     assert not any(isinstance(event, AgentToolStarted) for event in events)
+    assert not any(isinstance(event, AgentRunCompleted) for event in events)
 
 
 @pytest.mark.asyncio
@@ -271,7 +274,7 @@ async def test_round_with_several_tool_calls_is_released_once_before_all_of_them
 
 
 @pytest.mark.asyncio
-async def test_length_continued_tool_round_is_released_once_merged():
+async def test_length_continued_tool_round_is_spoken_once_across_continuations():
     engine = StreamingEngine(
         [
             [StreamChunk(content="Em đang "), StreamChunk(finish_reason="length")],
@@ -281,13 +284,13 @@ async def test_length_continued_tool_round_is_released_once_merged():
     )
     events = await _run(OrchestratorAgent(engine, MODEL, tools=[_CalculatorStub()]))
 
-    assert _texts(events) == ["Em đang tính.", "Kết quả là 4."]
+    assert _texts(events) == ["Em đang ", "tính.", "Kết quả là 4."]
     assert len(engine.calls) == 3
     assert isinstance(events[-1], AgentRunCompleted)
 
 
 @pytest.mark.asyncio
-async def test_json_shaped_tool_round_text_is_never_released():
+async def test_json_shaped_tool_round_text_speaks_only_its_accepted_message():
     reader = ExistingTool("reader", metadata={"read_only": True})
     engine = StreamingEngine(
         [
@@ -306,5 +309,111 @@ async def test_json_shaped_tool_round_text_is_never_released():
         OrchestratorAgent(engine, "fake", tools=[reader], intent_normalization=True)
     )
 
-    assert _texts(events) == ["Đây ạ."]
+    # Its message is speech as it is written; the JSON around it never is.
+    assert _texts(events) == ["Dạ em xem.", "Đây ạ."]
+    assert not any("_intent" in text or "{" in text for text in _texts(events))
     assert any(isinstance(event, AgentToolStarted) for event in events)
+
+
+def _json_chunks(*parts: str) -> list[StreamChunk]:
+    return [StreamChunk(content=part) for part in parts] + [
+        StreamChunk(finish_reason="stop")
+    ]
+
+
+def _guarded_agent(engine) -> OrchestratorAgent:
+    reader = ExistingTool("reader", metadata={"read_only": True})
+    return OrchestratorAgent(engine, "fake", tools=[reader], intent_normalization=True)
+
+
+@pytest.mark.asyncio
+async def test_plain_final_answer_is_spoken_chunk_by_chunk():
+    engine = StreamingEngine([_json_chunks("Dạ ", "món ", "này ", "35k.")])
+    events = await _run(OrchestratorAgent(engine, MODEL, tools=[_CalculatorStub()]))
+
+    assert _texts(events) == ["Dạ ", "món ", "này ", "35k."]
+    assert events[-1].result.content == "Dạ món này 35k."
+
+
+@pytest.mark.asyncio
+async def test_guarded_json_answer_streams_message_not_json():
+    engine = StreamingEngine(
+        [
+            _json_chunks(
+                '{"_intent":"NONE","state":"ANSW',
+                'ER","message":"Dạ quán ',
+                "mở đến 22h ",
+                'ạ."}',
+            )
+        ]
+    )
+    events = await _run(_guarded_agent(engine))
+
+    texts = _texts(events)
+    assert texts == ["Dạ quán ", "mở đến 22h ", "ạ."]
+    assert events[-1].result.content == "Dạ quán mở đến 22h ạ."
+
+
+@pytest.mark.asyncio
+async def test_guarded_json_answer_decodes_escapes_and_split_unicode():
+    engine = StreamingEngine(
+        [
+            _json_chunks(
+                '{"_intent":"NONE","state":"ANSWER","message":"Cà ph\\u00',
+                'ea \\"đá\\"\\nxong"}',
+            )
+        ]
+    )
+    events = await _run(_guarded_agent(engine))
+
+    assert "".join(_texts(events)) == 'Cà phê "đá"\nxong'
+    assert events[-1].result.content == 'Cà phê "đá"\nxong'
+
+
+@pytest.mark.asyncio
+async def test_rejected_guarded_answer_is_never_spoken_before_the_repair():
+    # An unknown intent is rejected by the contract before the message is
+    # written, so none of it is spoken; the repair is.
+    engine = StreamingEngine(
+        [
+            _json_chunks(
+                '{"_intent":"BOGUS","state":"ANSWER","message":"Em đã đặt xong."}'
+            ),
+            _json_chunks(
+                '{"_intent":"NONE","state":"ANSWER","message":"Anh cần gì ạ?"}'
+            ),
+        ]
+    )
+    events = await _run(_guarded_agent(engine))
+
+    texts = _texts(events)
+    assert not any("đặt xong" in text for text in texts)
+    assert "".join(texts) == "Anh cần gì ạ?"
+
+
+@pytest.mark.asyncio
+async def test_guarded_plain_answer_is_held_until_the_contract_decides():
+    # Not reached: plain text is rejected by the contract, so it is not spoken.
+    engine = StreamingEngine(
+        [
+            _json_chunks("Em đã đặt xong rồi ạ."),
+            _json_chunks(
+                '{"_intent":"NONE","state":"ANSWER","message":"Anh cần gì ạ?"}'
+            ),
+        ]
+    )
+    events = await _run(_guarded_agent(engine))
+
+    assert "".join(_texts(events)) == "Anh cần gì ạ?"
+    assert not any("đặt xong" in text for text in _texts(events))
+
+
+@pytest.mark.asyncio
+async def test_message_written_before_intent_waits_for_the_contract():
+    engine = StreamingEngine(
+        [_json_chunks('{"message":"Dạ ', 'có ạ.","_intent":"NONE","state":"ANSWER"}')]
+    )
+    events = await _run(_guarded_agent(engine))
+
+    # Nothing can be vetted early, so the whole message leaves at the end.
+    assert _texts(events) == ["Dạ có ạ."]

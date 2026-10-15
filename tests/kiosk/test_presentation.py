@@ -272,9 +272,12 @@ def test_publish_scopes_and_replays_only_the_active_session(bus: EventBus) -> No
         "view": "menu",
         "items": [{"id": "latte"}],
         "presentation_session_id": session.session_id,
+        "cart_snapshot": None,
     }
     assert bus.history[-1].event_type == EventType.DISPLAY_UPDATE
-    assert bus.history[-1].data == manager.replay(session.session_id)
+    assert {**bus.history[-1].data, "cart_snapshot": None} == manager.replay(
+        session.session_id
+    )
 
 
 def test_published_menu_prices_touch_orders_until_the_session_resets(
@@ -617,6 +620,7 @@ def test_payment_check_shows_the_paid_bill_once_the_merchant_confirms(
     assert bills == [
         {
             "view": "bill",
+            "navigate": False,
             "order_id": "order/1",
             "status": "paid",
             "order_type": "take-out",
@@ -827,3 +831,87 @@ def test_a_failed_first_navigation_leaves_no_session(bus):
     with pytest.raises(PresentationUnavailableError):
         manager.ensure("http://127.0.0.1:5173")
     assert manager._session is None
+
+
+def test_shown_payment_is_only_for_the_conversation_that_showed_it(bus):
+    from openjarvis.core.conversation import conversation_scope
+
+    manager, _ = _touch_manager(bus, _Merchant({}))
+    with conversation_scope("payment-owner"):
+        manager.publish(
+            {
+                "view": "payment_qr",
+                "order_id": "order-1",
+                "status": "pending",
+                "total": 35000,
+                "qr_code": "large-qr-value",
+            }
+        )
+        shown = manager.shown_payment()
+    with conversation_scope("someone-else"):
+        other = manager.shown_payment()
+
+    assert shown == {"order_id": "order-1", "status": "pending", "total": 35000}
+    assert other is None
+    assert manager.shown_payment() is None  # outside any conversation
+
+
+def test_print_status_is_scoped_replayed_and_never_reverts_completion(bus):
+    manager = PresentationSessionManager(bus, _FakeMCPClient(server_name="playwright"))
+    session = manager.ensure("http://127.0.0.1:5173")
+    manager.publish(
+        {
+            "view": "bill",
+            "order_id": "order-1",
+            "status": "paid",
+            "lines": [],
+            "total": 35000,
+        }
+    )
+    update = {
+        "order_id": "order-1",
+        "presentation_session_id": session.session_id,
+        "printing_state": "completed",
+    }
+    manager.update_print_status({**update, "order_id": "another-order"})
+    assert "printing_state" not in manager.replay(session.session_id)
+    manager.update_print_status(
+        {**update, "presentation_session_id": "another-display"}
+    )
+    assert "printing_state" not in manager.replay(session.session_id)
+    manager.update_print_status(update)
+    manager.update_print_status({**update, "printing_state": "submitted"})
+    replay = manager.replay(session.session_id)
+    assert replay["status"] == "paid"
+    assert replay["printing_state"] == "completed"
+    assert replay["view"] == "bill"
+    assert replay["total"] == 35000
+
+
+@pytest.mark.parametrize("navigate_away", [False, True])
+def test_print_completion_survives_invoice_redisplay(bus, navigate_away):
+    manager = PresentationSessionManager(bus, _FakeMCPClient(server_name="playwright"))
+    session = manager.ensure("http://127.0.0.1:5173")
+    bill = {"view": "bill", "order_id": "order-1", "status": "paid", "total": 35000}
+    manager.publish(bill)
+    if navigate_away:
+        manager.publish({"view": "menu", "menu_items": []})
+    calls = len(manager._client.calls)
+    manager.update_print_status(
+        {
+            "order_id": "order-1",
+            "presentation_session_id": session.session_id,
+            "printing_state": "completed",
+        }
+    )
+    assert len(manager._client.calls) == calls
+    if navigate_away:
+        assert manager.replay(session.session_id)["view"] == "menu"
+    manager.publish(bill)
+    replay = manager.replay(session.session_id)
+    assert replay["printing_state"] == "completed"
+    assert replay["status"] == "paid"
+    assert replay["total"] == 35000
+    manager.reset(session.session_id)
+    manager.publish(bill)
+    assert "printing_state" not in manager.replay(session.session_id)

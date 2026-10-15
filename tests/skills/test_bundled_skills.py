@@ -388,6 +388,7 @@ def _run_checkout(
     pickup_minutes: int | None = None,
     saved_draft: bool = False,
     update_order_type: bool = False,
+    table_status: str | None = None,
 ):
     cart_line = {
         "variant_id": "coffee-standard",
@@ -549,6 +550,8 @@ def _run_checkout(
             cart_source = {"cart_revision": cart.current_snapshot()["revision"]}
         if update_order_type:
             cart_source["update_order_type"] = True
+        if table_status is not None:
+            cart_source["table_status"] = table_status
         with agent_turn_scope() as nonce:
             result = tool.execute(
                 order_type=requested_type,
@@ -570,6 +573,7 @@ def test_workspace_checkout_infers_order_and_guarded_cart_parameters() -> None:
         "order_type",
         "order_note",
         "table",
+        "table_status",
         "customer_message",
         "turn_nonce",
         "cart_revision",
@@ -773,6 +777,17 @@ def test_workspace_checkout_accepts_a_reserved_table_like_the_merchant_site() ->
     assert result.success is True
     assert json.loads(http.calls[2]["body"])["table"] == "table-73"
     assert len(display.calls) == 1
+
+
+def test_auto_selected_table_that_becomes_reserved_stops_before_order_write():
+    _, result, http, bill, display = _run_checkout(
+        response_type="at-table",
+        fresh_table_status="reserved",
+        table_status="available",
+    )
+    assert not result.success
+    assert [call["method"] for call in http.calls] == ["GET", "GET"]
+    assert bill.calls == display.calls == []
 
 
 def test_workspace_checkout_rejects_a_table_missing_from_the_fresh_read() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -225,18 +226,34 @@ class _RecordingBinding:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("fast_model", [False, True])
 @pytest.mark.parametrize(
     "reply",
     [
-        "Đã thanh toán. Chờ khoảng 15 phút, nhận món tại quầy nhé.",
-        "Payment confirmed. Collect your order at the counter"
-        " in about fifteen minutes.",
+        "Đã thanh toán.",
+        "Payment confirmed.",
     ],
     ids=["vietnamese", "english"],
 )
-async def test_touch_only_payment_speaks_the_model_response_before_any_user_turn(reply):
-    binding = _RecordingBinding(reply)
-    service = OpenJarvisLLMService(binding)
+async def test_touch_only_payment_speaks_the_model_response_before_any_user_turn(
+    reply, fast_model
+):
+    notification = _RecordingBinding(reply)
+
+    class SlowBinding(_RecordingBinding):
+        def with_model(self, model):
+            assert model == "fast-model"
+            return notification
+
+        async def run_stream(self, prompt, context):
+            await asyncio.Event().wait()  # Heavy model must not delay notification.
+            yield AgentTextDelta("late")
+
+    binding = SlowBinding() if fast_model else notification
+    service = OpenJarvisLLMService(
+        binding,
+        responder=SimpleNamespace(model="fast-model") if fast_model else None,
+    )
     texts = []
     ready = asyncio.Event()
 
@@ -278,11 +295,11 @@ async def test_touch_only_payment_speaks_the_model_response_before_any_user_turn
         await worker.queue_frame(EndFrame())
 
     await runner.add_workers(worker)
-    await asyncio.wait_for(asyncio.gather(runner.run(), drive()), timeout=10)
+    await asyncio.wait_for(asyncio.gather(runner.run(), drive()), timeout=2)
 
     assert outcome["completed"] is True
     assert "".join(texts) == reply
-    [(prompt, history)] = binding.calls
+    [(prompt, history)] = notification.calls
     assert prompt == event
     assert event not in history
 

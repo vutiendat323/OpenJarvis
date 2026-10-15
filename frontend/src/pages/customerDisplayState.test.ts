@@ -344,6 +344,57 @@ describe('reduceCustomerDisplay', () => {
   });
 });
 
+describe('receipt printing status', () => {
+  const bill = {
+    view: 'bill', order_id: 'order-1', status: 'paid', order_type: 'take-out',
+    branch: 'br-thu-duc', lines: [{ name: 'Coffee', quantity: 1 }], total: 45000,
+  } as const;
+  const receipt = { ...bill, lines: [...bill.lines] };
+
+  it.each(['submitted', 'processing', 'completed', 'failed', 'unknown'])('preserves payment and receipt fields for %s', (printing_state) => {
+    expect(reduceCustomerDisplay(receipt, displayEvent('A', {
+      view: 'print_status', order_id: 'order-1', printing_state,
+    }), 'A')).toEqual({ ...receipt, printing_state });
+  });
+
+  it('updates an unpaid QR without changing its view, payment or QR', () => {
+    const qr: CustomerDisplayState = {
+      view: 'payment_qr', order_id: 'order-1', status: 'pending',
+      payment_slug: 'payment-1', qr_code: 'https://merchant.test/qr.png',
+      lines: [...bill.lines], total: 45000,
+    };
+    expect(reduceCustomerDisplay(qr, displayEvent('A', {
+      view: 'print_status', order_id: 'order-1', printing_state: 'completed',
+    }), 'A')).toEqual({ ...qr, printing_state: 'completed' });
+  });
+
+  it('ignores wrong order, session, non-receipt views and invalid states', () => {
+    for (const printing_state of [undefined, null, 'done', 'COMPLETED', '<script>']) {
+      expect(reduceCustomerDisplay(receipt, displayEvent('A', {
+        view: 'print_status', order_id: 'order-1', printing_state,
+      }), 'A')).toBe(receipt);
+    }
+    const event = displayEvent('A', { view: 'print_status', order_id: 'other', printing_state: 'completed' });
+    expect(reduceCustomerDisplay(receipt, event, 'A')).toBe(receipt);
+    expect(reduceCustomerDisplay(receipt, event, 'B')).toBe(receipt);
+    expect(reduceCustomerDisplay(waitingState, event, 'A')).toBe(waitingState);
+  });
+
+  it('keeps validated printing state in full bill and payment snapshots', () => {
+    for (const data of [receipt, {
+      view: 'payment_qr', order_id: 'order-1', status: 'pending',
+      payment_slug: 'payment-1', qr_code: 'opaque',
+    }]) {
+      expect(reduceCustomerDisplay(waitingState, displayEvent('A', {
+        ...data, printing_state: 'processing',
+      }), 'A')).toMatchObject({ printing_state: 'processing' });
+      expect(reduceCustomerDisplay(waitingState, displayEvent('A', {
+        ...data, printing_state: 'invalid',
+      }), 'A')).not.toHaveProperty('printing_state');
+    }
+  });
+});
+
 describe('isSafeQrImageSource', () => {
   it('allows only HTTPS and inline image values to load as images', () => {
     expect(isSafeQrImageSource('https://payments.example/qr.png')).toBe(true);

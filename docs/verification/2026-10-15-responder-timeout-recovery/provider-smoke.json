@@ -1,0 +1,50 @@
+[
+  {
+    "case": "menu_vi",
+    "model": "deepseek-flash",
+    "agent_fixture_delay_s": 3.0,
+    "speech_frames": [
+      {
+        "seconds": 3.0298,
+        "text": "Mình mở menu cho bạn xem ngay nhé. "
+      },
+      {
+        "seconds": 5.0037,
+        "text": "Fixture "
+      },
+      {
+        "seconds": 5.0038,
+        "text": "result."
+      }
+    ],
+    "agent_started_s": 2.0019,
+    "first_provider_text_s": 2.8395,
+    "first_provider_tool_s": 3.0256,
+    "completed": true,
+    "total_s": 5.0039
+  },
+  {
+    "case": "menu_en",
+    "model": "deepseek-flash",
+    "agent_fixture_delay_s": 3.0,
+    "speech_frames": [
+      {
+        "seconds": 2.9569,
+        "text": "Let me open the menu for you now. "
+      },
+      {
+        "seconds": 5.0025,
+        "text": "Fixture "
+      },
+      {
+        "seconds": 5.0026,
+        "text": "result."
+      }
+    ],
+    "agent_started_s": 2.001,
+    "first_provider_text_s": 2.8379,
+    "first_provider_tool_s": 2.9566,
+    "completed": true,
+    "total_s": 5.0027
+  }
+]

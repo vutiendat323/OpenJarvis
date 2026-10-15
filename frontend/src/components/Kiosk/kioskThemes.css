@@ -1,10 +1,21 @@
+.kiosk-speech-glow,
+[data-kiosk-theme] {
+  background-size: var(--kiosk-background-size) var(--kiosk-background-size);
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+[data-kiosk-theme="purple-glow"] {
+  background-position: right bottom;
+}
+
 .kiosk-display-panel {
   --color-text-secondary: color-mix(in srgb, var(--color-text) 70%, var(--color-bg));
   --color-text-tertiary: var(--color-text-secondary);
 }
 
 .kiosk-speech-glow {
-  background:
+  background-image:
     radial-gradient(ellipse at var(--speech-position) 45%, var(--speech-primary), transparent 65%),
     radial-gradient(ellipse at 50% 70%, var(--speech-secondary), transparent 60%);
   transition: opacity 500ms ease-out, transform 500ms ease-out;

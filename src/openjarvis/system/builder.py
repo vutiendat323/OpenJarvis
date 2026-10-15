@@ -253,6 +253,7 @@ class SystemBuilder:
                 if callable(bind):
                     bind(self._shared_browser)
         self._inject_draft_cart_settler(tool_list)
+        self._inject_existing_order_display(tool_list)
         # The policy has to travel with the executor: ToolExecutor.execute()
         # consults it before dispatch, and a None policy silently disables the
         # capability check for every tool routed through this executor.
@@ -746,6 +747,7 @@ class SystemBuilder:
         for tool in tools:
             if tool.spec.name == "http_request":
                 tool._checkout_guard = cart.checkout_write_allowed
+                tool._checkout_scope = cart.checkout_write_scope
 
     @staticmethod
     def _inject_draft_cart_settler(tools) -> None:
@@ -766,6 +768,19 @@ class SystemBuilder:
                 tool, "_cart_settler"
             ):
                 tool._cart_settler = settler
+
+    @staticmethod
+    def _inject_existing_order_display(tools) -> None:
+        payment = next(
+            (tool for tool in tools if tool.spec.name == "display_payment_qr"), None
+        )
+        for tool in tools:
+            if tool.spec.name == "display_existing_order":
+                if payment is None:
+                    raise ValueError(
+                        "existing order display requires display_payment_qr"
+                    )
+                tool._payment_tool = payment
 
     @staticmethod
     def _parse_trusted_origins(raw: str) -> tuple:

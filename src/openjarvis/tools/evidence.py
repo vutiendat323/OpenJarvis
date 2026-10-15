@@ -255,7 +255,9 @@ def reset() -> None:
         _MUTATIONS.clear()
 
 
-def claim_mutation(method: str, url: str, body: object) -> MutationClaim:
+def claim_mutation(
+    method: str, url: str, body: object, *, scope: str = ""
+) -> MutationClaim:
     """Claim the right to send this exact mutation in this conversation.
 
     Atomic: the record is created under the same lock that checks for it, so
@@ -264,12 +266,18 @@ def claim_mutation(method: str, url: str, body: object) -> MutationClaim:
     never retried, because a timeout after a state change does not prove the
     state did not change.
 
+    A runtime checkout scope separates distinct confirmed purchases with the
+    same payload. Reusing that scope retains the duplicate/unknown-write block;
+    callers without a scope retain conversation-wide deduplication.
+
     Outside a conversation there is nothing to deduplicate across: no turns, no
     replay. Claiming into the empty-id bucket would instead make one process-wide
     ledger that refuses an unrelated caller's identical request forever, so a
     scopeless claim is always granted. Mirrors :func:`model_context`.
     """
     fingerprint = _mutation_fingerprint(method, url, body)
+    if scope:
+        fingerprint = hashlib.sha256(f"{scope}\n{fingerprint}".encode()).hexdigest()
     key = current_conversation_id()
     if not key:
         return MutationClaim(fingerprint=fingerprint, allowed=True)

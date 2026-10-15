@@ -25,21 +25,21 @@ function toDraft(values: TransitionSettings): TransitionDraft {
 
 const fields: Array<{
   key: keyof TransitionSettings;
-  transition: string;
+  description?: { vi: string; en: string };
   vi: string;
   en: string;
   min: number;
   max: number;
   unit: string;
 }> = [
-  { key: 'approach_threshold_m', transition: 'idle → approaching', vi: 'Khoảng cách tiếp cận', en: 'Approach distance', min: 0.1, max: 6, unit: 'm' },
-  { key: 'approach_entry_debounce', transition: 'idle → approaching', vi: 'Thời gian xác nhận tiếp cận', en: 'Approach confirmation', min: 0.1, max: 10, unit: 's' },
-  { key: 'approach_sustain_seconds', transition: 'approaching → active / idle', vi: 'Thời gian đứng trong vùng để bắt đầu', en: 'Time in zone to start', min: 0.1, max: 30, unit: 's' },
-  { key: 'popup_timeout', transition: 'prompting → idle', vi: 'Thời gian chờ xác nhận', en: 'Consent timeout', min: 1, max: 120, unit: 's' },
-  { key: 'leave_sustain_seconds_prompting', transition: 'prompting → idle', vi: 'Thời gian vắng khi chờ xác nhận', en: 'Absence during consent', min: 0.1, max: 60, unit: 's' },
-  { key: 'decline_cooldown_seconds', transition: 'prompting → idle → approaching', vi: 'Thời gian chờ sau từ chối', en: 'Cooldown after decline', min: 0, max: 120, unit: 's' },
-  { key: 'session_max_seconds', transition: 'active → cleanup', vi: 'Thời lượng phiên tối đa', en: 'Maximum session duration', min: 120, max: 3600, unit: 's' },
-  { key: 'leave_sustain_seconds_active', transition: 'active → cleanup', vi: 'Thời gian vắng trong phiên', en: 'Absence during session', min: 0.1, max: 120, unit: 's' },
+  { key: 'approach_threshold_m', description: { vi: 'Vùng phát hiện khách', en: 'Customer detection range' }, vi: 'Khoảng cách', en: 'Distance', min: 0.1, max: 6, unit: 'm' },
+  { key: 'approach_entry_debounce', description: { vi: 'Xác nhận có khách', en: 'Confirm customer presence' }, vi: 'Xác nhận khách', en: 'Confirmation', min: 0.1, max: 10, unit: 's' },
+  { key: 'approach_sustain_seconds', description: { vi: 'Chờ trong vùng để bắt đầu', en: 'Stay in zone before starting' }, vi: 'Chờ bắt đầu', en: 'Start delay', min: 0.1, max: 30, unit: 's' },
+  { key: 'popup_timeout', vi: 'Thời gian chờ xác nhận', en: 'Consent timeout', min: 1, max: 120, unit: 's' },
+  { key: 'leave_sustain_seconds_prompting', vi: 'Thời gian vắng khi chờ xác nhận', en: 'Absence during consent', min: 0.1, max: 60, unit: 's' },
+  { key: 'decline_cooldown_seconds', vi: 'Thời gian chờ sau từ chối', en: 'Cooldown after decline', min: 0, max: 120, unit: 's' },
+  { key: 'session_max_seconds', description: { vi: 'Tự kết thúc phiên', en: 'Auto-end session' }, vi: 'Thời lượng tối đa', en: 'Max duration', min: 120, max: 3600, unit: 's' },
+  { key: 'leave_sustain_seconds_active', description: { vi: 'Chờ trước khi kết thúc', en: 'Wait before ending session' }, vi: 'Khách rời đi', en: 'Away timeout', min: 0.1, max: 120, unit: 's' },
 ];
 const visibleFields = fields.filter(({ key }) => ![
   'popup_timeout', 'leave_sustain_seconds_prompting', 'decline_cooldown_seconds',
@@ -113,15 +113,15 @@ export function KioskTransitionSettings({ uiLanguage }: { uiLanguage: UiLanguage
   };
 
   const errors: Record<string, string> = vi ? {
-    load: 'Không tải được cài đặt chuyển trạng thái.',
+    load: 'Không tải được cài đặt phiên khách hàng.',
     range: 'Vui lòng nhập các giá trị trong khoảng cho phép.',
-    hold: 'Thời gian xác nhận tiếp cận phải nhỏ hơn hoặc bằng thời gian giữ vùng.',
+    hold: 'Xác nhận khách phải nhỏ hơn hoặc bằng thời gian giữ vùng.',
     active: 'Hãy kết thúc phiên gọi món trước khi lưu cài đặt.',
     save: 'Không lưu được cài đặt. Vui lòng thử lại.',
   } : {
-    load: 'Could not load transition settings.',
+    load: 'Could not load customer session settings.',
     range: 'Enter values within the allowed ranges.',
-    hold: 'Approach confirmation must not exceed the approach hold time.',
+    hold: 'Confirmation must not exceed the approach hold time.',
     active: 'End the ordering session before saving settings.',
     save: 'Could not save settings. Please try again.',
   };
@@ -131,8 +131,8 @@ export function KioskTransitionSettings({ uiLanguage }: { uiLanguage: UiLanguage
       {loading && <p role="status" className="text-xs py-3">{vi ? 'Đang tải…' : 'Loading…'}</p>}
       {!loading && settings && (
         <fieldset disabled={saving} className="border-0 m-0 p-0 min-w-0">
-          {visibleFields.map(({ key, transition, unit, ...labels }) => (
-            <SettingRow compact key={key} label={vi ? labels.vi : labels.en} description={transition} htmlFor={`${formId}-${key}`}>
+          {visibleFields.map(({ key, description, unit, ...labels }) => (
+            <SettingRow compact key={key} label={vi ? labels.vi : labels.en} description={description?.[uiLanguage]} htmlFor={`${formId}-${key}`}>
               <span className="flex items-center gap-1 shrink-0">
                 <SettingInput id={`${formId}-${key}`} type="text" inputMode="decimal" required
                   pattern={numberPattern.source}
@@ -148,13 +148,10 @@ export function KioskTransitionSettings({ uiLanguage }: { uiLanguage: UiLanguage
               </span>
             </SettingRow>
           ))}
-          <p className="text-[11px] my-3" style={{ color: 'var(--color-text-tertiary)' }}>
-            {vi ? 'Đứng trong vùng đủ lâu: approaching → active. Cleanup → idle tự động.' : 'Stay in zone long enough: approaching → active. Cleanup → idle is automatic.'}
-          </p>
           <button type="submit" disabled={saving}
             className="rounded-md px-3 py-1.5 text-xs font-medium cursor-pointer disabled:opacity-50"
             style={{ background: 'color-mix(in srgb, var(--color-accent) 80%, var(--color-text))', color: 'var(--color-on-accent)' }}>
-            {saving ? (vi ? 'Đang lưu…' : 'Saving…') : (vi ? 'Lưu chuyển trạng thái' : 'Save transitions')}
+            {saving ? (vi ? 'Đang lưu…' : 'Saving…') : (vi ? 'Lưu' : 'Save')}
           </button>
         </fieldset>
       )}

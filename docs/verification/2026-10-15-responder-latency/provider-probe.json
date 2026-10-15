@@ -1,0 +1,390 @@
+[
+  {
+    "case": "full_cold",
+    "model": "deepseek-flash",
+    "prompt_chars": 3574,
+    "idle_seconds": 0,
+    "thinking_disabled": true,
+    "transport_events": [
+      [
+        "connection.connect_tcp.started",
+        0.0128
+      ],
+      [
+        "connection.connect_tcp.complete",
+        0.1418
+      ],
+      [
+        "connection.start_tls.started",
+        0.1418
+      ],
+      [
+        "connection.start_tls.complete",
+        0.1697
+      ],
+      [
+        "http11.send_request_headers.started",
+        0.1699
+      ],
+      [
+        "http11.send_request_headers.complete",
+        0.1701
+      ],
+      [
+        "http11.send_request_body.started",
+        0.1701
+      ],
+      [
+        "http11.send_request_body.complete",
+        0.1702
+      ],
+      [
+        "http11.receive_response_headers.started",
+        0.1702
+      ],
+      [
+        "http11.receive_response_headers.complete",
+        0.3341
+      ],
+      [
+        "http11.response_closed.started",
+        0.3346
+      ],
+      [
+        "http11.response_closed.complete",
+        0.3347
+      ],
+      [
+        "connection.connect_tcp.started",
+        0.795
+      ],
+      [
+        "connection.connect_tcp.complete",
+        0.8247
+      ],
+      [
+        "connection.start_tls.started",
+        0.8247
+      ],
+      [
+        "connection.start_tls.complete",
+        0.8557
+      ],
+      [
+        "http11.send_request_headers.started",
+        0.8558
+      ],
+      [
+        "http11.send_request_headers.complete",
+        0.856
+      ],
+      [
+        "http11.send_request_body.started",
+        0.856
+      ],
+      [
+        "http11.send_request_body.complete",
+        0.8561
+      ],
+      [
+        "http11.receive_response_headers.started",
+        0.8561
+      ],
+      [
+        "http11.receive_response_headers.complete",
+        1.017
+      ],
+      [
+        "http11.response_closed.started",
+        1.0174
+      ],
+      [
+        "http11.response_closed.complete",
+        1.0175
+      ],
+      [
+        "connection.connect_tcp.started",
+        1.9962
+      ],
+      [
+        "connection.connect_tcp.complete",
+        2.0272
+      ],
+      [
+        "connection.start_tls.started",
+        2.0272
+      ],
+      [
+        "connection.start_tls.complete",
+        2.055
+      ],
+      [
+        "http11.send_request_headers.started",
+        2.0552
+      ],
+      [
+        "http11.send_request_headers.complete",
+        2.0553
+      ],
+      [
+        "http11.send_request_body.started",
+        2.0553
+      ],
+      [
+        "http11.send_request_body.complete",
+        2.0554
+      ],
+      [
+        "http11.receive_response_headers.started",
+        2.0554
+      ],
+      [
+        "http11.receive_response_headers.complete",
+        2.2237
+      ],
+      [
+        "http11.receive_response_body.started",
+        2.2241
+      ],
+      [
+        "http11.receive_response_body.failed",
+        4.616
+      ],
+      [
+        "http11.response_closed.started",
+        4.6161
+      ],
+      [
+        "http11.response_closed.complete",
+        4.6161
+      ]
+    ],
+    "response_headers_s": 2.2239,
+    "http_status": 200,
+    "first_content_s": 4.502,
+    "content_chars": 34,
+    "first_tool_call_s": 4.6158,
+    "decision_s": 4.616,
+    "filler": "Mình mở menu cho bạn xem ngay nhé.",
+    "outcome": "delegated"
+  },
+  {
+    "case": "full_warm",
+    "model": "deepseek-flash",
+    "prompt_chars": 3574,
+    "idle_seconds": 0,
+    "thinking_disabled": true,
+    "transport_events": [
+      [
+        "connection.connect_tcp.started",
+        0.0011
+      ],
+      [
+        "connection.connect_tcp.complete",
+        0.0277
+      ],
+      [
+        "connection.start_tls.started",
+        0.0278
+      ],
+      [
+        "connection.start_tls.complete",
+        0.057
+      ],
+      [
+        "http11.send_request_headers.started",
+        0.0572
+      ],
+      [
+        "http11.send_request_headers.complete",
+        0.0573
+      ],
+      [
+        "http11.send_request_body.started",
+        0.0573
+      ],
+      [
+        "http11.send_request_body.complete",
+        0.0574
+      ],
+      [
+        "http11.receive_response_headers.started",
+        0.0574
+      ],
+      [
+        "http11.receive_response_headers.complete",
+        0.2445
+      ],
+      [
+        "http11.receive_response_body.started",
+        0.2448
+      ],
+      [
+        "http11.receive_response_body.failed",
+        2.5722
+      ],
+      [
+        "http11.response_closed.started",
+        2.5723
+      ],
+      [
+        "http11.response_closed.complete",
+        2.5723
+      ]
+    ],
+    "response_headers_s": 0.2447,
+    "http_status": 200,
+    "first_content_s": 2.4194,
+    "content_chars": 39,
+    "first_tool_call_s": 2.5713,
+    "decision_s": 2.5722,
+    "filler": "Mình đang mở menu cho bạn xem ngay nhé.",
+    "outcome": "delegated"
+  },
+  {
+    "case": "full_after_8s_idle",
+    "model": "deepseek-flash",
+    "prompt_chars": 3574,
+    "idle_seconds": 8,
+    "thinking_disabled": true,
+    "transport_events": [
+      [
+        "connection.connect_tcp.started",
+        0.0017
+      ],
+      [
+        "connection.connect_tcp.complete",
+        0.0334
+      ],
+      [
+        "connection.start_tls.started",
+        0.0334
+      ],
+      [
+        "connection.start_tls.complete",
+        0.0626
+      ],
+      [
+        "http11.send_request_headers.started",
+        0.0628
+      ],
+      [
+        "http11.send_request_headers.complete",
+        0.0631
+      ],
+      [
+        "http11.send_request_body.started",
+        0.0631
+      ],
+      [
+        "http11.send_request_body.complete",
+        0.0632
+      ],
+      [
+        "http11.receive_response_headers.started",
+        0.0632
+      ],
+      [
+        "http11.receive_response_headers.complete",
+        0.2298
+      ],
+      [
+        "http11.receive_response_body.started",
+        0.2303
+      ],
+      [
+        "http11.receive_response_body.failed",
+        1.7245
+      ],
+      [
+        "http11.response_closed.started",
+        1.7246
+      ],
+      [
+        "http11.response_closed.complete",
+        1.7247
+      ]
+    ],
+    "response_headers_s": 0.2301,
+    "http_status": 200,
+    "first_content_s": 1.5559,
+    "content_chars": 34,
+    "first_tool_call_s": 1.7242,
+    "decision_s": 1.7244,
+    "filler": "Mình mở menu cho bạn xem ngay nhé.",
+    "outcome": "delegated"
+  },
+  {
+    "case": "short_prompt_warm",
+    "model": "deepseek-flash",
+    "prompt_chars": 153,
+    "idle_seconds": 0,
+    "thinking_disabled": true,
+    "transport_events": [
+      [
+        "connection.connect_tcp.started",
+        0.0015
+      ],
+      [
+        "connection.connect_tcp.complete",
+        0.0302
+      ],
+      [
+        "connection.start_tls.started",
+        0.0302
+      ],
+      [
+        "connection.start_tls.complete",
+        0.0627
+      ],
+      [
+        "http11.send_request_headers.started",
+        0.0634
+      ],
+      [
+        "http11.send_request_headers.complete",
+        0.0642
+      ],
+      [
+        "http11.send_request_body.started",
+        0.0642
+      ],
+      [
+        "http11.send_request_body.complete",
+        0.0647
+      ],
+      [
+        "http11.receive_response_headers.started",
+        0.0647
+      ],
+      [
+        "http11.receive_response_headers.complete",
+        0.2299
+      ],
+      [
+        "http11.receive_response_body.started",
+        0.2303
+      ],
+      [
+        "http11.receive_response_body.failed",
+        1.5485
+      ],
+      [
+        "http11.response_closed.started",
+        1.5485
+      ],
+      [
+        "http11.response_closed.complete",
+        1.5486
+      ]
+    ],
+    "response_headers_s": 0.2302,
+    "http_status": 200,
+    "first_content_s": 1.381,
+    "content_chars": 28,
+    "first_tool_call_s": 1.5482,
+    "decision_s": 1.5484,
+    "filler": "Để mình tra cứu yêu cầu này.",
+    "outcome": "delegated"
+  }
+]

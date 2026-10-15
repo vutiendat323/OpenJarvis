@@ -1,6 +1,6 @@
 [skill]
 name = "trendcoffee-tables"
-description = "Read the current TrendCoffee table list from its fixed public API in one call. Return each table name, slug, and status. Only status exactly available means free. Use for table questions or a requested table before selecting it; never browse the merchant website."
+description = "Read the current TrendCoffee table list from its fixed public API in one call. Return each table name, slug, and status. Only status exactly available means free. Use for table questions or a clear requested table before selecting it; never browse the merchant website. For confirmed at-table dining without a clear or saved table, use trendcoffee-auto-table instead; it reads and selects in one call."
 required_capabilities = ["network:fetch"]
 input_schema_json = '''{"type":"object","properties":{},"additionalProperties":false}'''
 

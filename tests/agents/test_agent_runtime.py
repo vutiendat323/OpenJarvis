@@ -164,6 +164,42 @@ async def test_binding_pins_model_without_mutating_agent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_notification_model_binding_preserves_the_customer_model():
+    engine = RecordingEngine()
+    agent = GeneratingAgent(engine, "server-default")
+    customer = NativeAgentRuntime(agent).bind(model="customer-model")
+    notification = customer.with_model("notification-model")
+    assert (await notification.run("verified event", AgentContext())).content == (
+        "answer:notification-model"
+    )
+    assert (await customer.run("new order", AgentContext())).content == (
+        "answer:customer-model"
+    )
+    assert agent._model == "server-default"
+    assert customer.model == "customer-model"
+
+
+@pytest.mark.asyncio
+async def test_voice_event_uses_available_reasoning_off_from_the_first_round():
+    class Engine(RecordingEngine):
+        def supports_semantic_reasoning_stream(self, model):
+            return True
+
+        def reasoning_off_options(self, model):
+            return {"extra_body": {"thinking": {"type": "disabled"}}}
+
+        async def stream_full(self, messages, *, model, **kwargs):
+            assert kwargs.get("extra_body") == {"thinking": {"type": "disabled"}}
+            yield StreamChunk(content="Receipt ready.", finish_reason="stop")
+
+    binding = NativeAgentRuntime(OrchestratorAgent(Engine(), "fast")).bind(model="fast")
+    result = await binding.run(
+        "Verified PRINT_COMPLETED", AgentContext(metadata={"voice_event_turn": True})
+    )
+    assert result.content == "Receipt ready."
+
+
+@pytest.mark.asyncio
 async def test_runtime_stream_records_a_completed_trace_in_the_injected_store(
     tmp_path,
 ) -> None:
@@ -796,3 +832,28 @@ async def test_cancelled_stream_emits_no_stale_events_to_that_caller() -> None:
         isinstance(event, (AgentToolFinished, AgentTextDelta, AgentRunCompleted))
         for event in events
     )
+
+
+def test_runtime_records_background_event_once_without_scripted_speech():
+    import json
+
+    from openjarvis.agents.action_ledger import ACTION_LEDGER
+
+    conversation = "print-runtime-test"
+    runtime = NativeAgentRuntime(GeneratingAgent(RecordingEngine(), "default"))
+    event = {
+        "event": "PRINT_COMPLETED",
+        "order_id": "order-1",
+        "verification": "cups_job_completed_successfully",
+    }
+    runtime.record_background_event(
+        conversation, event_id="print:job-17", event_context=event
+    )
+    runtime.record_background_event(
+        conversation, event_id="print:job-17", event_context=event
+    )
+    entries = ACTION_LEDGER.entries(conversation)
+    assert len(entries) == 1
+    assert json.loads(entries[0].event_context) == event
+    assert entries[0].customer_message == ""
+    assert entries[0].status == "succeeded"

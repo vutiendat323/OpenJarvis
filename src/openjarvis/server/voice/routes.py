@@ -26,6 +26,7 @@ from openjarvis.server.voice.pipeline import (
     build_voice_pipeline,
     claim_voice_lease,
 )
+from openjarvis.server.voice.responder import VoiceResponder, load_responder_settings
 from openjarvis.server.voice.speaker import load_speaker_settings
 from openjarvis.server.voice.speaker_embedding import BotVoiceprint, TitaNetEmbedder
 from openjarvis.server.voice.speaker_vision import VisionAudioBridge
@@ -324,6 +325,30 @@ async def warm_speaker_models() -> None:
         await asyncio.to_thread(importlib.import_module, "scipy.signal")
 
 
+_RESPONDER: VoiceResponder | None = None
+
+
+def _responder() -> VoiceResponder | None:
+    """The fast first-sentence model of ``[voice.responder]``, or None.
+
+    It has its own CloudEngine, not the Agent's instrumented one, so its call
+    never shows in the Agent's trace or telemetry as a round of the turn.
+    """
+    global _RESPONDER
+    settings = load_responder_settings()
+    if not settings.model:
+        return None
+    if (
+        _RESPONDER is None
+        or _RESPONDER.model != settings.model
+        or _RESPONDER.prompt != settings.prompt
+    ):
+        from openjarvis.engine.cloud import CloudEngine
+
+        _RESPONDER = VoiceResponder(CloudEngine(), settings.model, settings.prompt)
+    return _RESPONDER
+
+
 async def _renderer() -> Any:
     """The one local VieNeu renderer every session speaks through.
 
@@ -520,6 +545,8 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
                         "Vision ASD requested but diarizer or Vision is unavailable"
                     )
             extra = {"vision_audio": vision_audio} if vision_audio is not None else {}
+            if (responder := _responder()) is not None:
+                extra["responder"] = responder
             worker, context = build_voice_pipeline(
                 connection=connection,
                 binding=session.execution_binding,

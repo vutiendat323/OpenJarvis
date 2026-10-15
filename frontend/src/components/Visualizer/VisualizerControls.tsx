@@ -9,21 +9,6 @@ import { KIOSK_THEMES, type KioskTheme } from '@/components/Kiosk/kioskThemes';
 import { KioskTransitionSettings } from './KioskTransitionSettings';
 import { KioskVoicePicker } from './KioskVoicePicker';
 
-function ScreenIcon({ size = 13, className }: { size?: number; className?: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={className}
-      width={size}
-      height={size}
-      viewBox="0 -960 960 960"
-      fill="currentColor"
-    >
-      <path d="M610-326.15h143.85V-470h-47.7v96.15H610v47.7ZM206.15-570h47.7v-96.15H350v-47.7H206.15V-570ZM340-140v-80H172.31Q142-220 121-241q-21-21-21-51.31v-455.38Q100-778 121-799q21-21 51.31-21h615.38Q818-820 839-799q21 21 21 51.31v455.38Q860-262 839-241q-21 21-51.31 21H620v80H340ZM172.31-280h615.38q4.62 0 8.46-3.85 3.85-3.84 3.85-8.46v-455.38q0-4.62-3.85-8.46-3.84-3.85-8.46-3.85H172.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46v455.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85ZM160-280v-480 480Z" />
-    </svg>
-  );
-}
-
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const themeKeys = Object.keys(KIOSK_THEMES) as KioskTheme[];
@@ -78,6 +63,7 @@ export function VisualizerControls({
   onUiLanguageChange,
   initialCollapsed = true,
 }: Props) {
+  const vi = uiLanguage === 'vi';
   const [collapsed, setCollapsed] = useState(initialCollapsed);
 
   const set = <K extends keyof VisualizerSettings>(key: K, val: VisualizerSettings[K]) =>
@@ -100,8 +86,8 @@ export function VisualizerControls({
           border: 'none',
           boxShadow: 'none',
         }}
-        title="Open panel"
-        aria-label="Open kiosk display controls"
+        title={vi ? 'Cài đặt kiosk' : 'Kiosk settings'}
+        aria-label={vi ? 'Mở cài đặt kiosk' : 'Open kiosk settings'}
       >
         <Settings size={20} style={{ color: 'var(--kiosk-muted, var(--color-text-secondary))' }} />
       </button>
@@ -131,7 +117,7 @@ export function VisualizerControls({
               color: 'var(--color-text)',
             }}
           >
-            Kiosk Display
+            {vi ? 'Cài đặt kiosk' : 'Kiosk Settings'}
           </div>
           <button
             onClick={() => setCollapsed(true)}
@@ -141,21 +127,19 @@ export function VisualizerControls({
               border: 'none',
               color: 'var(--color-text-secondary)',
             }}
-            title="Close"
-            aria-label="Close"
+            title={vi ? 'Đóng' : 'Close'}
+            aria-label={vi ? 'Đóng' : 'Close'}
           >
             <X size={18} />
           </button>
         </div>
 
-      {/* Card 1: Language */}
-      <Section compact title="Language">
+      <Section compact title={vi ? 'Ngôn ngữ & Giọng nói' : 'Language & Voice'}>
         <SettingRow compact
-          label="Language"
-          description={VOICE_UI_TEXT[uiLanguage].languageHelper}
+          label={vi ? 'Ngôn ngữ UI' : 'UI language'}
         >
           <select
-            aria-label="Language"
+            aria-label={vi ? 'Ngôn ngữ UI' : 'UI language'}
             value={uiLanguage}
             onChange={(e) => {
               const val = e.target.value;
@@ -175,16 +159,9 @@ export function VisualizerControls({
         <KioskVoicePicker uiLanguage={uiLanguage} />
       </Section>
 
-      <Section compact title="Display & Background">
-        <SettingRow compact label="Display mode" description="Screen voice display beside the browser">
-          <span className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
-            style={{ background: 'var(--color-bg-secondary)', color: 'var(--color-text)' }}>
-            <ScreenIcon /> Screen
-          </span>
-        </SettingRow>
-
-        <SettingRow compact label="Theme" last>
-          <div role="group" aria-label="Background theme" className="flex items-center gap-2">
+      <Section compact title={vi ? 'Giao diện' : 'Appearance'}>
+        <SettingRow compact label={vi ? 'Nền' : 'Background'} last>
+          <div role="group" aria-label={vi ? 'Nền' : 'Background'} className="flex items-center gap-2">
             {themeKeys.map((key) => {
               const theme = KIOSK_THEMES[key];
               const selected = settings.theme === key;
@@ -208,41 +185,38 @@ export function VisualizerControls({
         </SettingRow>
       </Section>
 
-      <Section compact title={uiLanguage === 'vi' ? 'Chuyển trạng thái' : 'State transitions'}>
+      <Section compact title={vi ? 'Phiên khách hàng' : 'Customer Session'}>
         <KioskTransitionSettings uiLanguage={uiLanguage} />
       </Section>
 
-      {/* Card 3: Mascot & Captions */}
-      <Section compact title="Mascot & Captions">
+      <Section compact title={vi ? 'Trợ lý' : 'Assistant'}>
         <SettingRow compact
-          label="Show Captions"
-          description="Display live speech transcription"
+          label={vi ? 'Phụ đề' : 'Captions'}
         >
           <SettingToggle
             checked={settings.showCaptions}
             onChange={(val) => set('showCaptions', val)}
-            ariaLabel="Toggle Show Captions"
+            ariaLabel={vi ? 'Bật/tắt phụ đề' : 'Toggle captions'}
           />
         </SettingRow>
 
         <SettingRow compact
-          label="Show Mascot"
-          description="Floating Codex Pet companion on kiosk"
+          label={vi ? 'Nhân vật' : 'Character'}
         >
           <SettingToggle
             checked={settings.showPet}
             onChange={(val) => set('showPet', val)}
-            ariaLabel="Toggle Show Mascot"
+            ariaLabel={vi ? 'Bật/tắt nhân vật trợ lý' : 'Toggle assistant character'}
           />
         </SettingRow>
 
         <SettingRow compact
-          label="Pet Size"
+          label={vi ? 'Kích thước' : 'Size'}
           description={`${settings.petScale.toFixed(1)}x`}
           last
         >
           <input
-            aria-label="Pet Size"
+            aria-label={vi ? 'Kích thước' : 'Size'}
             type="range"
             min={1}
             max={10}

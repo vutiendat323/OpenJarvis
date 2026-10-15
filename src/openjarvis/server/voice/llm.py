@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
-from collections.abc import AsyncGenerator
-from contextlib import aclosing, nullcontext
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import aclosing, asynccontextmanager, nullcontext
 from typing import Any, Literal
 
 from pipecat.frames.frames import (
@@ -28,6 +29,7 @@ from pipecat.services.llm_service import LLMService
 from pipecat.services.settings import LLMSettings
 
 from openjarvis.agents._stubs import (
+    PREAMBLE_SPOKEN,
     AgentContext,
     AgentTextDelta,
     AgentToolFinished,
@@ -58,6 +60,12 @@ UNCERTAIN_SPEAKER_NOTE = (
 # Interrupted requests carried into the next turn, newest last (spec 2026-10-10
 # background actions §5.5).
 CARRY_OVER_LIMIT = 3
+
+
+# How long the Responder may take to delegate or answer before the Agent starts
+# without it. Measured 2026-10-14 (deepseek-flash, tool call): offline max
+# 1.77 s; live full line max 2.12 s.
+RESPONDER_DECISION_SECONDS = 2.0
 
 
 def carried_prompt(unfinished: list[str], latest: str) -> str:
@@ -172,6 +180,27 @@ class _SpeechProjector:
         self._raw = ""
         self._emitted = ""
         return tail or None
+
+
+def recent_conversation(
+    context: Any, *, max_messages: int = 8, max_chars: int = 1200
+) -> str:
+    """The exchange before the customer's latest words, oldest first, or ''.
+
+    Bounded so the fast voice stays fast: each line keeps its end (what a
+    confirmation answers), and the whole keeps its newest part.
+    """
+    messages = list(context.get_messages())
+    while messages and messages[-1].get("role") == "user":
+        messages.pop()
+    lines = []
+    for message in messages[-max_messages:]:
+        role = message.get("role")
+        text = message_text(message).strip() if role in ("user", "assistant") else ""
+        if text:
+            speaker = "Customer" if role == "user" else "Assistant"
+            lines.append(f"{speaker}: {text[-200:]}")
+    return "\n".join(lines)[-max_chars:]
 
 
 def agent_input(
@@ -306,6 +335,7 @@ class OpenJarvisLLMService(LLMService):
         turn_state: VoiceTurnState | None = None,
         speaker_tracker: Any | None = None,
         uncertain_allowed_tools: tuple[str, ...] = (),
+        responder: Any | None = None,
         **kwargs: Any,
     ) -> None:
         # None, not unset: every field left NOT_GIVEN makes pipecat log an
@@ -341,6 +371,9 @@ class OpenJarvisLLMService(LLMService):
         # A kiosk-event turn holds the Agent runtime until its model answers;
         # any customer activity or the session's end cuts it.
         self._event_task: asyncio.Task[bool] | None = None
+        # The Responder (OpenAI's chat agent) decides first: it answers the turn
+        # itself or delegates to the Agent by calling its one tool.
+        self._responder = responder
 
     async def stream_agent(
         self,
@@ -348,6 +381,8 @@ class OpenJarvisLLMService(LLMService):
         context: AgentContext,
         *,
         turn_id: int | None = None,
+        binding: Any | None = None,
+        speech_started: asyncio.Event | None = None,
     ) -> AsyncGenerator[Frame, None]:
         """Speak each released round in order, flushing at tool boundaries.
 
@@ -361,8 +396,9 @@ class OpenJarvisLLMService(LLMService):
         round_spoken = False
         if turn_id is None:
             turn_id = self._turn_state.begin_turn()
-        yield voice_activity_frame("inference", model=self._binding.model)
-        stream = self._binding.run_stream(prompt, context)
+        binding = binding or self._binding
+        yield voice_activity_frame("inference", model=binding.model)
+        stream = binding.run_stream(prompt, context)
         # Consume in one Task so run/worker ContextVars remain attached across
         # yields. Closing the outer stream also closes its suspended binding.
         async with aclosing(stream):
@@ -384,8 +420,10 @@ class OpenJarvisLLMService(LLMService):
                         round_spoken = False
                     yield voice_activity_frame("tool", tool_name=event.tool_name)
                 elif isinstance(event, AgentToolFinished):
-                    yield voice_activity_frame("inference", model=self._binding.model)
+                    yield voice_activity_frame("inference", model=binding.model)
                 elif isinstance(event, AgentTextDelta):
+                    if speech_started is not None and event.content.strip():
+                        speech_started.set()
                     speech = projector.push(event.content)
                     if speech:
                         round_spoken = True
@@ -470,6 +508,7 @@ class OpenJarvisLLMService(LLMService):
             return
         prompt = carried_prompt(self._unfinished, latest)
         carry = True
+        preamble = (latest, recent_conversation(frame.context))
         authority = nullcontext()
         if self._speaker_tracker is not None:
             from openjarvis.server.voice.speaker import Verdict
@@ -481,6 +520,7 @@ class OpenJarvisLLMService(LLMService):
             if verdict is Verdict.REJECT:
                 # Never carried: a later turn runs with full authority.
                 carry = False
+                preamble = None  # nothing is said to words that may not be theirs
                 prompt = f"{UNCERTAIN_SPEAKER_NOTE}\n\n{prompt}"
                 authority = uncertain_speaker_scope(self._uncertain_allowed_tools)
         completed = False
@@ -488,7 +528,16 @@ class OpenJarvisLLMService(LLMService):
             self._answering = True
             # Free the runtime an event turn holds before asking for it.
             await self._stop_event_turn()
-            completed = await self._answer(prompt, context, authority)
+            completed = await self._answer(
+                prompt,
+                context,
+                authority,
+                preamble=preamble,
+                # A turn that carries an interrupted request is never answered
+                # by the responder: it sees only the latest words, and ending
+                # the turn would drop the earlier request unhandled.
+                carries_earlier=prompt != latest,
+            )
         finally:
             self._answering = False
             # Also reached when Pipecat cancels this task on barge-in.
@@ -503,8 +552,23 @@ class OpenJarvisLLMService(LLMService):
                     # What it already did stays visible to the carried request.
                     ACTION_LEDGER.carry(conversation_id)
 
-    async def _answer(self, prompt: str, context: AgentContext, authority: Any) -> bool:
-        """Speak one Agent turn; True when it ended normally."""
+    async def _answer(
+        self,
+        prompt: str,
+        context: AgentContext,
+        authority: Any,
+        *,
+        preamble: tuple[str, str] | None = None,
+        carries_earlier: bool = False,
+        binding: Any | None = None,
+    ) -> bool:
+        """Speak one turn; True when it ended normally.
+
+        ``preamble`` is the customer's words and the recent conversation. With
+        a Responder it answers or delegates first. At the decision deadline the
+        Agent starts; a later delegation may still supply a filler before the
+        Agent's first speech. Event turns pass none.
+        """
         if self._bot_speaking:
             # A newer customer request is being answered: the reply still
             # being spoken is stale (live crowd retest 2026-09-28: the bot
@@ -519,22 +583,35 @@ class OpenJarvisLLMService(LLMService):
                 await self.push_frame(voice_activity_frame("processing"))
                 await self.push_frame(LLMFullResponseStartFrame())
                 await self.start_processing_metrics()
-                response = self.stream_agent(prompt, context, turn_id=turn_id)
-                async with aclosing(response):
-                    async for pushed in response:
-                        if not self._turn_state.is_active(turn_id):
-                            break
-                        if isinstance(pushed, LLMTextFrame):
-                            # Pipecat system-frame interruption can overtake queued
-                            # text. Recheck ownership when TTS consumes that text,
-                            # not only when it is enqueued here.
-                            pushed.metadata["openjarvis_is_current"] = (
-                                lambda turn_id=turn_id: self._turn_state.is_active(
-                                    turn_id
-                                )
+                decision = (
+                    self._ask_responder(*preamble, carries_earlier=carries_earlier)
+                    if preamble is not None and self._responder is not None
+                    else nullcontext(("agent", "", None))
+                )
+                async with decision as (route, text, late_filler):
+                    # A turn interrupted during the decision starts nothing.
+                    if self._turn_state.is_active(turn_id):
+                        if route == "agent" and (text or late_filler is not None):
+                            from openjarvis.server.voice.responder import AGENT_NOTE
+
+                            # The note must reach inference before it starts;
+                            # the shared marker changes only when speech is queued.
+                            context.conversation.messages.insert(
+                                1, Message(role=Role.SYSTEM, content=AGENT_NOTE)
                             )
-                        await self.push_frame(pushed)
-                completed = self._turn_state.is_active(turn_id)
+                            context.metadata[PREAMBLE_SPOKEN] = threading.Event()
+                        if text:
+                            await self._speak_responder(text, context, turn_id)
+                        if route == "answer":
+                            completed = self._turn_state.is_active(turn_id)
+                        else:
+                            completed = await self._consume_agent(
+                                prompt,
+                                context,
+                                turn_id,
+                                binding=binding,
+                                late_filler=late_filler,
+                            )
             except Exception as error:  # noqa: BLE001 - surfaced as a pipeline error frame
                 self._turn_state.interrupt()
                 await self.push_error(
@@ -549,6 +626,180 @@ class OpenJarvisLLMService(LLMService):
             await self.push_frame(LLMFullResponseEndFrame())
         return completed
 
+    async def _speak_responder(
+        self, text: str, context: AgentContext, turn_id: int
+    ) -> None:
+        frame = LLMTextFrame(f"{text} ")
+        frame.metadata[FLUSH_TTS_METADATA] = True
+        frame.metadata["openjarvis_is_current"] = lambda: self._turn_state.is_active(
+            turn_id
+        )
+        spoken = context.metadata.get(PREAMBLE_SPOKEN)
+        if spoken is not None:
+            spoken.set()
+        await self.push_frame(frame)
+
+    @asynccontextmanager
+    async def _ask_responder(
+        self, utterance: str, conversation: str, *, carries_earlier: bool
+    ) -> AsyncIterator[tuple[str, str, asyncio.Future[str] | None]]:
+        """Own the Responder stream through this turn's first speech.
+
+        Delegation is its call to ``getNextResponseFromSupervisor``. The text
+        before the call is the filler, complete once the call appears, so the
+        rest of the stream (the unused argument) is cancelled. Anything but a
+        usable answer routes to the Agent. A timeout leaves delegation available
+        for a late filler, but a late standalone answer never replaces the Agent.
+        """
+        delegated: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+        def on_delegate(filler: str) -> None:
+            if not delegated.done():
+                delegated.set_result(filler)
+
+        started = time.monotonic()
+        decided: float | None = None
+        task = asyncio.create_task(
+            self._responder.respond(utterance, conversation, on_delegate)
+        )
+
+        def stop_response(_future=None):
+            if not task.done() and not task.cancelling():
+                task.cancel()
+
+        # A tool call completes the filler; its unused argument need not stream.
+        # Cancelling the late-filler wait also closes the provider stream.
+        delegated.add_done_callback(stop_response)
+        outcome = "cancelled"
+        route, text = "agent", ""
+        late_filler = None
+        try:
+            await asyncio.wait(
+                {task, delegated},
+                timeout=RESPONDER_DECISION_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            decided = time.monotonic() - started
+            if delegated.done():
+                text = normalize_speech_text(delegated.result())
+                outcome = "delegated" if text else "delegated_no_filler"
+            elif not task.done():
+                outcome = "timeout"
+                late_filler = delegated
+            elif task.cancelled():
+                # Cancelled inside the Responder, not by this turn: a failure
+                # like any other, so the Agent still answers.
+                outcome = "error:CancelledError"
+            elif task.exception() is not None:
+                outcome = f"error:{type(task.exception()).__name__}"
+            else:
+                reply = task.result()
+                answer = (
+                    normalize_speech_text(reply.text)
+                    if reply is not None and reply.kind == "answer"
+                    else ""
+                )
+                if not answer:
+                    outcome = "empty"
+                elif carries_earlier:
+                    # It sees only the latest words; ending the turn would drop
+                    # the earlier, interrupted request unhandled.
+                    outcome = "answer_blocked"
+                else:
+                    route, text, outcome = "answer", answer, "answered"
+            logger.warning(
+                "voice_preamble model=%s outcome=%s decision_seconds=%.2f",
+                self._responder.model,
+                outcome,
+                decided,
+            )
+            yield route, text, late_filler
+        finally:
+            delegated.cancel()
+            stop_response()
+            await asyncio.gather(task, return_exceptions=True)
+            # Shape only, never the customer's words (WARNING: serve drops INFO).
+            if decided is None:
+                logger.warning(
+                    "voice_preamble model=%s outcome=%s decision_seconds=%.2f",
+                    self._responder.model,
+                    outcome,
+                    time.monotonic() - started,
+                )
+
+    async def _consume_agent(
+        self,
+        prompt: str,
+        context: AgentContext,
+        turn_id: int,
+        *,
+        binding: Any | None = None,
+        late_filler: asyncio.Future[str] | None = None,
+    ) -> bool:
+        """Push one Agent turn's frames; True when the turn is still current."""
+        speech_lock = asyncio.Lock()
+        agent_spoke = asyncio.Event()
+
+        async def speak_late_filler():
+            started = time.monotonic()
+            outcome = "agent_first"
+            try:
+                text = normalize_speech_text(await late_filler)
+                async with speech_lock:
+                    if (
+                        text
+                        and not agent_spoke.is_set()
+                        and self._turn_state.is_active(turn_id)
+                    ):
+                        await self._speak_responder(text, context, turn_id)
+                        outcome = "spoken"
+                    else:
+                        outcome = "empty_or_stale"
+            finally:
+                logger.warning(
+                    "voice_preamble_late model=%s outcome=%s wait_seconds=%.2f",
+                    self._responder.model,
+                    outcome,
+                    time.monotonic() - started,
+                )
+
+        late_task = (
+            asyncio.create_task(speak_late_filler())
+            if late_filler is not None
+            else None
+        )
+        response = self.stream_agent(
+            prompt,
+            context,
+            turn_id=turn_id,
+            binding=binding,
+            speech_started=agent_spoke,
+        )
+        try:
+            async with aclosing(response):
+                async for pushed in response:
+                    if not self._turn_state.is_active(turn_id):
+                        break
+                    if isinstance(pushed, LLMTextFrame):
+                        # Serialize the first speech: no filler may follow it.
+                        async with speech_lock:
+                            agent_spoke.set()
+                            if late_task is not None and not late_task.done():
+                                late_task.cancel()
+                            pushed.metadata["openjarvis_is_current"] = (
+                                lambda turn_id=turn_id: self._turn_state.is_active(
+                                    turn_id
+                                )
+                            )
+                            await self.push_frame(pushed)
+                    else:
+                        await self.push_frame(pushed)
+        finally:
+            if late_task is not None:
+                late_task.cancel()
+                await asyncio.gather(late_task, return_exceptions=True)
+        return self._turn_state.is_active(turn_id)
+
     async def run_event_turn(self, event: str) -> bool:
         """Answer a kiosk event (a background outcome), never as customer words.
 
@@ -559,6 +810,8 @@ class OpenJarvisLLMService(LLMService):
         session's end cuts it; it then returns False.
         Touch-only checkout can finish before any spoken turn; use empty history
         for that notification.
+        Use the configured fast voice model through the same Agent runtime;
+        customer turns keep their original binding and no preamble is generated.
         """
         if self._answering or (
             self._event_task is not None and not self._event_task.done()
@@ -567,7 +820,15 @@ class OpenJarvisLLMService(LLMService):
         _, context = agent_input(
             _EventContext(self._last_context or LLMContext(), event)
         )
-        task = asyncio.create_task(self._answer(event, context, nullcontext()))
+        context.metadata["voice_event_turn"] = True
+        binding = (
+            self._binding.with_model(self._responder.model)
+            if self._responder is not None
+            else self._binding
+        )
+        task = asyncio.create_task(
+            self._answer(event, context, nullcontext(), binding=binding)
+        )
         self._event_task = task
         try:
             return await task

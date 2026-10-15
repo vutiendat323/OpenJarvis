@@ -820,3 +820,59 @@ describe('BillView paid order', () => {
   });
 });
 
+
+
+describe('receipt inline printing status', () => {
+  it('replaces the QR and payment countdown with a paid stamp after verified completion', () => {
+    const markup = renderToStaticMarkup(
+      <PaymentQrView order_id="order-1" status="paid" qr_code="https://merchant.test/qr.png" printing_state="completed" />,
+    );
+    expect(markup).toContain('invoice-paid-stamp.png');
+    expect(markup).toContain('Paid — invoice printing completed');
+    expect(markup).not.toContain('Verified payment QR code');
+    expect(markup).not.toContain('payment-countdown');
+  });
+
+  it.each([undefined, 'submitted', 'processing', 'failed', 'unknown'] as const)(
+    'does not stamp a paid invoice when printing is %s', (printing_state) => {
+      const markup = renderToStaticMarkup(
+        <BillView order_id="order-1" branch="branch" status="paid" lines={[]} total={45000} printing_state={printing_state} />,
+      );
+      expect(markup).not.toContain('invoice-paid-stamp.png');
+    },
+  );
+
+  it('shows the stamp on the paid bill snapshot after the QR view is replaced', () => {
+    const markup = renderToStaticMarkup(
+      <BillView order_id="order-1" branch="branch" status="paid" lines={[{ name: 'Black coffee', quantity: 1, unit_price: 35000 }]} total={35000} printing_state="completed" uiLanguage="vi" />,
+    );
+    expect(markup).toContain('invoice-paid-stamp.png');
+    expect(markup).toContain('Đã thanh toán — hóa đơn đã in xong');
+    expect(markup).toContain('Black coffee');
+    expect(markup).toContain('35,000 VND');
+  });
+
+  it.each([
+    ['submitted', 'PRINT SUBMITTED'],
+    ['processing', 'PRINTING'],
+    ['completed', 'PRINTED'],
+    ['failed', 'PRINT FAILED'],
+    ['unknown', 'PRINT STATUS UNKNOWN'],
+  ] as const)('shows paid and %s in the same status line', (printing_state, label) => {
+    const markup = renderToStaticMarkup(
+      <BillView order_id="order-1" branch="branch" status="paid" lines={[]} total={45000} printing_state={printing_state} />,
+    );
+    expect(markup).toContain(`STATUS: PAID · ${label}</div>`);
+    if (printing_state !== 'completed') expect(markup).not.toContain(' · PRINTED');
+  });
+
+  it('localizes completion inline without marking an unpaid QR as paid', () => {
+    const markup = renderToStaticMarkup(
+      <PaymentQrView order_id="order-1" status="pending" qr_code="https://merchant.test/qr.png" printing_state="completed" uiLanguage="vi" />,
+    );
+    expect(markup).toContain('TRẠNG THÁI: CHỜ THANH TOÁN · ĐÃ IN</div>');
+    expect(markup).not.toContain('ĐÃ THANH TOÁN');
+    expect(markup).toContain('Verified payment QR code');
+    expect(markup).not.toContain('invoice-paid-stamp.png');
+  });
+});

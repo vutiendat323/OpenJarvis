@@ -386,7 +386,8 @@ export function KioskPage() {
       style={{
         '--pet-bubble-max-width': `${Math.max(24, Math.min(260, petBounds.width - 40))}px`,
         '--pet-bubble-max-height': `${Math.max(40, petBounds.height - 64)}px`,
-        background: theme.background,
+        backgroundImage: theme.background,
+        '--kiosk-background-size': `${Math.max(petBounds.width, petBounds.height)}px`,
         '--kiosk-foreground': lightBackground ? '#17243b' : '#f0f3fc',
         '--kiosk-muted': lightBackground ? '#243047' : '#dae2f4',
         '--kiosk-caption-muted': lightBackground ? '#243047' : '#dae2f4',

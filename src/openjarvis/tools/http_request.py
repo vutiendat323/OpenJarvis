@@ -60,6 +60,7 @@ class HttpRequestTool(BaseTool):
     tool_id = "http_request"
     is_local = False
     _checkout_guard: Callable[[], bool] | None = None
+    _checkout_scope: Callable[[], str] | None = None
 
     @property
     def spec(self) -> ToolSpec:
@@ -168,7 +169,8 @@ class HttpRequestTool(BaseTool):
         # re-reads.
         claim = None
         if method in _STATE_CHANGING_METHODS:
-            claim = evidence.claim_mutation(method, url, body)
+            scope = self._checkout_scope() if self._checkout_scope is not None else ""
+            claim = evidence.claim_mutation(method, url, body, scope=scope)
             if not claim.allowed:
                 return ToolResult(
                     tool_name="http_request",

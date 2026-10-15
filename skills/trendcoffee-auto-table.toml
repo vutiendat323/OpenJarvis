@@ -1,0 +1,44 @@
+[skill]
+name = "trendcoffee-auto-table"
+description = "For confirmed at-table dining with no clear table choice and no saved table, read live tables and select the first exactly available table in API order into the draft. Never use for take-out or to replace an explicit customer table choice. No free table or failed read leaves the draft unchanged. Pass finish_turn=false when checkout follows, then use the updated runtime_context draft revision/table in trendcoffee-checkout with table_status=available without a separate table or dining edit. This skill never creates an order or payment."
+required_capabilities = ["network:fetch"]
+input_schema_json = '''{"type":"object","properties":{"finish_turn":{"type":"boolean"},"customer_message":{"type":"string","minLength":1}},"required":["customer_message"],"additionalProperties":false}'''
+
+[skill.metadata.openjarvis.input_defaults]
+finish_turn = true
+
+[skill.metadata.openjarvis.continuation_arguments]
+# A selection preparing an already declared purchase must not end its turn.
+finish_turn = false
+
+[skill.metadata.openjarvis.request_recipe]
+origin = "https://trendcoffee.net"
+method = "GET"
+read_only = true
+allowed_content_types = ["application/json"]
+required_paths_json = '''[{"path":"result","type":"array"}]'''
+
+[[skill.steps]]
+tool_name = "http_request"
+output_key = "tables"
+arguments_template = '''{"url":"https://trendcoffee.net/api/latest/tables?branch=ba9355f797","method":"GET","timeout":5}'''
+assertions_json = '''[
+  {"actual":{"$map":"{tables.result}","as":"table","value":"{table.slug}"},"all_unique_non_empty":true},
+  {"actual":{"$map":"{tables.result}","as":"table","value":"{table.name}"},"all_unique_non_empty":true}
+]'''
+
+[[skill.steps]]
+tool_name = "display_cart"
+arguments_template = '''{
+  "action":"set_table",
+  "table":{"$first":{"$map":{
+    "$filter":"{tables.result}","as":"table",
+    "where":{"equals":["{table.status}","available"]}
+  },"as":"table","value":"{table.slug}"}},
+  "table_name":{"$first":{"$map":{
+    "$filter":"{tables.result}","as":"table",
+    "where":{"equals":["{table.status}","available"]}
+  },"as":"table","value":"{table.name}"}},
+  "finish_turn":"{finish_turn}",
+  "customer_message":"{customer_message}"
+}'''
