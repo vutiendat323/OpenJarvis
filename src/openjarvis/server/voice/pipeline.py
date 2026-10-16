@@ -194,7 +194,34 @@ def build_voice_pipeline(
                 "voice speaker identity=fusion without Vision faces; "
                 "using the audio-only gate"
             )
-        if fusion:
+        use_audio_engine = False
+        if speaker.engine == "audio":
+            from openjarvis.server.voice.speaker_engine_audio import (
+                audio_engine_available,
+            )
+
+            use_audio_engine = audio_engine_available()
+        if use_audio_engine:
+            from openjarvis.server.voice.speaker_engine_audio import (
+                build_audio_speaker_processor,
+            )
+
+            # Same models, bridge, tracker and STT; audio's gate and stream.
+            speaker_audio = build_audio_speaker_processor(
+                speaker,
+                fusion=fusion,
+                faces=faces,
+                bot_voiceprint=bot_voiceprint,
+                diarizer=diarizer,
+                stt_delay_secs=stt_delay,
+                separator=separator,
+                embedder=embedder if fusion else None,
+                tracker=tracker,
+                audio_enhancer=enhancer,
+                target_audio_monitor=getattr(stt, "target_audio_monitor", None),
+                vision_audio=vision_audio,
+            )
+        elif fusion:
             from openjarvis.kiosk.runtime import current_state
             from openjarvis.server.voice.speaker_identity import FusionGate
 
@@ -210,18 +237,19 @@ def build_voice_pipeline(
             )
         else:
             gate = AudioOnlyGate(speaker, faces=faces if speaker.vision_faces else None)
-        speaker_audio = SpeakerAudioProcessor(
-            diarizer=diarizer,
-            stt_delay_secs=stt_delay,
-            gate=gate,
-            separator=separator,
-            embedder=embedder if fusion else None,
-            tracker=tracker,
-            speaker_settings=speaker,
-            audio_enhancer=enhancer,
-            target_audio_monitor=getattr(stt, "target_audio_monitor", None),
-            **({"vision_audio": vision_audio} if vision_audio is not None else {}),
-        )
+        if not use_audio_engine:
+            speaker_audio = SpeakerAudioProcessor(
+                diarizer=diarizer,
+                stt_delay_secs=stt_delay,
+                gate=gate,
+                separator=separator,
+                embedder=embedder if fusion else None,
+                tracker=tracker,
+                speaker_settings=speaker,
+                audio_enhancer=enhancer,
+                target_audio_monitor=getattr(stt, "target_audio_monitor", None),
+                **({"vision_audio": vision_audio} if vision_audio is not None else {}),
+            )
         if stt_delay:
             stt.enable_masked_feed(
                 stt_delay,

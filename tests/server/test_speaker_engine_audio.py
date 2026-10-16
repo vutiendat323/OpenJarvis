@@ -336,3 +336,59 @@ async def test_audio_engine_console_matches_the_old_one_and_saves_the_same_prese
     saved = tomllib.loads(preset.read_text())
     assert saved["kiosk"]["approach_threshold_m"] == 1.4
     assert saved["voice"]["speaker"]["voice_match"] == 0.65
+
+
+def _build_pipeline(speaker):
+    from unittest.mock import MagicMock
+
+    from openjarvis.server.voice.pipeline import build_voice_pipeline
+
+    stt = FrameProcessor()
+    build_voice_pipeline(
+        connection=MagicMock(),
+        binding=MagicMock(),
+        renderer=MagicMock(),
+        stt=stt,
+        speaker=speaker,
+        diarizer=SimpleNamespace(chunk_samples=320, frame_secs=0.08),
+    )
+    return stt._prev  # the speaker slot sits right before the STT
+
+
+def test_default_engine_keeps_the_openjarvis_processor():
+    slot = _build_pipeline(
+        oj_speaker.SpeakerSettings(enabled=True, diarizer="sortformer")
+    )
+    assert type(slot) is SpeakerAudioProcessor
+
+
+@needs_audio
+def test_engine_audio_puts_the_adapter_in_the_speaker_slot():
+    from openjarvis.server.voice.speaker_engine_audio import AudioSpeakerProcessor
+
+    slot = _build_pipeline(
+        oj_speaker.SpeakerSettings(enabled=True, diarizer="sortformer", engine="audio")
+    )
+    assert isinstance(slot, AudioSpeakerProcessor)
+
+
+def test_engine_audio_without_the_package_falls_back_to_the_openjarvis_engine(
+    monkeypatch,
+):
+    import sys
+
+    from loguru import logger
+
+    monkeypatch.setitem(sys.modules, "audio", None)  # import audio now fails
+    messages = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    try:
+        slot = _build_pipeline(
+            oj_speaker.SpeakerSettings(
+                enabled=True, diarizer="sortformer", engine="audio"
+            )
+        )
+    finally:
+        logger.remove(sink)
+    assert type(slot) is SpeakerAudioProcessor
+    assert any("engine=audio" in message for message in messages)
