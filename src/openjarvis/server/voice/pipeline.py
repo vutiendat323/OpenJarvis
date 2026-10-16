@@ -221,23 +221,26 @@ def build_voice_pipeline(
                 target_audio_monitor=getattr(stt, "target_audio_monitor", None),
                 vision_audio=vision_audio,
             )
-        elif fusion:
-            from openjarvis.kiosk.runtime import current_state
-            from openjarvis.server.voice.speaker_identity import FusionGate
-
-            gate = FusionGate(
-                speaker,
-                faces,
-                fsm_state=current_state,
-                bot_voiceprint=(
-                    (lambda: bot_voiceprint.embedding)
-                    if bot_voiceprint is not None
-                    else (lambda: None)
-                ),
-            )
-        else:
-            gate = AudioOnlyGate(speaker, faces=faces if speaker.vision_faces else None)
+            use_audio_engine = speaker_audio is not None
         if not use_audio_engine:
+            if fusion:
+                from openjarvis.kiosk.runtime import current_state
+                from openjarvis.server.voice.speaker_identity import FusionGate
+
+                gate = FusionGate(
+                    speaker,
+                    faces,
+                    fsm_state=current_state,
+                    bot_voiceprint=(
+                        (lambda: bot_voiceprint.embedding)
+                        if bot_voiceprint is not None
+                        else (lambda: None)
+                    ),
+                )
+            else:
+                gate = AudioOnlyGate(
+                    speaker, faces=faces if speaker.vision_faces else None
+                )
             speaker_audio = SpeakerAudioProcessor(
                 diarizer=diarizer,
                 stt_delay_secs=stt_delay,

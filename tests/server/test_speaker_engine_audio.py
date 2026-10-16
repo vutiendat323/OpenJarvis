@@ -392,3 +392,60 @@ def test_engine_audio_without_the_package_falls_back_to_the_openjarvis_engine(
         logger.remove(sink)
     assert type(slot) is SpeakerAudioProcessor
     assert any("engine=audio" in message for message in messages)
+
+
+@needs_audio
+@pytest.mark.asyncio
+async def test_audio_engine_logs_reach_the_kiosk_log():
+    """jarvis serve logs through loguru; audio logs through stdlib logging."""
+    from loguru import logger
+
+    from openjarvis.server.voice.speaker_engine_audio import (
+        AudioSpeakerProcessor,
+        audio_engine_available,
+    )
+
+    assert audio_engine_available()
+    impl = _new()
+    processor = AudioSpeakerProcessor(
+        diarizer=RowDiarizer([]),
+        gate=impl.fusion(
+            impl.settings(**FUSION), impl.faces(), fsm_state=lambda: "active"
+        ),
+        executor=ThreadPoolExecutor(max_workers=1),
+    )
+    records = []
+    sink = logger.add(lambda message: records.append(message.record), level="DEBUG")
+    try:
+        await processor._stream.close()
+    finally:
+        logger.remove(sink)
+    (record,) = [r for r in records if "speaker_fusion session" in r["message"]]
+    assert record["level"].name == "INFO"
+    assert record["name"] == "audio.application.stream"
+
+
+@needs_audio
+def test_a_failing_audio_engine_build_falls_back_to_the_openjarvis_engine(
+    monkeypatch,
+):
+    from loguru import logger
+
+    from openjarvis.server.voice import speaker_engine_audio
+
+    def broken(speaker):
+        raise RuntimeError("audio settings drifted")
+
+    monkeypatch.setattr(speaker_engine_audio, "audio_settings", broken)
+    messages = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    try:
+        slot = _build_pipeline(
+            oj_speaker.SpeakerSettings(
+                enabled=True, diarizer="sortformer", engine="audio"
+            )
+        )
+    finally:
+        logger.remove(sink)
+    assert type(slot) is SpeakerAudioProcessor
+    assert any("audio settings drifted" in message for message in messages)

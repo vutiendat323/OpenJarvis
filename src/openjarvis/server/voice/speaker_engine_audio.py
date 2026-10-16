@@ -9,6 +9,7 @@ functions; without it the pipeline keeps the openjarvis engine.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import fields, replace
 from typing import Any
@@ -32,6 +33,30 @@ from openjarvis.server.voice.transcription import SttAudioFrame
 from openjarvis.server.voice.turn_detection import SpeakerVerdictFrame
 
 
+class _ToLoguru(logging.Handler):
+    """audio logs through stdlib logging; the kiosk log is loguru's."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level: str | int = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        logger.patch(
+            lambda r: r.update(
+                name=record.name, function=record.funcName, line=record.lineno
+            )
+        ).opt(exception=record.exc_info).log(level, record.getMessage())
+
+
+def _forward_audio_logs() -> None:
+    """Send audio's records, DEBUG up as before, to the kiosk log once."""
+    audio_logger = logging.getLogger("audio")
+    if not any(isinstance(h, _ToLoguru) for h in audio_logger.handlers):
+        audio_logger.addHandler(_ToLoguru())
+        audio_logger.setLevel(logging.DEBUG)
+        audio_logger.propagate = False
+
+
 def audio_engine_available() -> bool:
     """True when ``audio`` imports; otherwise warn and keep the old engine."""
     try:
@@ -42,6 +67,7 @@ def audio_engine_available() -> bool:
             "(uv pip install --no-deps -e ../Audio); using the openjarvis engine"
         )
         return False
+    _forward_audio_logs()
     return True
 
 
@@ -178,8 +204,34 @@ def build_audio_speaker_processor(
     faces: Any,
     bot_voiceprint: Any,
     **processor_args: Any,
+) -> AudioSpeakerProcessor | None:
+    """audio's gate and processor, chosen exactly as the openjarvis engine does.
+
+    None when building fails: the session then keeps the openjarvis engine.
+    """
+    try:
+        return _build_audio_speaker_processor(
+            speaker,
+            fusion=fusion,
+            faces=faces,
+            bot_voiceprint=bot_voiceprint,
+            **processor_args,
+        )
+    except Exception:  # noqa: BLE001 - a customer must still be able to talk
+        logger.exception(
+            "voice speaker engine=audio failed to start; using the openjarvis engine"
+        )
+        return None
+
+
+def _build_audio_speaker_processor(
+    speaker: SpeakerSettings,
+    *,
+    fusion: bool,
+    faces: Any,
+    bot_voiceprint: Any,
+    **processor_args: Any,
 ) -> AudioSpeakerProcessor:
-    """audio's gate and processor, chosen exactly as the openjarvis engine does."""
     from audio.domain.fusion import FusionGate
     from audio.domain.gate import AudioOnlyGate
 
