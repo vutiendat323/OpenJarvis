@@ -200,11 +200,27 @@ async def _run(processor, started, frames, bot):
     return verdicts, stt, types
 
 
-# name: (gate builder, TSE, STT delay, an STT reason the run must show)
+# The STT reason each run must show proves the path it claims to cover.
 CONFIGS = {
-    "audio-only+tse": (_audio_only_gate, True, STT_DELAY, "separated"),
-    "fusion-locked": (_voice_locked_gate, False, STT_DELAY, "silenced_masked"),
-    "audio-only no-delay": (_audio_only_gate, False, 0.0, None),
+    "audio-only+tse": {"gate": _audio_only_gate, "tse": True, "reason": "separated"},
+    "audio-only no-delay": {"gate": _audio_only_gate, "delay": 0.0},
+    "fusion-locked": {"gate": _voice_locked_gate, "reason": "silenced_masked"},
+    "fusion-locked+tse": {
+        "gate": _voice_locked_gate,
+        "tse": True,
+        "reason": "silenced_masked",
+    },
+    "fusion-locked no-delay": {"gate": _voice_locked_gate, "delay": 0.0},
+    # What production passes under audio's gate: OpenJarvis's face buffer.
+    # The Vision bridge (ASD waits, pins) and embeddings run on the wall clock:
+    # the openjarvis engine does not repeat itself there, so those paths rest
+    # on Audio's parity check, which proves their code identical.
+    "fusion-locked+tse, openjarvis faces": {
+        "gate": _voice_locked_gate,
+        "tse": True,
+        "openjarvis_faces": True,
+        "reason": "silenced_masked",
+    },
 }
 
 
@@ -213,16 +229,17 @@ CONFIGS = {
 def test_audio_engine_emits_the_same_frames_as_the_openjarvis_engine(name):
     from openjarvis.server.voice.speaker_engine_audio import AudioSpeakerProcessor
 
-    build, tse, delay, reason = CONFIGS[name]
+    config = CONFIGS[name]
+    delay = config.get("delay", STT_DELAY)
     rows, frames, bot = _scenario()
 
     def args(impl):
         return {
             "diarizer": RowDiarizer(rows),
-            "gate": build(impl),
+            "gate": config["gate"](impl),
             "executor": ThreadPoolExecutor(max_workers=1),
             "stt_delay_secs": delay,
-            "separator": HalfSeparator() if tse else None,
+            "separator": HalfSeparator() if config.get("tse") else None,
             "separator_executor": ThreadPoolExecutor(max_workers=1),
         }
 
@@ -230,7 +247,10 @@ def test_audio_engine_emits_the_same_frames_as_the_openjarvis_engine(name):
     old = asyncio.run(
         _run(old_processor, lambda: old_processor._worker is not None, frames, bot)
     )
-    new_processor = AudioSpeakerProcessor(**args(_new()))
+    impl = _new()
+    if config.get("openjarvis_faces"):
+        impl.faces = OLD.faces
+    new_processor = AudioSpeakerProcessor(**args(impl))
     new = asyncio.run(
         _run(
             new_processor,
@@ -243,10 +263,10 @@ def test_audio_engine_emits_the_same_frames_as_the_openjarvis_engine(name):
     assert new[2] == {oj_speaker.Verdict}
     assert new[0] == old[0]
     assert new[1] == old[1]
-    if reason is None:
+    if delay == 0.0:
         assert new[1] == []
     else:
-        assert reason in {r for _, _, r in new[1]}
+        assert config["reason"] in {r for _, _, r in new[1]}
 
 
 @needs_audio
@@ -379,7 +399,10 @@ def test_engine_audio_without_the_package_falls_back_to_the_openjarvis_engine(
 
     from loguru import logger
 
+    from openjarvis.server.voice import speaker_engine_audio
+
     monkeypatch.setitem(sys.modules, "audio", None)  # import audio now fails
+    monkeypatch.setattr(speaker_engine_audio, "_missing_reported", False)
     messages = []
     sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
     try:
@@ -449,3 +472,33 @@ def test_a_failing_audio_engine_build_falls_back_to_the_openjarvis_engine(
         logger.remove(sink)
     assert type(slot) is SpeakerAudioProcessor
     assert any("audio settings drifted" in message for message in messages)
+
+
+@needs_audio
+def test_the_kiosk_distance_bounds_come_from_the_openjarvis_console(monkeypatch):
+    from openjarvis.server.voice import speaker_console
+    from openjarvis.server.voice.speaker_engine_audio import kiosk_distance_key
+
+    monkeypatch.setitem(
+        speaker_console.LIVE_SPEAKER_KEYS, "approach_threshold_m", (0.2, 5.0)
+    )
+    assert kiosk_distance_key().bounds == (0.2, 5.0)
+
+
+def test_a_missing_audio_package_is_reported_once_per_process(monkeypatch):
+    import sys
+
+    from loguru import logger
+
+    from openjarvis.server.voice import speaker_engine_audio
+
+    monkeypatch.setitem(sys.modules, "audio", None)
+    monkeypatch.setattr(speaker_engine_audio, "_missing_reported", False)
+    messages = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    try:
+        results = [speaker_engine_audio.audio_engine_available() for _ in range(3)]
+    finally:
+        logger.remove(sink)
+    assert results == [False, False, False]
+    assert sum("engine=audio" in message for message in messages) == 1

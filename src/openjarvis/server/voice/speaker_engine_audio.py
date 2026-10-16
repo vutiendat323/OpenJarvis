@@ -57,15 +57,23 @@ def _forward_audio_logs() -> None:
         audio_logger.propagate = False
 
 
+# A missing package is reported once per process, not at every session.
+_missing_reported = False
+
+
 def audio_engine_available() -> bool:
-    """True when ``audio`` imports; otherwise warn and keep the old engine."""
+    """True when ``audio`` imports; otherwise warn once and keep the old engine."""
+    global _missing_reported
     try:
         import audio.application.stream  # noqa: F401
     except ImportError:
-        logger.warning(
-            "voice speaker engine=audio but the audio package is not importable "
-            "(uv pip install --no-deps -e ../Audio); using the openjarvis engine"
-        )
+        if not _missing_reported:
+            _missing_reported = True
+            logger.warning(
+                "voice speaker engine=audio but the audio package is not "
+                "importable (uv pip install --no-deps -e ../Audio); voice "
+                "sessions use the openjarvis engine"
+            )
         return False
     _forward_audio_logs()
     return True
@@ -85,13 +93,14 @@ def kiosk_distance_key() -> Any:
     from audio.application.ports import LiveKey
 
     from openjarvis.kiosk.evaluate import get_config, set_config
+    from openjarvis.server.voice.speaker_console import LIVE_SPEAKER_KEYS
 
     def set_distance(value: float) -> None:
         set_config(replace(get_config(), approach_threshold_m=value))
 
     return LiveKey(
         "approach_threshold_m",
-        (0.1, 6.0),
+        LIVE_SPEAKER_KEYS["approach_threshold_m"],
         lambda: get_config().approach_threshold_m,
         set_distance,
     )
