@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KioskState } from '@/hooks/useKioskState';
+import type { ChatMessage } from '@/types';
 
 import { KioskPage, computeEdgeGlowShadow } from './KioskPage';
 import type { LocalVoiceStatus } from '@/hooks/voiceStatus';
@@ -13,6 +14,7 @@ import { voiceStatusLabel } from '@/hooks/voiceUiText';
 const storageMap = new Map<string, string>();
 let mockUiLanguage = 'vi';
 let mockKioskState: KioskState = 'prompting';
+let mockOnTurn: ((message: ChatMessage) => void) | undefined;
 
 let mockVoiceState = {
   enabled: true,
@@ -67,7 +69,8 @@ beforeEach(() => {
     end: vi.fn().mockResolvedValue(undefined),
   };
 
-  mockCreateConversation.mockClear();
+  mockCreateConversation.mockReset().mockReturnValue('thread-123');
+  mockAddMessage.mockClear();
   mockLifecycle.markActive.mockClear();
   mockLifecycle.endVoiceThenReset.mockClear();
 });
@@ -132,7 +135,10 @@ vi.mock('@/hooks/useKioskState', () => ({
   useKioskState: () => ({ state: mockKioskState, micEnabled: mockKioskState === 'active', respond: vi.fn() }),
 }));
 vi.mock('@/hooks/usePipecatVoiceMode', () => ({
-  usePipecatVoiceMode: () => mockVoiceState,
+  usePipecatVoiceMode: (options: { onTurn?: (message: ChatMessage) => void }) => {
+    mockOnTurn = options.onTurn;
+    return mockVoiceState;
+  },
 }));
 vi.mock('@/hooks/useSharedBrowser', () => ({
   useSharedBrowser: () => ({ status: 'connected', url: 'about:blank', send: vi.fn() }),
@@ -165,6 +171,56 @@ vi.mock('@/components/Kiosk/SharedBrowserPane', () => ({
 }));
 
 describe('KioskPage', () => {
+  it('starts a separate chat conversation for each accepted customer', () => {
+    mockCreateConversation.mockReturnValueOnce('guest-1').mockReturnValueOnce('guest-2');
+    const view = () => <MemoryRouter><KioskPage /></MemoryRouter>;
+    const { rerender } = render(view());
+    expect(mockCreateConversation).not.toHaveBeenCalled();
+
+    const firstTurn: ChatMessage = { id: 'turn-1', role: 'user', content: 'First guest', timestamp: 1 };
+    const secondTurn: ChatMessage = { id: 'turn-2', role: 'user', content: 'Second guest', timestamp: 2 };
+    mockKioskState = 'active';
+    rerender(view());
+    act(() => mockOnTurn?.(firstTurn));
+    expect(mockVoiceState.start).toHaveBeenNthCalledWith(1, 'guest-1', 'gpt-5.6-luna');
+
+    for (const state of ['cleanup', 'idle', 'approaching', 'prompting'] as const) {
+      mockKioskState = state;
+      rerender(view());
+    }
+    expect(mockCreateConversation).toHaveBeenCalledTimes(1);
+
+    mockKioskState = 'active';
+    rerender(view());
+    act(() => mockOnTurn?.(secondTurn));
+    rerender(view());
+
+    expect(mockVoiceState.start).toHaveBeenNthCalledWith(2, 'guest-2', 'gpt-5.6-luna');
+    expect(mockCreateConversation).toHaveBeenCalledTimes(2);
+    expect(mockVoiceState.start).toHaveBeenCalledTimes(2);
+    expect(mockAddMessage.mock.calls).toEqual([['guest-1', firstTurn], ['guest-2', secondTurn]]);
+    expect(mockLifecycle.markActive.mock.calls).toEqual([['guest-1'], ['guest-2']]);
+  });
+
+  it('keeps the current customer conversation when the microphone is restarted', () => {
+    mockCreateConversation.mockReturnValueOnce('guest-1').mockReturnValueOnce('guest-2');
+    mockKioskState = 'active';
+    mockVoiceState.status = 'listening';
+    const view = () => <MemoryRouter><KioskPage /></MemoryRouter>;
+    const { getByTestId, rerender } = render(view());
+
+    fireEvent.click(getByTestId('active-mic-btn'));
+    mockVoiceState.status = 'ended';
+    rerender(view());
+    fireEvent.click(getByTestId('active-mic-btn'));
+
+    expect(mockVoiceState.start.mock.calls).toEqual([
+      ['guest-1', 'gpt-5.6-luna'],
+      ['guest-1', 'gpt-5.6-luna'],
+    ]);
+    expect(mockCreateConversation).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ['purple-glow', 'listening'], ['purple-glow', 'error'],
     ['midnight-blue', 'listening'], ['midnight-blue', 'error'],

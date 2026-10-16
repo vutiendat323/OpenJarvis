@@ -316,6 +316,7 @@ export function KioskPage() {
     if (decision.command === 'end') {
       void endVoice().catch(() => {});
     } else if (decision.command === 'start') {
+      threadIdRef.current = '';
       startPolicyVoice();
     }
   }, [endVoice, micEnabled, modelsLoading, selectedModel, startPolicyVoice, voice.enabled]);

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from scripts.benchmark_ordering_voice import OrderingFixture
 
 from openjarvis.agents.intent import IntentState
 from openjarvis.core.conversation import agent_turn_scope, conversation_scope
@@ -102,3 +103,49 @@ def test_checkout_write_with_unknown_outcome_still_blocks_retry():
         with pytest.raises(ValueError, match="target already attempted"):
             _prepare(state, tool, cart_revision=revision)
         assert len(http.calls) == 1
+
+
+@pytest.mark.parametrize("refusal", ["dining", "stale_revision"])
+def test_checkout_draft_refusal_allows_same_turn_repair_before_any_write(refusal):
+    fixture = OrderingFixture()
+    tool = next(
+        tool for tool in fixture.tools if tool.spec.name == "skill_trendcoffee-checkout"
+    )
+    state = IntentState(fixture.tools)
+    with conversation_scope("checkout-draft-repair"), agent_turn_scope() as nonce:
+        fixture.seed(cart=True, order_type="" if refusal == "dining" else "take-out")
+        before = fixture.cart.current_snapshot()
+        arguments = {
+            "cart_revision": before["revision"]
+            + (1 if refusal == "stale_revision" else 0),
+            "order_type": "take-out",
+            "table": "",
+            "order_note": "",
+            "customer_message": "Fixture checkout completed.",
+        }
+        state.runtime_context = {"turn_nonce": nonce}
+        call = _prepare(state, tool, **arguments)
+        result = tool.execute(**json.loads(call.arguments))
+
+        assert not result.success
+        assert result.content == (
+            "checkout order type does not match the draft"
+            if refusal == "dining"
+            else "cart revision is stale or empty"
+        )
+        assert fixture.shop.calls == []
+        assert fixture.cart.current_snapshot() == before
+        assert result.metadata.get("execution_started") is False
+        state.observe(call, result)
+
+        arguments.update(cart_revision=before["revision"], update_order_type=True)
+        corrected = _prepare(state, tool, **arguments)
+        completed = tool.execute(**json.loads(corrected.arguments))
+        state.observe(corrected, completed)
+
+        assert completed.success and state.reached
+        assert fixture.shop.order["type"] == "take-out"
+        assert len([c for c in fixture.shop.calls if c.get("method") == "POST"]) == 2
+        with pytest.raises(ValueError, match="requested outcome already completed"):
+            _prepare(state, tool, **arguments)
+        assert len([c for c in fixture.shop.calls if c.get("method") == "POST"]) == 2

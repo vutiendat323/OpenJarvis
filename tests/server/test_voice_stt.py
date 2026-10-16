@@ -168,13 +168,13 @@ def test_ordering_kiosk_preset_uses_vietnamese_with_essential_ordering_terms(
     vocabulary = set(transcription.custom_vocabulary or [])
     assert {
         "menu",
-        "Yaourt",
-        "Lipton",
         "Americano",
         "Espresso",
         "Latte",
         "Cold Brew",
-        "Croissant",
+        "Ham & Cheese",
+        "Matcha ribbon",
+        "Salted egg charcoal",
     } <= vocabulary
     vietnamese_choices = {"mang đi", "mang về", "tại bàn"}
     assert vietnamese_choices <= vocabulary

@@ -197,6 +197,7 @@ class SkillExecutor:
                         tool_name=manifest.name,
                         content=_with_shown_order(cart, str(exc)),
                         success=False,
+                        metadata={"execution_started": False},
                     ),
                 ],
             )
