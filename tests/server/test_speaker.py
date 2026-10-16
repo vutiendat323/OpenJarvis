@@ -864,3 +864,20 @@ def test_tracker_counts_sources_per_span():
     tracker.begin_span()
     assert tracker.source_counts() == {}
     assert tracker.bargein_blocked == 0
+
+
+def test_engine_defaults_to_openjarvis_and_is_validated(tmp_path, monkeypatch):
+    import re
+
+    assert SpeakerSettings().engine == "openjarvis"
+    preset = tmp_path / "preset.toml"
+    monkeypatch.setenv("OPENJARVIS_CONFIG", str(preset))
+    preset.write_text('[voice.speaker]\nengine = "audio"\n')
+    assert load_speaker_settings().engine == "audio"
+    for value in ('"Audio"', '"audio "', "1"):
+        preset.write_text(f"[voice.speaker]\nengine = {value}\n")
+        with pytest.raises(
+            ValueError,
+            match=re.escape("voice_speaker_engine_must_be_one_of_openjarvis|audio"),
+        ):
+            load_speaker_settings()

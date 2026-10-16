@@ -65,6 +65,9 @@ class SpeakerSettings:
     bot_match: float = 0.70
     embed_segment_secs: float = 1.0
     embedder_model: str = "titanet_small"
+    # Which code runs the gate and the STT mask: this package's, or the
+    # ``audio`` library's (spec 2026-10-16). Read when a voice session starts.
+    engine: str = "openjarvis"
 
 
 # Fusion: a slot's solo speech is embedded in segments of embed_segment_secs,
@@ -246,6 +249,7 @@ def load_speaker_settings() -> SpeakerSettings:
         bot_match=_fraction(section, "bot_match", defaults.bot_match),
         embed_segment_secs=embed_segment_secs,
         embedder_model=embedder_model.strip(),
+        engine=_choice(section, "engine", defaults.engine, ("openjarvis", "audio")),
     )
 
 
