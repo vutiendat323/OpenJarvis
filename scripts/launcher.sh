@@ -46,7 +46,7 @@ log_error() { _log_msg "ERROR" "\033[31m" 2 "$@"; }   # Red
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE_DIR="$(cd "$ROOT_DIR/.." && pwd)"
 ENV_FILE="${OPENJARVIS_ENV_FILE:-$ROOT_DIR/.env}"
-VISION_DIR="${OPENJARVIS_VISION_DIR:-$WORKSPACE_DIR/vision}"
+VISION_DIR="${OPENJARVIS_VISION_DIR:-$WORKSPACE_DIR/Visual}"
 VISION_CONFIG="${JARVIS_CONFIG:-$ROOT_DIR/configs/vision/ordering-kiosk.yml}"
 if [ -z "${JARVIS_CONFIG:-}" ] && [ -f "$WORKSPACE_DIR/.vision-prod-noyolo.yml" ]; then
     VISION_CONFIG="$WORKSPACE_DIR/.vision-prod-noyolo.yml"
