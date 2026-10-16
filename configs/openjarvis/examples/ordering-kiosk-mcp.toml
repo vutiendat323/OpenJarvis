@@ -175,6 +175,10 @@ model = "deepseek-flash"
 prompt_file = "configs/openjarvis/prompts/voice-responder.md"
 
 [voice.speaker]
+# Speaker engine (spec 2026-10-16): "audio" runs the gate, STT mask and TSE
+# from ../Audio (installed editable in .venv); remove the line to go back to
+# the built-in "openjarvis" engine at the next voice session.
+engine = "audio"
 # Target-speaker gate (docs spec 2026-09-25). Off until a diarizer ships:
 # with no speaker evidence every turn is accepted, exactly as before. An
 # UNCERTAIN turn acts without asking; only a REJECTed turn that still
