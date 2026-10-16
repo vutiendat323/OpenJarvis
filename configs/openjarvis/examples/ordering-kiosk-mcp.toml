@@ -227,7 +227,7 @@ servers = '''[{"name": "playwright", "command": "npx", "args": ["-y", "@playwrig
 
 [kiosk]
 approach_threshold_m = 0.6
-approach_entry_debounce = 5.0
+approach_entry_debounce = 3.0
 approach_sustain_seconds = 5.0
 leave_sustain_seconds_active = 3.0
 session_max_seconds = 600.0
