@@ -114,6 +114,11 @@ def test_checkout_draft_refusal_allows_same_turn_repair_before_any_write(refusal
     state = IntentState(fixture.tools)
     with conversation_scope("checkout-draft-repair"), agent_turn_scope() as nonce:
         fixture.seed(cart=True, order_type="" if refusal == "dining" else "take-out")
+        state.runtime_context = {**tool.agent_context(), "turn_nonce": nonce}
+        if refusal == "stale_revision":
+            assert fixture.cart.edit_without_display(
+                "set_pickup_time", {"pickup_minutes": 15}
+            ).success
         before = fixture.cart.current_snapshot()
         arguments = {
             "cart_revision": before["revision"]
@@ -123,7 +128,6 @@ def test_checkout_draft_refusal_allows_same_turn_repair_before_any_write(refusal
             "order_note": "",
             "customer_message": "Fixture checkout completed.",
         }
-        state.runtime_context = {"turn_nonce": nonce}
         call = _prepare(state, tool, **arguments)
         result = tool.execute(**json.loads(call.arguments))
 
@@ -138,6 +142,7 @@ def test_checkout_draft_refusal_allows_same_turn_repair_before_any_write(refusal
         assert result.metadata.get("execution_started") is False
         state.observe(call, result)
 
+        state.runtime_context = {**tool.agent_context(), "turn_nonce": nonce}
         arguments.update(cart_revision=before["revision"], update_order_type=True)
         corrected = _prepare(state, tool, **arguments)
         completed = tool.execute(**json.loads(corrected.arguments))

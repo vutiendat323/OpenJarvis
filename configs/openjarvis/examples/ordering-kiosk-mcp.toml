@@ -139,11 +139,11 @@ custom_vocabulary = [
   "mang đi",
   "mang về",
   "tại bàn",
+  "cam",
   "menu",
   "Americano",
   "Espresso",
   "Latte",
-  "Affogato",
   "Cold Brew",
   "Cold Brew Original",
   "Matcha",
@@ -151,7 +151,6 @@ custom_vocabulary = [
   "Chocolate Coco",
   "Strawberry matcha latte",
   "Ham & Cheese",
-  "Matcha ribbon",
   "Salted egg charcoal",
   "Tiramisu",
   "Cinnamon rolls",
@@ -234,4 +233,4 @@ session_max_seconds = 600.0
 leave_sustain_seconds_prompting = 5.0
 popup_timeout = 30.0
 decline_cooldown_seconds = 10.0
-tts_voice = "Mai Anh"
+tts_voice = "Đoan Trang"

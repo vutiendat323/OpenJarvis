@@ -11,6 +11,11 @@ name = "CHECKOUT_NOW"
 [skill.metadata.openjarvis.runtime_arguments]
 turn_nonce = "turn_nonce"
 
+[skill.metadata.openjarvis.runtime_arguments_if_present]
+# Bind saved-draft selection to the snapshot supplied before inference.
+# Replacement cart_lines must not acquire a cart_revision.
+cart_revision = "draft_cart.revision"
+
 [skill.metadata.openjarvis.input_defaults]
 # Explicit confirmed sharing retains the current merchant behavior. Automatic
 # selection requires the chosen table to still be free at checkout's live read.

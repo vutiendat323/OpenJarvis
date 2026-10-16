@@ -359,6 +359,50 @@ def test_missing_runtime_binding_blocks_dispatch():
     assert result.metadata["intent_satisfied"] is False
 
 
+@pytest.mark.parametrize(
+    "arguments,expected", [({}, {}), ({"finish_turn": True}, {"finish_turn": False})]
+)
+def test_present_arguments_use_verified_runtime_values(arguments, expected):
+    class RuntimeTool(ExistingTool):
+        def agent_context(self):
+            return {"verified": {"finish": False}}
+
+    target = RuntimeTool(
+        "finish",
+        metadata={
+            "intent_contract": {"name": "FINALIZE"},
+            "runtime_arguments_if_present": {"finish_turn": "verified.finish"},
+        },
+    )
+    engine = FakeEngine([{"tool_calls": [invoke("finish", "FINALIZE", **arguments)]}])
+    result = OrchestratorAgent(
+        engine, "fake", tools=[target], intent_normalization=True
+    ).run("request")
+    assert target.calls == [expected]
+    assert result.metadata["intent_satisfied"] is True
+
+
+def test_present_runtime_argument_without_verified_value_blocks_dispatch():
+    target = ExistingTool(
+        "finish",
+        metadata={
+            "intent_contract": {"name": "FINALIZE"},
+            "runtime_arguments_if_present": {"finish_turn": "verified.finish"},
+        },
+    )
+    engine = FakeEngine(
+        [
+            {"tool_calls": [invoke("finish", "FINALIZE", finish_turn=True)]},
+            {"content": json.dumps({"state": "FAILED", "message": "Unavailable."})},
+        ]
+    )
+    result = OrchestratorAgent(
+        engine, "fake", tools=[target], intent_normalization=True
+    ).run("request")
+    assert target.calls == []
+    assert result.metadata["intent_satisfied"] is False
+
+
 class ExistingTool(BaseTool):
     def __init__(self, name, *, metadata=None, fail=False):
         self.name, self.metadata, self.fail = name, metadata or {}, fail

@@ -15,19 +15,20 @@ class IntentState:
         self.tools = {tool.spec.name: tool for tool in tools}
         self.targets = {}
         for tool in tools:
-            bindings = tool.spec.metadata.get("runtime_arguments", {})
-            if not isinstance(bindings, dict) or any(
-                argument not in tool.spec.parameters.get("properties", {})
-                or argument == "_intent"
-                or not isinstance(source, str)
-                or not source
-                or not all(source.split("."))
-                for argument, source in bindings.items()
-            ):
-                raise ValueError(
-                    "runtime argument bindings must reference declared parameters "
-                    "and verified paths"
-                )
+            for key in ("runtime_arguments", "runtime_arguments_if_present"):
+                bindings = tool.spec.metadata.get(key, {})
+                if not isinstance(bindings, dict) or any(
+                    argument not in tool.spec.parameters.get("properties", {})
+                    or argument == "_intent"
+                    or not isinstance(source, str)
+                    or not source
+                    or not all(source.split("."))
+                    for argument, source in bindings.items()
+                ):
+                    raise ValueError(
+                        "runtime argument bindings must reference declared parameters "
+                        "and verified paths"
+                    )
             contract = tool.spec.metadata.get("intent_contract")
             if not isinstance(contract, dict):
                 continue
@@ -133,9 +134,15 @@ class IntentState:
             declared_goal = declared
             tool = self.tools.get(call.name)
             if tool is not None:
-                for argument, source in tool.spec.metadata.get(
-                    "runtime_arguments", {}
-                ).items():
+                bindings = {
+                    argument: source
+                    for argument, source in tool.spec.metadata.get(
+                        "runtime_arguments_if_present", {}
+                    ).items()
+                    if argument in arguments
+                }
+                bindings.update(tool.spec.metadata.get("runtime_arguments", {}))
+                for argument, source in bindings.items():
                     value = self.runtime_context
                     for key in source.split("."):
                         if not isinstance(value, dict) or key not in value:

@@ -167,19 +167,20 @@ def test_ordering_kiosk_preset_uses_vietnamese_with_essential_ordering_terms(
     assert transcription.language_codes == ["vi-VN"]
     vocabulary = set(transcription.custom_vocabulary or [])
     assert {
+        "cam",
         "menu",
         "Americano",
         "Espresso",
         "Latte",
         "Cold Brew",
         "Ham & Cheese",
-        "Matcha ribbon",
         "Salted egg charcoal",
     } <= vocabulary
     vietnamese_choices = {"mang đi", "mang về", "tại bàn"}
     assert vietnamese_choices <= vocabulary
     assert all(term.isascii() for term in vocabulary - vietnamese_choices)
     assert not {"back menu", "takeaway", "topping"} & vocabulary
+    assert not {"Matcha ribbon", "Affogato"} & vocabulary
     assert len(vocabulary) <= 23
     assert transcription.mode == "VERBATIM"
 

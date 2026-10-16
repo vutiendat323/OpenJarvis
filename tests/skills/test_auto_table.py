@@ -128,10 +128,17 @@ def test_failed_table_read_or_no_free_table_leaves_draft_unchanged(
     assert len(requests) == 1
 
 
-def test_preset_auto_table_then_checkout_uses_two_inference_rounds(monkeypatch):
+@pytest.mark.parametrize("model_revision", [2, 3])
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.anyio
+async def test_preset_auto_table_then_checkout_uses_two_inference_rounds(
+    monkeypatch, model_revision, streaming
+):
     from openjarvis.agents.orchestrator import OrchestratorAgent
+    from openjarvis.engine._stubs import StreamChunk
     from tests.agents.fake_engine import FakeEngine
     from tests.agents.test_intent_normalization import invoke
+    from tests.agents.test_orchestrator import StreamingEngine
 
     rows = [
         {"slug": "busy", "name": "1", "status": "reserved"},
@@ -222,45 +229,74 @@ def test_preset_auto_table_then_checkout_uses_two_inference_rounds(monkeypatch):
         ],
         config["tools"]["model_hidden"],
     )
-    engine = FakeEngine(
-        [
-            {
-                "tool_calls": [
-                    invoke(
-                        "skill_trendcoffee-auto-table",
-                        "CHECKOUT_NOW",
-                        finish_turn=False,
-                        customer_message="Mình chọn bàn trống nhé.",
-                    )
+    responses = [
+        {
+            "tool_calls": [
+                invoke(
+                    "skill_trendcoffee-auto-table",
+                    "CHECKOUT_NOW",
+                    finish_turn=False,
+                    customer_message="Mình chọn bàn trống nhé.",
+                )
+            ]
+        },
+        {
+            "tool_calls": [
+                invoke(
+                    "skill_trendcoffee-checkout",
+                    "CHECKOUT_NOW",
+                    cart_revision=model_revision,
+                    order_type="at-table",
+                    table="floor-upstairs",
+                    table_status="available",
+                    order_note="",
+                    customer_message="Quét QR để thanh toán nhé.",
+                )
+            ]
+        },
+    ]
+    engine = (
+        StreamingEngine(
+            [
+                [
+                    StreamChunk(
+                        tool_calls=[
+                            {
+                                "index": 0,
+                                "id": call["id"],
+                                "function": {
+                                    "name": call["name"],
+                                    "arguments": call["arguments"],
+                                },
+                            }
+                            for call in response["tool_calls"]
+                        ]
+                    ),
+                    StreamChunk(finish_reason="tool_calls"),
                 ]
-            },
-            {
-                "tool_calls": [
-                    invoke(
-                        "skill_trendcoffee-checkout",
-                        "CHECKOUT_NOW",
-                        cart_revision=2,
-                        order_type="at-table",
-                        table="floor-upstairs",
-                        table_status="available",
-                        order_note="",
-                        customer_message="Quét QR để thanh toán nhé.",
-                    )
-                ]
-            },
-        ]
+                for response in responses
+            ]
+        )
+        if streaming
+        else FakeEngine(responses)
     )
     with conversation_scope("auto-table-checkout"):
         _add(cart)
-        result = OrchestratorAgent(
+        agent = OrchestratorAgent(
             engine, "fake", tools=tools, intent_normalization=True, max_turns=2
-        ).run("Một cà phê tại bàn, chọn bàn trống giúp mình và thanh toán luôn.")
+        )
+        query = "Một cà phê tại bàn, chọn bàn trống giúp mình và thanh toán luôn."
+        if streaming:
+            completed = [event async for event in agent.run_stream(query)]
+            result = completed[-1].result
+        else:
+            result = agent.run(query)
     assert result.tool_results and all(r.success for r in result.tool_results)
     assert result.metadata["execution_path"] == [
         "skill_trendcoffee-auto-table",
         "skill_trendcoffee-checkout",
     ]
-    assert engine.call_count == 2
+    assert (len(engine.calls) if streaming else engine.call_count) == 2
     writes = [request for request in requests if request[0] == "POST"]
     assert len(writes) == 2
     assert (writes[0][2]["type"], writes[0][2]["table"]) == (

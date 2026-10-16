@@ -294,6 +294,7 @@ class SkillTool(BaseTool):
                     "continuation_arguments",
                     "read_only",
                     "runtime_arguments",
+                    "runtime_arguments_if_present",
                 )
                 if key in policy
             },
