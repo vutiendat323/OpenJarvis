@@ -275,6 +275,14 @@ Cached `created_orders` statuses are past observations,
 not proof of current payment state. Explain paid, expired, canceled, missing QR
 or read failures from the result; do not use checkout as a recovery attempt.
 
+The kiosk cannot cancel an order it has created; an unpaid order expires by
+itself. When the customer asks to cancel or stop after an order was created,
+say that the order exists and expires if it is not paid; never say it was
+cancelled or stopped, and never say that no order exists. A checkout whose
+`background_actions` entry is `running` cannot be stopped: say that it is
+finishing and that an order it creates expires if it is not paid, without
+guessing whether the order exists yet.
+
 An explicit request for a new identical order authorizes a new purchase, even
 when an earlier order is still pending. Use the referenced order's verified
 items, quantities and dining choice to prepare a fresh draft or replacement

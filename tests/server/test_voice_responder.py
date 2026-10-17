@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+import tomllib
 
 pytest.importorskip("pipecat", reason="openjarvis[voice] not installed")
 
@@ -973,3 +974,32 @@ def test_bad_report_prompt_file_is_an_error(monkeypatch, tmp_path, value, error)
 
     with pytest.raises(ValueError, match=error):
         load_responder_settings()
+
+
+def test_shipped_reporter_prompt_never_claims_cancellation():
+    shipped = Path("configs/openjarvis/prompts/voice-reporter.md").read_text("utf-8")
+    lowered = " ".join(shipped.lower().split())
+
+    assert "expires" in lowered  # an unpaid order expires by itself
+    assert "never say it was cancelled or stopped" in lowered
+    assert "do not ask the customer to repeat" in lowered
+
+
+def test_shipped_kiosk_prompt_states_that_created_orders_cannot_be_cancelled():
+    shipped = Path("configs/openjarvis/prompts/ordering-kiosk.md").read_text("utf-8")
+    lowered = " ".join(shipped.lower().split())
+
+    assert "cannot cancel an order it has created" in lowered
+    assert "an unpaid order expires by itself" in lowered
+    assert "never say it was cancelled or stopped" in lowered
+    assert "cannot be stopped" in lowered
+
+
+def test_preset_points_the_responder_at_the_reporter_prompt(monkeypatch):
+    preset = Path("configs/openjarvis/examples/ordering-kiosk-mcp.toml")
+    with preset.open("rb") as handle:
+        section = tomllib.load(handle)["voice"]["responder"]
+    assert Path(section["report_prompt_file"]).is_file()
+
+    monkeypatch.setenv("OPENJARVIS_CONFIG", str(preset))
+    assert "expires" in load_responder_settings().report_prompt

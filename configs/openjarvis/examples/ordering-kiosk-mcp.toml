@@ -173,6 +173,9 @@ model = "deepseek-flash"
 # file like the Agent's prompt. Read at each session; unset uses the generic
 # built-in prompt.
 prompt_file = "configs/openjarvis/prompts/voice-responder.md"
+# A late result of a request the customer interrupted is phrased by the same
+# fast model with this wording (spec 2026-10-17 barge-in §5.6).
+report_prompt_file = "configs/openjarvis/prompts/voice-reporter.md"
 
 [voice.speaker]
 # Speaker engine (spec 2026-10-16): "audio" runs the gate, STT mask and TSE
