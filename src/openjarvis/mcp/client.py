@@ -4,11 +4,27 @@ from __future__ import annotations
 
 import itertools
 import threading
-from typing import Any, Dict, List
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Dict, Iterator, List
 
 from openjarvis.mcp.protocol import MCPError, MCPRequest, MCPResponse
 from openjarvis.mcp.transport import MCPTransport
 from openjarvis.tools._stubs import ToolSpec
+
+# True while the model's own MCP tool call runs (``MCPToolAdapter``): that call
+# stays cancellable by barge-in (spec 2026-10-17 barge-in §7).
+_DIRECT_CALL: ContextVar[bool] = ContextVar("openjarvis_mcp_direct_call", default=False)
+
+
+@contextmanager
+def direct_tool_call() -> Iterator[None]:
+    """Mark the MCP call made here as the model's own tool call."""
+    token = _DIRECT_CALL.set(True)
+    try:
+        yield
+    finally:
+        _DIRECT_CALL.reset(token)
 
 
 class MCPClient:
@@ -183,7 +199,8 @@ class MCPClient:
             # calls must never be dropped by a walked-away caller. A call made
             # inside a dispatched tool (a display step's browser call) finishes
             # through a barge-in, bounded by its own timeout (spec 2026-10-17 §5.9).
-            if tool_is_executing():
+            # The model's own MCP tool call stays cancellable (§7).
+            if tool_is_executing() and not _DIRECT_CALL.get():
                 return runtime.call_tool(name, arguments or {})
             unregister = register_agent_worker_cancellation(runtime.cancel_active_call)
             try:

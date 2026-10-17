@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, List
 
 from openjarvis.core.types import ToolResult
-from openjarvis.mcp.client import MCPClient
+from openjarvis.mcp.client import MCPClient, direct_tool_call
 from openjarvis.tools._stubs import BaseTool, ToolSpec
 
 
@@ -60,7 +60,8 @@ class MCPToolAdapter(BaseTool):
         try:
             if self._shared_browser is not None:
                 self._shared_browser.activity(self._spec.name)
-            result = self._client.call_tool(self._spec.name, params)
+            with direct_tool_call():
+                result = self._client.call_tool(self._spec.name, params)
             content_parts = result.get("content", [])
             text = "\n".join(
                 p.get("text", "") for p in content_parts if isinstance(p, dict)
