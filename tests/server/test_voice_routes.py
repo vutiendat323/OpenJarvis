@@ -360,4 +360,73 @@ async def test_finished_voice_task_revokes_committed_turns(monkeypatch):
         routes.WebRTCOfferRequest(sdp="offer", type="offer"), request
     )
 
-    assert revoked == list(sessions._sessions)
+    assert revoked[:1] == list(sessions._sessions)
+
+
+@pytest.mark.anyio
+async def test_session_end_revokes_before_the_teardown_awaits(monkeypatch):
+    """Revoked first: a checkout must not pay while the transcript persists."""
+    order: list[str] = []
+    monkeypatch.setattr(
+        "openjarvis.core.conversation.revoke_committed_turns",
+        lambda conversation_id: order.append("revoke") or 0,
+    )
+    monkeypatch.setattr(
+        routes, "save_voice_conversation", lambda *a, **k: order.append("save")
+    )
+    monkeypatch.setattr(routes, "persist_voice_session", lambda *a, **k: None)
+
+    class Runner:
+        def __init__(self, **kwargs):
+            pass
+
+        async def add_workers(self, worker):
+            pass
+
+        async def run(self):
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr("pipecat.workers.runner.WorkerRunner", Runner)
+    sessions = VoiceSessionService()
+    app = FastAPI()
+    app.state.voice_session_service = sessions
+    app.state.native_agent_runtime = SimpleNamespace(bind=lambda model: object())
+    app.state.model = "test-model"
+    app.state.config = None
+    app.state.memory_backend = None
+
+    class Context:
+        def get_messages(self):
+            return []
+
+    class Peer:
+        connectionState = "connected"
+
+        def on(self, event, callback):
+            return None
+
+    class Handler:
+        async def handle_web_request(self, request, webrtc_connection_callback):
+            await webrtc_connection_callback(SimpleNamespace(pc=Peer()))
+            task = app.state.pipecat_voice_task
+            await asyncio.sleep(0.05)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            return {"sdp": "answer", "type": "answer"}
+
+    async def renderer():
+        return object()
+
+    monkeypatch.setattr(routes, "_handler", lambda request: Handler())
+    monkeypatch.setattr(routes, "_renderer", renderer)
+    monkeypatch.setattr(routes, "_transcriber", lambda: object())
+    monkeypatch.setattr(
+        routes, "build_voice_pipeline", lambda **kwargs: (object(), Context())
+    )
+    request = Request({"type": "http", "app": app, "headers": []})
+
+    await routes.voice_webrtc_offer(
+        routes.WebRTCOfferRequest(sdp="offer", type="offer"), request
+    )
+
+    assert order[:2] == ["revoke", "save"]

@@ -497,6 +497,11 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
                 {run_task, closed_task}, return_when=asyncio.FIRST_COMPLETED
             )
         finally:
+            from openjarvis.core import conversation
+
+            # First, before any teardown await: a checkout still running for
+            # a customer who left must not go on to pay (spec 2026-10-17 §5.8).
+            conversation.revoke_committed_turns(session.voice_session_id)
             closed_task.cancel()
             if not run_task.done():
                 run_task.cancel()

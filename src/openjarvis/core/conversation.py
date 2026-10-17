@@ -13,6 +13,7 @@ pool, so a variable set here reaches the tool. Mirrors the existing
 from __future__ import annotations
 
 import secrets
+from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -43,6 +44,10 @@ _COMMITTED_TURN: ContextVar[_TurnState | None] = ContextVar(
     "openjarvis_committed_turn", default=None
 )
 _COMMITTED: dict[str, list[_TurnState]] = {}
+# Conversations whose voice session ended, newest last: a committed dispatch
+# whose worker thread starts after the revoke is revoked on entry.
+_REVOKED: OrderedDict[str, None] = OrderedDict()
+_REVOKED_LIMIT = 256
 
 # None = the speaker is confirmed (the default for every caller). A frozenset
 # = the Voice gate could not confirm who spoke this turn; only those tools
@@ -174,6 +179,8 @@ def committed_turn_scope() -> Iterator[None]:
         return
     owner = current_conversation_id()
     with _TURN_LOCK:
+        if owner in _REVOKED:
+            state.revoked = True
         _COMMITTED.setdefault(owner, []).append(state)
     token = _COMMITTED_TURN.set(state)
     try:
@@ -191,6 +198,11 @@ def committed_turn_scope() -> Iterator[None]:
 def revoke_committed_turns(conversation_id: str) -> int:
     """The conversation's session ended: stop its committed dispatches."""
     with _TURN_LOCK:
+        if conversation_id:
+            _REVOKED[conversation_id] = None
+            _REVOKED.move_to_end(conversation_id)
+            while len(_REVOKED) > _REVOKED_LIMIT:
+                _REVOKED.popitem(last=False)
         states = _COMMITTED.pop(conversation_id, [])
         for state in states:
             state.revoked = True

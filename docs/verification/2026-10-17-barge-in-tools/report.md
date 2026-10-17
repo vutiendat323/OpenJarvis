@@ -85,6 +85,24 @@ expectations were changed:
   `test_a_write_queued_by_a_turn_cut_again_is_dropped_at_once` is now
   `test_a_write_queued_by_a_turn_cut_again_still_runs_after_the_gate`.
 
+## Final review (fresh reviewer, Opus)
+
+Verdict "with fixes": 0 Critical, 2 Important, 6 Minor. Both Important
+findings were fixed, each with a test that failed first:
+
+- **The session end revoked late and could miss a dispatch.** The revoke now
+  runs first in the voice task's teardown, before any await. It is also
+  sticky per conversation: a committed dispatch whose worker thread starts
+  after the revoke is revoked on entry.
+  - Tests: `test_session_end_revokes_before_the_teardown_awaits` and
+    `test_a_dispatch_entering_after_the_session_ended_is_revoked_too`.
+- **The model's own MCP tool call had stopped being cancellable by
+  barge-in.** Only an MCP call made inside another dispatched tool skips the
+  cancellation now.
+  - Test: `tests/mcp/test_mcp_adapter_barge_in.py`.
+
+Six Minor findings are deferred and listed in the hand-off.
+
 ## Not verified here
 
 - **Live phrasing latency** against the spec §5.6 target (first audio within

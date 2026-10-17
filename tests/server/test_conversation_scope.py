@@ -262,3 +262,14 @@ def test_committed_scope_without_a_turn_is_a_no_op():
         with conversation.committed_turn_scope():
             assert conversation.turn_nonce_is_active("") is False
         assert conversation.revoke_committed_turns("committed-4") == 0
+
+
+def test_a_dispatch_entering_after_the_session_ended_is_revoked_too():
+    """The worker thread may start after the revoke: it must not run."""
+    with conversation_scope("committed-5"):
+        with conversation.agent_turn_scope() as nonce:
+            assert conversation.revoke_committed_turns("committed-5") == 0
+            with conversation.committed_turn_scope():
+                late = copy_context()
+        assert late.run(conversation.turn_nonce_is_active, nonce) is False
+        assert late.run(conversation.claim_turn_nonce, nonce) is False
