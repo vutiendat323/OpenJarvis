@@ -896,3 +896,80 @@ def test_prompts_delegate_repeat_and_explain_requests():
         assert "repeat" not in answered.lower().replace("them to say it again", "")
         assert "verbatim" not in answered.lower()
         assert "explain" not in answered.lower()
+
+
+# --- late-result phrasing (spec 2026-10-17 barge-in §5.6) -------------------
+
+
+@pytest.mark.anyio
+async def test_report_sends_the_report_prompt_and_event_without_tools():
+    engine = _ToolEngine(StreamChunk(content="Đơn đã tạo."))
+    responder = VoiceResponder(engine, "fast", "Filler.", "Report wording.")
+
+    line = await responder.report("E", "Customer: hủy đơn")
+
+    assert line == "Đơn đã tạo."
+    assert engine.messages[0].content == "Report wording."
+    assert engine.messages[1].content == (
+        "Conversation so far:\nCustomer: hủy đơn\nKiosk event: E"
+    )
+    assert "tools" not in engine.kwargs
+    assert engine.kwargs["temperature"] == 0
+    assert engine.kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+@pytest.mark.anyio
+async def test_report_folds_line_breaks_into_one_line():
+    engine = _ToolEngine(StreamChunk(content="Đơn đã tạo.\nQuét QR."))
+
+    line = await VoiceResponder(engine, "fast").report("E")
+
+    assert line == "Đơn đã tạo. Quét QR."
+    assert engine.messages[1].content == "Kiosk event: E"
+
+
+def test_core_default_report_prompt_carries_no_business_wording():
+    from openjarvis.server.voice.responder import DEFAULT_REPORT_PROMPT
+
+    for word in ("menu", "cart", "order", "payment", "kiosk", "price", "dish"):
+        assert word not in DEFAULT_REPORT_PROMPT.lower()
+
+
+def test_preset_report_prompt_file_is_loaded(monkeypatch, tmp_path):
+    from openjarvis.server.voice.responder import DEFAULT_REPORT_PROMPT
+
+    prompt = tmp_path / "reporter.md"
+    prompt.write_text("  Report like a shop assistant.\n", "utf-8")
+    preset = tmp_path / "preset.toml"
+    preset.write_text(
+        f'[voice.responder]\nmodel = "fast"\nreport_prompt_file = "{prompt}"\n',
+        "utf-8",
+    )
+    monkeypatch.setenv("OPENJARVIS_CONFIG", str(preset))
+
+    assert load_responder_settings().report_prompt == "Report like a shop assistant."
+    preset.write_text('[voice.responder]\nmodel = "fast"\n', "utf-8")
+    assert load_responder_settings().report_prompt == DEFAULT_REPORT_PROMPT
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        ("3", "report_prompt_file_must_be_a_path"),
+        ('"MISSING"', "report_prompt_file_unreadable"),
+        ('"EMPTY"', "report_prompt_file_empty"),
+    ],
+)
+def test_bad_report_prompt_file_is_an_error(monkeypatch, tmp_path, value, error):
+    empty = tmp_path / "empty.md"
+    empty.write_text("  \n", "utf-8")
+    value = value.replace("MISSING", str(tmp_path / "nope.md"))
+    value = value.replace("EMPTY", str(empty))
+    preset = tmp_path / "preset.toml"
+    preset.write_text(
+        f'[voice.responder]\nmodel = "fast"\nreport_prompt_file = {value}\n', "utf-8"
+    )
+    monkeypatch.setenv("OPENJARVIS_CONFIG", str(preset))
+
+    with pytest.raises(ValueError, match=error):
+        load_responder_settings()

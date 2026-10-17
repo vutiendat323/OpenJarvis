@@ -342,10 +342,13 @@ def _responder() -> VoiceResponder | None:
         _RESPONDER is None
         or _RESPONDER.model != settings.model
         or _RESPONDER.prompt != settings.prompt
+        or _RESPONDER.report_prompt != settings.report_prompt
     ):
         from openjarvis.engine.cloud import CloudEngine
 
-        _RESPONDER = VoiceResponder(CloudEngine(), settings.model, settings.prompt)
+        _RESPONDER = VoiceResponder(
+            CloudEngine(), settings.model, settings.prompt, settings.report_prompt
+        )
     return _RESPONDER
 
 

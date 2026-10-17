@@ -79,6 +79,18 @@ AGENT_NOTE = (
 # Responses stream ended incomplete on 10 of 16 requests (2026-10-13).
 MAX_OUTPUT_TOKENS = 400
 
+# Phrases one late result of a request the customer interrupted (spec
+# 2026-10-17 barge-in §5.6). Rules any voice assistant shares; business facts
+# belong in the preset's ``report_prompt_file``.
+DEFAULT_REPORT_PROMPT = (
+    "You are the voice of an assistant. The user interrupted an earlier "
+    "request, and one of its actions has now finished; the message gives the "
+    "event and the conversation so far. Tell the user the outcome in at most "
+    "two short sentences, in the language of the conversation. State only what "
+    "the event says. Do not repeat the action or promise anything else. Plain "
+    "text only."
+)
+
 # OpenAI's chat-supervisor delegation tool, by name and schema: the Responder
 # hands every request it does not answer itself to the Agent by calling it.
 DELEGATE_TOOL_NAME = "getNextResponseFromSupervisor"
@@ -116,6 +128,25 @@ def _spoken_line(text: str) -> str:
 class ResponderSettings:
     model: str = ""
     prompt: str = DEFAULT_PROMPT
+    report_prompt: str = DEFAULT_REPORT_PROMPT
+
+
+def _prompt_from(section: Mapping[str, Any], key: str, default: str) -> str:
+    value = section.get(key, "")
+    if not isinstance(value, str):
+        raise ValueError(f"voice_responder_{key}_must_be_a_path")
+    if not value.strip():
+        return default
+    # Read at each session, so an edit applies without a restart. A path that
+    # cannot be read is an error, not a silent fallback: the operator's wording
+    # must never be dropped without notice.
+    try:
+        prompt = Path(value.strip()).expanduser().read_text("utf-8").strip()
+    except OSError as exc:
+        raise ValueError(f"voice_responder_{key}_unreadable") from exc
+    if not prompt:
+        raise ValueError(f"voice_responder_{key}_empty")
+    return prompt
 
 
 def load_responder_settings() -> ResponderSettings:
@@ -135,21 +166,13 @@ def load_responder_settings() -> ResponderSettings:
     model = section.get("model", "")
     if not isinstance(model, str):
         raise ValueError("voice_responder_model_must_be_a_string")
-    prompt = DEFAULT_PROMPT
-    prompt_file = section.get("prompt_file", "")
-    if not isinstance(prompt_file, str):
-        raise ValueError("voice_responder_prompt_file_must_be_a_path")
-    if prompt_file.strip():
-        # Read at each session, so an edit applies without a restart. A path
-        # that cannot be read is an error, not a silent fallback: the
-        # operator's wording must never be dropped without notice.
-        try:
-            prompt = Path(prompt_file.strip()).expanduser().read_text("utf-8").strip()
-        except OSError as exc:
-            raise ValueError("voice_responder_prompt_file_unreadable") from exc
-        if not prompt:
-            raise ValueError("voice_responder_prompt_file_empty")
-    return ResponderSettings(model=model.strip(), prompt=prompt)
+    return ResponderSettings(
+        model=model.strip(),
+        prompt=_prompt_from(section, "prompt_file", DEFAULT_PROMPT),
+        report_prompt=_prompt_from(
+            section, "report_prompt_file", DEFAULT_REPORT_PROMPT
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,10 +191,17 @@ class ResponderReply:
 class VoiceResponder:
     """OpenAI's chat agent: answer basic requests alone, delegate the rest."""
 
-    def __init__(self, engine: Any, model: str, prompt: str = DEFAULT_PROMPT) -> None:
+    def __init__(
+        self,
+        engine: Any,
+        model: str,
+        prompt: str = DEFAULT_PROMPT,
+        report_prompt: str = DEFAULT_REPORT_PROMPT,
+    ) -> None:
         self._engine = engine
         self.model = model
         self.prompt = prompt
+        self.report_prompt = report_prompt
         off = getattr(engine, "reasoning_off_options", None)
         self._options = (off(model) if callable(off) else None) or {}
 
@@ -218,9 +248,34 @@ class VoiceResponder:
         answer = _spoken_line(text)
         return ResponderReply("answer", answer) if answer else None
 
+    async def report(self, event: str, conversation: str = "") -> str:
+        """One spoken line for a late action result, or '' when none came.
+
+        No tool: this call only phrases what the event states (spec
+        2026-10-17 barge-in §5.6).
+        """
+        content = f"Kiosk event: {event}"
+        if conversation:
+            content = f"Conversation so far:\n{conversation}\n{content}"
+        text = ""
+        async for chunk in self._engine.stream_full(
+            [
+                Message(role=Role.SYSTEM, content=self.report_prompt),
+                Message(role=Role.USER, content=content),
+            ],
+            model=self.model,
+            temperature=0,
+            max_tokens=MAX_OUTPUT_TOKENS,
+            **self._options,
+        ):
+            if chunk.content:
+                text += chunk.content
+        return _spoken_line(text)
+
 
 __all__ = [
     "DEFAULT_PROMPT",
+    "DEFAULT_REPORT_PROMPT",
     "DELEGATE_TOOL",
     "DELEGATE_TOOL_NAME",
     "ResponderReply",
