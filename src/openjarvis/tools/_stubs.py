@@ -142,6 +142,7 @@ class ToolExecutor:
         from openjarvis.agents._stubs import (
             _RUN_WORKER_LEASE,
             check_agent_cancelled,
+            dispatch_is_committed,
         )
 
         in_tool = _IN_TOOL.get()
@@ -154,8 +155,9 @@ class ToolExecutor:
         unregister = None
         if lease is None or read_only:
             scope = nullcontext(True)
-        elif in_tool:
-            # A dispatched tool's own step finishes even after barge-in (D2).
+        elif in_tool or dispatch_is_committed():
+            # A dispatched tool's own step finishes even after barge-in (D2),
+            # and so does a call the model completed (spec 2026-10-17 §5.4).
             scope = lease.tool_gate.enter(lease, wait_seconds=WRITE_WAIT_SECONDS)
         else:
             # A queued write of a run the customer cut leaves the queue at once.

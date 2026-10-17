@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 import time
 from concurrent.futures import CancelledError, ThreadPoolExecutor
@@ -428,5 +429,55 @@ def test_external_call_tool_is_cancelled_only_by_its_own_lease(monkeypatch):
         worker.join(timeout=5)
         assert not worker.is_alive()
         assert isinstance(outcome[0], (asyncio.CancelledError, CancelledError))
+    finally:
+        client.close()
+
+
+def test_external_call_inside_a_dispatched_tool_is_not_cancelled_by_barge_in(
+    monkeypatch,
+):
+    """Spec 2026-10-17 barge-in §5.9: a display step's browser call finishes."""
+    from openjarvis.agents._stubs import _RUN_WORKER_LEASE, AgentWorkerLease
+    from openjarvis.mcp.runtime import MCPRuntime
+    from openjarvis.tools._stubs import _IN_TOOL
+
+    session = _CancellableSession()
+
+    class _RuntimeWithFakeSession(MCPRuntime):
+        def __init__(self, transport):
+            super().__init__(transport, session_factory=lambda *a, **k: session)
+
+    monkeypatch.setattr("openjarvis.mcp.runtime.MCPRuntime", _RuntimeWithFakeSession)
+
+    lease = AgentWorkerLease()
+    client = MCPClient(_SDKTransportDouble(), server_name="playwright")
+    outcome: list = []
+
+    def _call():
+        _RUN_WORKER_LEASE.set(lease)
+        _IN_TOOL.set(True)
+        try:
+            outcome.append(client.call_tool("browser_navigate", {"url": "x"}))
+        except BaseException as exc:  # noqa: BLE001 — recorded, then asserted
+            outcome.append(exc)
+
+    worker = threading.Thread(
+        target=lambda: contextvars.copy_context().run(_call), daemon=True
+    )
+    worker.start()
+    try:
+        assert session.call_started.wait(timeout=5)
+
+        def _barge_in():
+            _RUN_WORKER_LEASE.set(lease)
+            lease._signal_cancelled()
+
+        barge = threading.Thread(
+            target=lambda: contextvars.copy_context().run(_barge_in), daemon=True
+        )
+        barge.start()
+        barge.join(timeout=5)
+        worker.join(timeout=0.3)
+        assert worker.is_alive() and outcome == []
     finally:
         client.close()

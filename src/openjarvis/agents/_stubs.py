@@ -146,6 +146,22 @@ class AgentWorkerLease:
             self._signal_cancelled()
             raise
 
+    def start_committed(
+        self, function: Callable[..., Any], /, *args: Any
+    ) -> asyncio.Task[Any]:
+        """Start sync work the caller already committed to, retained by the lease.
+
+        Unlike ``run_sync`` it never refuses a cancelled lease: the model
+        completed these tool calls, so a barge-in does not drop them (spec
+        2026-10-17 barge-in §5.2). Call it on the event loop; the task is
+        pending before this returns, so the runtime keeps the lease until it
+        settles.
+        """
+        task = asyncio.create_task(asyncio.to_thread(function, *args))
+        self._pending.add(task)
+        task.add_done_callback(self._worker_settled)
+        return task
+
     def register_cancellation(self, callback: Callable[[], None]) -> Callable[[], None]:
         """Register ``callback`` for caller cancellation; return an unregister."""
         with self._cancel_lock:
@@ -196,10 +212,39 @@ class AgentWorkerLease:
 
 
 _RUN_WORKER_LEASE = ContextVar("openjarvis_run_worker_lease", default=None)
+# True while a round's completed tool calls run (spec 2026-10-17 barge-in).
+_COMMITTED_DISPATCH: ContextVar[bool] = ContextVar(
+    "openjarvis_committed_dispatch", default=False
+)
+
+
+@contextmanager
+def committed_dispatch():
+    """Run the model's completed tool calls through a barge-in.
+
+    Barge-in stops speech, not tools: inside this block the cancellation
+    checks do not drop the work, and the turn's checkout nonce stays valid
+    until the voice session ends.
+    """
+    from openjarvis.core.conversation import committed_turn_scope
+
+    token = _COMMITTED_DISPATCH.set(True)
+    try:
+        with committed_turn_scope():
+            yield
+    finally:
+        _COMMITTED_DISPATCH.reset(token)
+
+
+def dispatch_is_committed() -> bool:
+    """Return whether this context runs a round's completed tool calls."""
+    return _COMMITTED_DISPATCH.get()
 
 
 def check_agent_cancelled() -> None:
     """Cooperative boundary before new inference, dispatch, or publication."""
+    if _COMMITTED_DISPATCH.get():
+        return
     lease = _RUN_WORKER_LEASE.get()
     if lease is not None:
         lease.check_cancelled()
@@ -211,6 +256,16 @@ async def run_agent_sync_worker(function: Callable[..., Any], /, *args: Any) -> 
     if lease is None:
         return await asyncio.to_thread(function, *args)
     return await lease.run_sync(function, *args)
+
+
+def start_agent_sync_worker(
+    function: Callable[..., Any], /, *args: Any
+) -> asyncio.Future[Any]:
+    """Start committed sync Agent work now, retained by the active lease."""
+    lease = _RUN_WORKER_LEASE.get()
+    if lease is None:
+        return asyncio.ensure_future(asyncio.to_thread(function, *args))
+    return lease.start_committed(function, *args)
 
 
 def register_agent_worker_cancellation(
@@ -806,6 +861,9 @@ __all__ = [
     "AgentToolStarted",
     "BaseAgent",
     "ToolUsingAgent",
+    "committed_dispatch",
+    "dispatch_is_committed",
     "register_agent_worker_cancellation",
     "run_agent_sync_worker",
+    "start_agent_sync_worker",
 ]

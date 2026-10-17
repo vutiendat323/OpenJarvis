@@ -16,7 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from openjarvis.agents._stubs import _RUN_WORKER_LEASE, AgentToolGate, AgentWorkerLease
+from openjarvis.agents._stubs import (
+    _RUN_WORKER_LEASE,
+    AgentToolGate,
+    AgentWorkerLease,
+    committed_dispatch,
+)
 from openjarvis.agents.action_ledger import ACTION_LEDGER
 from openjarvis.core.conversation import (
     agent_turn_scope,
@@ -659,3 +664,45 @@ def test_the_menu_skill_is_declared_read_only():
         SkillExecutor(ToolExecutor([], EventBus())),
     )
     assert tool.spec.metadata.get("read_only") is True
+
+
+# --- committed dispatch (spec 2026-10-17 barge-in §5.2, §5.4) ---------------
+
+
+def test_a_committed_call_runs_although_its_lease_was_cancelled():
+    lease, _ = _leases()
+    tool = _Tool("first")
+    executor = ToolExecutor([tool])
+    lease._signal_cancelled()
+
+    def run():
+        with committed_dispatch():
+            return executor.execute(ToolCall("1", "first", "{}"))
+
+    result = _as(lease, run)
+    assert result.success and tool.calls == 1
+
+
+def test_a_queued_committed_write_keeps_waiting_after_cancellation():
+    old, new = _leases()
+    release = threading.Event()
+    first, second = _Tool("first", block=release), _Tool("second")
+    executor = ToolExecutor([first, second])
+
+    def queued_run():
+        with committed_dispatch():
+            return executor.execute(ToolCall("2", "second", "{}"))
+
+    with ThreadPoolExecutor(2) as pool:
+        held = pool.submit(
+            _as, old, lambda: executor.execute(ToolCall("1", "first", "{}"))
+        )
+        _until(lambda: first.calls == 1)
+        queued = pool.submit(_as, new, queued_run)
+        time.sleep(0.05)
+        new._signal_cancelled()
+        time.sleep(0.1)
+        release.set()
+        result = queued.result(2)
+        held.result(2)
+    assert result.success and second.calls == 1

@@ -176,10 +176,15 @@ class MCPClient:
         """
         if self._external:
             from openjarvis.agents._stubs import register_agent_worker_cancellation
+            from openjarvis.tools._stubs import tool_is_executing
 
             runtime = self._ensure_runtime()
             # Only the active call is cancellable — discovery and finished
-            # calls must never be dropped by a walked-away caller.
+            # calls must never be dropped by a walked-away caller. A call made
+            # inside a dispatched tool (a display step's browser call) finishes
+            # through a barge-in, bounded by its own timeout (spec 2026-10-17 §5.9).
+            if tool_is_executing():
+                return runtime.call_tool(name, arguments or {})
             unregister = register_agent_worker_cancellation(runtime.cancel_active_call)
             try:
                 return runtime.call_tool(name, arguments or {})
