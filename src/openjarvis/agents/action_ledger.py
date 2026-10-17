@@ -37,6 +37,9 @@ class LedgerEntry:
     settled: bool = False
     # Verified workflow facts for a model-written notification, never spoken text.
     event_context: str = ""
+    # Its run was cut by the customer: a late result is phrased, not read out
+    # (spec 2026-10-17 barge-in §5.6). Never shown to the model.
+    interrupted: bool = False
 
     def as_context(self) -> dict[str, str]:
         item = {"tool": self.tool, "status": self.status}
@@ -61,6 +64,8 @@ class ActionLedger:
         self._listeners: dict[str, list[Listener]] = {}
         # Conversations whose interrupted request is carried into the next turn.
         self._carrying: set[str] = set()
+        # Runs the customer interrupted, per conversation.
+        self._interrupted_runs: dict[str, set[str]] = {}
 
     @staticmethod
     def _key(run_id: str, call_id: str) -> str:
@@ -74,7 +79,11 @@ class ActionLedger:
             entries = self._conversations.setdefault(conversation_id, OrderedDict())
             self._conversations.move_to_end(conversation_id)
             entries[key] = LedgerEntry(
-                key=key, call_id=call_id, tool=tool, run_id=run_id
+                key=key,
+                call_id=call_id,
+                tool=tool,
+                run_id=run_id,
+                interrupted=run_id in self._interrupted_runs.get(conversation_id, ()),
             )
             while len(entries) > self.MAX_ENTRIES:
                 entries.popitem(last=False)
@@ -82,6 +91,7 @@ class ActionLedger:
                 evicted, _ = self._conversations.popitem(last=False)
                 self._listeners.pop(evicted, None)
                 self._carrying.discard(evicted)
+                self._interrupted_runs.pop(evicted, None)
         logger.warning(
             "background_action_started tool=%s run=%s call=%s", tool, run_id, call_id
         )
@@ -102,7 +112,11 @@ class ActionLedger:
                     status,
                 )
                 return
-            if metadata.get("dispatched") is False:
+            if (
+                metadata.get("dispatched") is False
+                or metadata.get("execution_started") is False
+            ):
+                # Refused before it acted: not a write (spec 2026-10-17 §5.2).
                 del entries[key]
                 return
             if result.success:
@@ -161,6 +175,14 @@ class ActionLedger:
                     entry.seen_by_run = run_id
                 listed.append(entry.as_context())
             return listed
+
+    def mark_run_interrupted(self, conversation_id: str, run_id: str) -> None:
+        """The customer cut this run: flag its entries, now and later."""
+        with self._lock:
+            self._interrupted_runs.setdefault(conversation_id, set()).add(run_id)
+            for entry in self._conversations.get(conversation_id, {}).values():
+                if entry.run_id == run_id:
+                    entry.interrupted = True
 
     def carry(self, conversation_id: str) -> None:
         """An interrupted request is carried into the conversation's next turn."""
@@ -251,6 +273,7 @@ class ActionLedger:
             self._conversations.pop(conversation_id, None)
             self._listeners.pop(conversation_id, None)
             self._carrying.discard(conversation_id)
+            self._interrupted_runs.pop(conversation_id, None)
 
 
 ACTION_LEDGER = ActionLedger()

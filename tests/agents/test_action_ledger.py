@@ -296,3 +296,41 @@ def test_clear_ends_a_carry():
     _told(ledger, "told")
 
     assert ledger.background_for(CONV, "r2") == []
+
+
+# --- interrupted runs (spec 2026-10-17 barge-in §5.6) -----------------------
+
+
+def test_interrupted_run_flags_existing_and_later_entries():
+    ledger = ActionLedger()
+    ledger.start("c", call_id="a", tool="add", run_id="r1")
+    ledger.mark_run_interrupted("c", "r1")
+    ledger.start("c", call_id="b", tool="checkout", run_id="r1")
+    ledger.start("c", call_id="x", tool="add", run_id="r2")
+    flags = {e.call_id: e.interrupted for e in ledger.entries("c")}
+    assert flags == {"a": True, "b": True, "x": False}
+
+
+def test_a_skill_refused_before_it_started_leaves_no_entry():
+    ledger = ActionLedger()
+    ledger.start("c", call_id="a", tool="skill_checkout", run_id="r1")
+    ledger.finish(
+        "c",
+        call_id="a",
+        run_id="r1",
+        result=ToolResult(
+            tool_name="skill_checkout",
+            content="turn nonce is stale or consumed",
+            success=False,
+            metadata={"execution_started": False},
+        ),
+    )
+    assert ledger.entries("c") == []
+
+
+def test_clear_forgets_interrupted_runs():
+    ledger = ActionLedger()
+    ledger.mark_run_interrupted("c", "r1")
+    ledger.clear("c")
+    ledger.start("c", call_id="a", tool="add", run_id="r1")
+    assert ledger.entries("c")[0].interrupted is False
