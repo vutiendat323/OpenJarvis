@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from openjarvis.agents._stubs import AgentContext
+from openjarvis.agents._stubs import AgentContext, AgentToolStarted
 from openjarvis.agents.action_ledger import ACTION_LEDGER
 from openjarvis.agents.orchestrator import OrchestratorAgent
 from openjarvis.agents.runtime import NativeAgentRuntime
@@ -82,6 +82,9 @@ _CONVERSATIONS = (
     "c-unknown",
     "c-display",
     "c-raises",
+    "c-handoff",
+    "c-streaming",
+    "c-done",
 )
 
 
@@ -205,6 +208,7 @@ async def test_a_write_finishing_after_its_turn_was_cancelled_is_recorded():
         "Đã thêm.",
         False,
     )
+    assert entry.interrupted is True
 
 
 def _seed(conv, *, message="Đã thêm hai cà phê sữa."):
@@ -325,7 +329,8 @@ async def test_an_interrupted_sync_fallback_run_marks_nothing_reported():
 
 
 @pytest.mark.asyncio
-async def test_a_write_cancelled_before_dispatch_leaves_no_running_entry():
+async def test_every_completed_call_of_a_cut_round_runs():
+    """Spec 2026-10-17 barge-in §5.2: barge-in stops speech, not tools."""
     release = threading.Event()
     first = _Tool("first", message="Đã thêm.", block=release)
     second = _Tool("second")
@@ -348,9 +353,11 @@ async def test_a_write_cancelled_before_dispatch_leaves_no_running_entry():
 
     await _until_status("c-two", "succeeded")
     assert await asyncio.to_thread(batch_ended.wait, 2)
-    [entry] = ACTION_LEDGER.entries("c-two")
-    assert (entry.tool, entry.status) == ("first", "succeeded")
-    assert not second.started.is_set()
+    assert {(e.tool, e.status) for e in ACTION_LEDGER.entries("c-two")} == {
+        ("first", "succeeded"),
+        ("second", "succeeded"),
+    }
+    assert all(e.interrupted for e in ACTION_LEDGER.entries("c-two"))
 
 
 @pytest.mark.asyncio
@@ -439,3 +446,96 @@ async def test_a_cancellation_raised_after_the_write_started_is_recorded_unknown
     await _until_status("c-raises", "unknown")
     [entry] = ACTION_LEDGER.entries("c-raises")
     assert (entry.tool, entry.status) == ("add", "unknown")
+
+
+@pytest.mark.asyncio
+async def test_a_barge_in_during_the_tool_started_hand_off_still_runs_the_call():
+    write = _Tool("add", message="Đã thêm.")
+    engine = StreamingEngine([_tool_round("", ("add", "{}")), _stream_final_round("")])
+    binding = NativeAgentRuntime(OrchestratorAgent(engine, "fake", tools=[write])).bind(
+        model="fake"
+    )
+    handed_off = asyncio.Event()
+
+    async def consume():
+        async for event in binding.run_stream("thêm", AgentContext()):
+            if isinstance(event, AgentToolStarted):
+                handed_off.set()
+                await asyncio.Event().wait()
+
+    with conversation_scope("c-handoff"):
+        task = asyncio.create_task(consume())
+        await asyncio.wait_for(handed_off.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    await _until_status("c-handoff", "succeeded")
+    [entry] = ACTION_LEDGER.entries("c-handoff")
+    assert (entry.tool, entry.interrupted) == ("add", True)
+
+
+class _HalfCallEngine:
+    """Streams part of a tool call, then waits: the call is never completed."""
+
+    def __init__(self):
+        self.streaming = asyncio.Event()
+
+    def generate(self, *args, **kwargs):  # pragma: no cover
+        raise AssertionError("streaming only")
+
+    def supports_semantic_reasoning_stream(self, model):
+        del model
+        return True
+
+    async def stream_full(self, messages, **kwargs):
+        del messages, kwargs
+        yield StreamChunk(
+            tool_calls=[
+                {
+                    "index": 0,
+                    "id": "call-1",
+                    "function": {"name": "add", "arguments": "{"},
+                }
+            ]
+        )
+        self.streaming.set()
+        await asyncio.Event().wait()
+        yield StreamChunk(finish_reason="tool_calls")  # pragma: no cover
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_still_streaming_at_barge_in_does_not_run():
+    write = _Tool("add")
+    engine = _HalfCallEngine()
+    binding = NativeAgentRuntime(OrchestratorAgent(engine, "fake", tools=[write])).bind(
+        model="fake"
+    )
+
+    with conversation_scope("c-streaming"):
+        task = asyncio.create_task(binding.run("thêm", AgentContext()))
+        await asyncio.wait_for(engine.streaming.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    await asyncio.sleep(0.1)
+
+    assert not write.started.is_set()
+    assert ACTION_LEDGER.entries("c-streaming") == []
+
+
+@pytest.mark.asyncio
+async def test_a_completed_run_does_not_flag_its_entries():
+    write = _Tool("add", message="Đã thêm.")
+    engine = StreamingEngine(
+        [_tool_round("", ("add", "{}")), _stream_final_round("Xong.")]
+    )
+    binding = NativeAgentRuntime(OrchestratorAgent(engine, "fake", tools=[write])).bind(
+        model="fake"
+    )
+
+    with conversation_scope("c-done"):
+        await binding.run("thêm", AgentContext())
+
+    [entry] = ACTION_LEDGER.entries("c-done")
+    assert (entry.status, entry.interrupted) == ("succeeded", False)

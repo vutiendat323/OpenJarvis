@@ -35,7 +35,9 @@ from openjarvis.agents._stubs import (
     AgentToolStarted,
     ToolUsingAgent,
     check_agent_cancelled,
+    committed_dispatch,
     run_agent_sync_worker,
+    start_agent_sync_worker,
 )
 from openjarvis.agents.action_ledger import ACTION_LEDGER
 from openjarvis.core.conversation import (
@@ -312,13 +314,23 @@ class OrchestratorAgent(ToolUsingAgent):
     ) -> AsyncIterator[AgentStreamEvent]:
         with agent_turn_scope():
             completed = False
-            async for event in self._run_stream_in_turn(input, context, **kwargs):
-                completed = isinstance(event, AgentRunCompleted)
-                yield event
-            # An interrupted consumer never resumes the generator, so only a
-            # run that ended normally gets here with ``completed``.
-            if completed:
-                self._mark_run_completed()
+            try:
+                async for event in self._run_stream_in_turn(input, context, **kwargs):
+                    completed = isinstance(event, AgentRunCompleted)
+                    yield event
+                # An interrupted consumer never resumes the generator, so only a
+                # run that ended normally gets here with ``completed``.
+                if completed:
+                    self._mark_run_completed()
+            finally:
+                if not completed:
+                    # Its late results are phrased for the conversation as it
+                    # is now, not read out (spec 2026-10-17 barge-in §5.6).
+                    conversation_id = current_conversation_id()
+                    if conversation_id:
+                        ACTION_LEDGER.mark_run_interrupted(
+                            conversation_id, current_turn_nonce()
+                        )
 
     async def _run_stream_in_turn(
         self,
@@ -571,10 +583,16 @@ class OrchestratorAgent(ToolUsingAgent):
                         ),
                     )
                 )
+                # The model completed these calls: they start now, before any
+                # hand-off below, so a barge-in during the hand-offs stops
+                # speech but not tools (spec 2026-10-17 barge-in §5.2).
+                dispatch = self._start_function_tool_calls(
+                    tool_calls, loop_guard, intent_state
+                )
                 # The round is known to carry tool calls, so its text is speech
                 # alongside them, never the final answer. Release it now; the
-                # tools start right after without waiting for playback. Text in
-                # the structured answer format is never speech, so it is held.
+                # tools run without waiting for playback. Text in the
+                # structured answer format is never speech, so it is held.
                 if round_text.strip() and not round_text.lstrip().startswith(
                     ("{", "[")
                 ):
@@ -595,12 +613,8 @@ class OrchestratorAgent(ToolUsingAgent):
                 previous_tool_results = len(all_tool_results)
                 for tool_call in tool_calls:
                     yield AgentToolStarted(tool_call.name)
-                await self._execute_function_tool_calls_async(
-                    messages,
-                    tool_calls,
-                    all_tool_results,
-                    loop_guard,
-                    intent_state,
+                self._append_function_tool_results(
+                    messages, all_tool_results, await asyncio.shield(dispatch)
                 )
                 new_tool_results = all_tool_results[previous_tool_results:]
                 for tool_result in new_tool_results:
@@ -1215,6 +1229,28 @@ class OrchestratorAgent(ToolUsingAgent):
             all_tool_results,
             ordered_results,
         )
+
+    def _start_function_tool_calls(
+        self,
+        tool_calls: list[ToolCall],
+        loop_guard: Any | None,
+        intent_state: Any | None = None,
+    ) -> asyncio.Future[list[tuple[ToolCall, ToolResult]]]:
+        """Start a round's completed calls now; a barge-in does not drop them."""
+        return start_agent_sync_worker(
+            self._collect_committed_tool_results, tool_calls, loop_guard, intent_state
+        )
+
+    def _collect_committed_tool_results(
+        self,
+        tool_calls: list[ToolCall],
+        loop_guard: Any | None,
+        intent_state: Any | None = None,
+    ) -> list[tuple[ToolCall, ToolResult]]:
+        with committed_dispatch():
+            return self._collect_function_tool_results(
+                tool_calls, loop_guard, intent_state
+            )
 
     def _collect_function_tool_results(
         self,

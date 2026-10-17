@@ -300,8 +300,12 @@ async def test_add_fails_while_pay_waits_so_nothing_is_paid():
 
 
 @pytest.mark.asyncio
-async def test_a_write_queued_by_a_turn_cut_again_is_dropped_at_once():
-    """Barge-in twice: the second turn's queued add never runs or lingers."""
+async def test_a_write_queued_by_a_turn_cut_again_still_runs_after_the_gate():
+    """Barge-in twice: the second turn's queued add waits, then runs.
+
+    Spec 2026-10-17 barge-in §5.4: the model completed it, so a barge-in
+    stops speech, not the write. It is not dropped from the queue.
+    """
     conv = "scenario-cut-twice"
     coffee_started, coffee_release = threading.Event(), threading.Event()
     tea_calls: list[int] = []
@@ -344,18 +348,15 @@ async def test_a_write_queued_by_a_turn_cut_again_is_dropped_at_once():
             second.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await second
-            cut = time.monotonic()
-            while len(tools()) > 1 and time.monotonic() - cut < 1:
-                await asyncio.sleep(0.01)
-            dropped_after = time.monotonic() - cut
-            assert tools() == [("add_coffee", "running")]
-            assert dropped_after < 0.5
+            await asyncio.sleep(0.2)
+            assert tools() == [("add_coffee", "running"), ("add_tea", "running")]
+            assert tea_calls == []
             coffee_release.set()
             deadline = time.monotonic() + 2
-            while tools() != [("add_coffee", "succeeded")]:
+            while tools() != [("add_coffee", "succeeded"), ("add_tea", "succeeded")]:
                 assert time.monotonic() < deadline, tools()
                 await asyncio.sleep(0.01)
-        assert tea_calls == []
+        assert tea_calls == [1]
     finally:
         coffee_release.set()
         ACTION_LEDGER.clear(conv)
