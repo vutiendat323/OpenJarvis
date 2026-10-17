@@ -339,6 +339,7 @@ def build_voice_pipeline(
             speak=lambda text: lifecycle.report(text),
             flush=lambda: lifecycle.flush(),
             run_event_turn=llm.run_event_turn,
+            run_phrased_report=llm.run_phrased_report,
         )
     lifecycle = VoiceSessionLifecycle(
         presence=customer_present,

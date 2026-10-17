@@ -28,7 +28,11 @@ from pipecat.workers.runner import WorkerRunner
 from openjarvis.agents._stubs import AgentResult, AgentRunCompleted, AgentTextDelta
 from openjarvis.agents.action_ledger import ActionLedger
 from openjarvis.core.types import ToolResult
-from openjarvis.server.voice.background import BackgroundReporter, event_text
+from openjarvis.server.voice.background import (
+    BackgroundReporter,
+    event_text,
+    report_text,
+)
 from openjarvis.server.voice.lifecycle import VoiceSessionLifecycle
 from openjarvis.server.voice.llm import OpenJarvisLLMService
 
@@ -649,3 +653,261 @@ async def test_stopping_the_reporter_cuts_its_event_turn():
 
     await asyncio.wait_for(cut.wait(), 1)
     assert [e.call_id for e in ledger.unreported_finished(CONV)] == ["a"]
+
+
+# --- late results of interrupted requests (spec 2026-10-17 barge-in §5.6) ---
+
+QR_LINE = "Quét mã QR để thanh toán."
+
+
+def _finish_interrupted(ledger, call_id="a", *, message=QR_LINE, run_id="cut"):
+    ledger.mark_run_interrupted(CONV, run_id)
+    ledger.start(CONV, call_id=call_id, tool="skill_checkout", run_id=run_id)
+    ledger.finish(
+        CONV,
+        call_id=call_id,
+        run_id=run_id,
+        result=ToolResult(
+            tool_name="skill_checkout",
+            content="ok",
+            success=True,
+            metadata={"customer_message": message},
+        ),
+    )
+
+
+def _phrasing_reporter(ledger, fakes, outcome):
+    phrased: list[str] = []
+
+    async def run_phrased_report(event):
+        phrased.append(event)
+        return outcome
+
+    reporter = BackgroundReporter(
+        ledger,
+        CONV,
+        speak=fakes.speak,
+        flush=fakes.flush,
+        run_event_turn=fakes.run_event_turn,
+        run_phrased_report=run_phrased_report if outcome is not None else None,
+    )
+    return reporter, phrased
+
+
+async def _settle():
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+@pytest.mark.anyio
+async def test_an_interrupted_success_is_phrased_not_spoken_verbatim():
+    ledger, fakes = ActionLedger(), _Fakes()
+    _finish_interrupted(ledger)
+    reporter, phrased = _phrasing_reporter(ledger, fakes, "spoken")
+
+    await reporter.on_idle()
+    await _settle()
+
+    [entry] = ledger.entries(CONV)
+    assert fakes.spoken == []
+    assert phrased == [report_text(entry)]
+    assert fakes.events == []
+    assert ledger.unreported_finished(CONV) == []
+
+
+@pytest.mark.anyio
+async def test_an_uninterrupted_success_is_still_spoken_verbatim():
+    ledger, fakes = ActionLedger(), _Fakes()
+    _finish(ledger, "a", message="Đã thêm cà phê sữa.")
+    reporter, phrased = _phrasing_reporter(ledger, fakes, "spoken")
+
+    await reporter.on_idle()
+    await _settle()
+
+    assert fakes.spoken == ["Đã thêm cà phê sữa."]
+    assert phrased == []
+
+
+@pytest.mark.anyio
+async def test_phrased_report_cut_by_customer_activity_leaves_entry_unreported():
+    ledger, fakes = ActionLedger(), _Fakes()
+    _finish_interrupted(ledger)
+    reporter, phrased = _phrasing_reporter(ledger, fakes, "cut")
+
+    await reporter.on_idle()
+    await _settle()
+
+    assert len(phrased) == 1
+    assert fakes.spoken == [] and fakes.events == []
+    assert [e.call_id for e in ledger.unreported_finished(CONV)] == ["a"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["failed", None])
+async def test_empty_or_unconfigured_phrasing_falls_back_to_event_turn(outcome):
+    ledger, fakes = ActionLedger(), _Fakes()
+    _finish_interrupted(ledger)
+    reporter, _ = _phrasing_reporter(ledger, fakes, outcome)
+
+    await reporter.on_idle()
+    await _settle()
+
+    [entry] = ledger.entries(CONV)
+    assert fakes.spoken == []
+    assert fakes.events == [event_text(entry)]
+    assert ledger.unreported_finished(CONV) == []
+
+
+def test_report_text_names_tool_status_confirmation_and_the_interruption():
+    ledger = ActionLedger()
+    _finish_interrupted(ledger)
+    [entry] = ledger.entries(CONV)
+
+    text = report_text(entry)
+
+    assert "skill_checkout" in text and "succeeded" in text
+    assert QR_LINE in text
+    assert "interrupted" in text
+
+
+class _FakeResponder:
+    model = "fast"
+
+    def __init__(self, line="", *, delay=0.0):
+        self._line = line
+        self._delay = delay
+        self.events: list[tuple[str, str]] = []
+        self.started = asyncio.Event()
+
+    async def respond(self, utterance, conversation="", on_delegate=None):
+        del utterance, conversation, on_delegate
+        return None
+
+    async def report(self, event, conversation=""):
+        self.events.append((event, conversation))
+        self.started.set()
+        await asyncio.sleep(self._delay)
+        return self._line
+
+
+class _Texts(FrameProcessor):
+    def __init__(self):
+        super().__init__()
+        self.texts: list[LLMTextFrame] = []
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMTextFrame):
+            self.texts.append(frame)
+        await self.push_frame(frame, direction)
+
+
+async def _drive_texts(service, steps):
+    texts = _Texts()
+    worker = PipelineWorker(
+        Pipeline([service, texts]),
+        cancel_on_idle_timeout=False,
+        enable_rtvi=False,
+        enable_turn_tracking=False,
+    )
+    runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
+
+    async def drive():
+        await asyncio.sleep(0.01)
+        try:
+            await steps(worker)
+        finally:
+            await worker.queue_frame(EndFrame())
+
+    await runner.add_workers(worker)
+    for result in await asyncio.wait_for(
+        asyncio.gather(runner.run(), drive(), return_exceptions=True), timeout=10
+    ):
+        if isinstance(result, BaseException):
+            raise result
+    return texts.texts
+
+
+@pytest.mark.anyio
+async def test_run_phrased_report_speaks_one_line_through_the_responder():
+    from openjarvis.server.voice.llm import FLUSH_TTS_METADATA
+
+    responder = _FakeResponder("Đơn đã tạo, QR trên màn hình.")
+    service = OpenJarvisLLMService(_RecordingBinding(), responder=responder)
+    outcome = {}
+
+    async def steps(worker):
+        del worker
+        outcome["result"] = await service.run_phrased_report("EVENT")
+
+    texts = await _drive_texts(service, steps)
+
+    assert outcome["result"] == "spoken"
+    assert [e for e, _ in responder.events] == ["EVENT"]
+    assert [t.text.strip() for t in texts] == ["Đơn đã tạo, QR trên màn hình."]
+    assert texts[0].metadata.get(FLUSH_TTS_METADATA) is True
+
+
+@pytest.mark.anyio
+async def test_run_phrased_report_times_out_to_failed(monkeypatch):
+    monkeypatch.setattr("openjarvis.server.voice.llm.PHRASE_TIMEOUT_SECONDS", 0.05)
+    responder = _FakeResponder("late", delay=1.0)
+    service = OpenJarvisLLMService(_RecordingBinding(), responder=responder)
+    outcome = {}
+
+    async def steps(worker):
+        del worker
+        outcome["result"] = await service.run_phrased_report("EVENT")
+
+    texts = await _drive_texts(service, steps)
+
+    assert outcome["result"] == "failed"
+    assert texts == []
+
+
+@pytest.mark.anyio
+async def test_run_phrased_report_without_a_responder_fails():
+    service = OpenJarvisLLMService(_RecordingBinding())
+
+    assert await service.run_phrased_report("EVENT") == "failed"
+
+
+@pytest.mark.anyio
+async def test_run_phrased_report_is_cut_by_an_interruption():
+    responder = _FakeResponder("late", delay=THINK)
+    service = OpenJarvisLLMService(_RecordingBinding(), responder=responder)
+    outcome = {}
+
+    async def steps(worker):
+        task = asyncio.create_task(service.run_phrased_report("EVENT"))
+        await asyncio.wait_for(responder.started.wait(), 2)
+        await worker.queue_frame(InterruptionFrame())
+        outcome["result"] = await asyncio.wait_for(task, THINK / 3)
+
+    texts = await _drive_texts(service, steps)
+
+    assert outcome["result"] == "cut"
+    assert texts == []
+
+
+@pytest.mark.anyio
+async def test_run_phrased_report_does_not_start_while_a_customer_turn_runs():
+    binding = _BlockingBinding()
+    responder = _FakeResponder("line")
+    service = OpenJarvisLLMService(binding, responder=responder)
+    outcome = {}
+
+    async def steps(worker):
+        await worker.queue_frame(
+            LLMContextFrame(
+                LLMContext(messages=[{"role": "user", "content": "thêm hai cà phê"}])
+            )
+        )
+        await asyncio.wait_for(binding.blocking.wait(), 2)
+        outcome["result"] = await service.run_phrased_report("EVENT")
+        await worker.queue_frame(InterruptionFrame())
+
+    await _drive_texts(service, steps)
+
+    assert outcome["result"] == "cut"
+    assert responder.events == []

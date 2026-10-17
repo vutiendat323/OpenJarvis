@@ -67,6 +67,11 @@ CARRY_OVER_LIMIT = 3
 # 1.77 s; live full line max 2.12 s.
 RESPONDER_DECISION_SECONDS = 2.0
 
+# How long the fast model may take to phrase a late result before the Agent's
+# event turn reports it instead (spec 2026-10-17 barge-in §5.6; target: first
+# audio within 1.5 s at p50).
+PHRASE_TIMEOUT_SECONDS = 3.0
+
 
 def carried_prompt(unfinished: list[str], latest: str) -> str:
     """The latest request, preceded by interrupted ones it does not already hold.
@@ -370,7 +375,7 @@ class OpenJarvisLLMService(LLMService):
         self._answering = False
         # A kiosk-event turn holds the Agent runtime until its model answers;
         # any customer activity or the session's end cuts it.
-        self._event_task: asyncio.Task[bool] | None = None
+        self._event_task: asyncio.Task[Any] | None = None
         # The Responder (OpenAI's chat agent) decides first: it answers the turn
         # itself or delegates to the Agent by calling its one tool.
         self._responder = responder
@@ -841,7 +846,61 @@ class OpenJarvisLLMService(LLMService):
             if self._event_task is task:
                 self._event_task = None
 
-    def _cancel_event_turn(self) -> asyncio.Task[bool] | None:
+    async def run_phrased_report(self, event: str) -> str:
+        """Speak one fast-model line for a late result of an interrupted request.
+
+        OpenAI's standard: the result goes back to a model, which phrases it
+        for the conversation as it is now (spec 2026-10-17 barge-in §5.6).
+        Returns "spoken"; "cut" when a customer turn runs or customer activity
+        or the session's end cuts it (the outcome stays unreported); "failed"
+        when there is no Responder, it timed out or said nothing (the caller
+        falls back to an event turn).
+        """
+        if self._answering or (
+            self._event_task is not None and not self._event_task.done()
+        ):
+            return "cut"
+        if self._responder is None:
+            return "failed"
+        started = time.monotonic()
+        task = asyncio.create_task(self._phrase_and_speak(event))
+        self._event_task = task
+        try:
+            outcome = await task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+            outcome = "cut"
+        finally:
+            if self._event_task is task:
+                self._event_task = None
+        # Shape only, never the words (WARNING: serve drops INFO).
+        logger.warning(
+            "voice_phrased_report outcome=%s seconds=%.2f",
+            outcome,
+            time.monotonic() - started,
+        )
+        return outcome
+
+    async def _phrase_and_speak(self, event: str) -> str:
+        conversation = recent_conversation(self._last_context or LLMContext())
+        try:
+            text = await asyncio.wait_for(
+                self._responder.report(event, conversation), PHRASE_TIMEOUT_SECONDS
+            )
+        except Exception:  # noqa: BLE001 - any failure falls back to an event turn
+            return "failed"
+        text = normalize_speech_text(text or "")
+        if not text:
+            return "failed"
+        turn_id = self._turn_state.begin_turn()
+        await self.push_frame(LLMFullResponseStartFrame())
+        await self._speak_responder(text, AgentContext(), turn_id)
+        await self.push_frame(LLMFullResponseEndFrame())
+        return "spoken"
+
+    def _cancel_event_turn(self) -> asyncio.Task[Any] | None:
         task = self._event_task
         if task is None or task.done():
             return None

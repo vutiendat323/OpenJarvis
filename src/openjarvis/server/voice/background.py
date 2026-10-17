@@ -4,7 +4,9 @@ A running turn sees them in ``background_actions`` and folds them into its
 reply. When nobody is talking and no turn runs, a verified tool confirmation is
 spoken as is; anything else (failure, unknown outcome, no confirmation) is
 phrased by the model in a short event turn, so no sentence is hardcoded
-(spec 2026-10-10 background actions §5.4).
+(spec 2026-10-10 background actions §5.4). A confirmation from a request the
+customer interrupted was written before they cut in, so the fast model phrases
+it for the conversation as it is now instead (spec 2026-10-17 barge-in §5.6).
 """
 
 from __future__ import annotations
@@ -29,6 +31,20 @@ def event_text(entry: LedgerEntry) -> str:
     )
 
 
+def report_text(entry: LedgerEntry) -> str:
+    """The event a fast model phrases for a late result of an interrupted request."""
+    parts = [
+        "An action from a request the customer interrupted has finished; they "
+        "may have said something else since.",
+        f"Tool: {entry.tool}. Status: {entry.status}.",
+    ]
+    if entry.customer_message:
+        parts.append(f"Verified confirmation: {entry.customer_message}")
+    if entry.event_context:
+        parts.append(f"Facts: {entry.event_context}")
+    return " ".join(parts)
+
+
 class BackgroundReporter:
     def __init__(
         self,
@@ -38,12 +54,14 @@ class BackgroundReporter:
         speak: Callable[[str], Awaitable[None]],
         flush: Callable[[], Awaitable[None]],
         run_event_turn: Callable[[str], Awaitable[bool]],
+        run_phrased_report: Callable[[str], Awaitable[str]] | None = None,
     ) -> None:
         self._ledger = ledger
         self._conversation_id = conversation_id
         self._speak = speak
         self._flush = flush
         self._run_event_turn = run_event_turn
+        self._run_phrased_report = run_phrased_report
         self._loop: asyncio.AbstractEventLoop | None = None
         self._unsubscribe: Callable[[], None] | None = None
         self._event_task: asyncio.Task[Any] | None = None
@@ -91,6 +109,13 @@ class BackgroundReporter:
             while pending := self._ledger.unreported_finished(self._conversation_id):
                 entry = pending[0]
                 if entry.status == "succeeded" and entry.customer_message:
+                    if entry.interrupted:
+                        # Written before the customer cut in: never read out
+                        # verbatim (spec 2026-10-17 barge-in §5.6).
+                        self._event_task = asyncio.ensure_future(
+                            self._report_phrased(entry)
+                        )
+                        return
                     # Marked before speaking: a TTS failure is not detectable
                     # here and a repeat would be worse than a lost confirmation.
                     self._ledger.mark_reported(
@@ -104,6 +129,15 @@ class BackgroundReporter:
                 return
         finally:
             self._reporting = False
+
+    async def _report_phrased(self, entry: LedgerEntry) -> None:
+        outcome = "failed"
+        if self._run_phrased_report is not None:
+            outcome = await self._run_phrased_report(report_text(entry))
+        if outcome == "spoken":
+            self._ledger.mark_reported(self._conversation_id, entry.key, via="phrased")
+        elif outcome == "failed":
+            await self._report_by_event(entry)
 
     async def _report_by_event(self, entry: LedgerEntry) -> None:
         if await self._run_event_turn(event_text(entry)):
