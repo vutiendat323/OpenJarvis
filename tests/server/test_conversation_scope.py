@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextvars import copy_context
+
 import pytest
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -43,8 +45,6 @@ def test_agent_turn_scope_issues_a_fresh_nonce_and_restores_the_outer_turn():
 
 
 def test_checkout_nonce_is_single_use_and_expires_in_copied_context():
-    from contextvars import copy_context
-
     with conversation_scope("checkout-nonce"):
         with conversation.agent_turn_scope() as nonce:
             copied = copy_context()
@@ -223,3 +223,42 @@ def test_create_app_puts_conversation_scope_outside_auth():
 
     assert app.user_middleware[0].cls.__name__ == "ConversationScopeMiddleware"
     assert app.user_middleware[1].cls.__name__ == "AuthMiddleware"
+
+
+def test_committed_scope_keeps_the_nonce_after_the_turn_ends():
+    with conversation_scope("committed-1"):
+        with conversation.agent_turn_scope() as nonce:
+            with conversation.committed_turn_scope():
+                committed = copy_context()
+            outside = copy_context()
+        assert committed.run(conversation.turn_nonce_is_active, nonce) is True
+        assert outside.run(conversation.turn_nonce_is_active, nonce) is False
+
+
+def test_committed_scope_claims_the_nonce_once_across_rounds():
+    with conversation_scope("committed-2"):
+        with conversation.agent_turn_scope() as nonce:
+            with conversation.committed_turn_scope():
+                first = copy_context()
+            with conversation.committed_turn_scope():
+                second = copy_context()
+        assert first.run(conversation.claim_turn_nonce, nonce) is True
+        assert second.run(conversation.claim_turn_nonce, nonce) is False
+
+
+def test_revoking_a_conversation_ends_its_committed_turns():
+    with conversation_scope("committed-3"):
+        with conversation.agent_turn_scope() as nonce:
+            with conversation.committed_turn_scope():
+                committed = copy_context()
+                # The session ends while the dispatch is still running.
+                assert conversation.revoke_committed_turns("committed-3") == 1
+        assert committed.run(conversation.turn_nonce_is_active, nonce) is False
+        assert conversation.revoke_committed_turns("other") == 0
+
+
+def test_committed_scope_without_a_turn_is_a_no_op():
+    with conversation_scope("committed-4"):
+        with conversation.committed_turn_scope():
+            assert conversation.turn_nonce_is_active("") is False
+        assert conversation.revoke_committed_turns("committed-4") == 0
