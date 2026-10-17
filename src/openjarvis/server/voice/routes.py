@@ -597,7 +597,11 @@ async def voice_webrtc_offer(body: WebRTCOfferRequest, request: Request):
             # natural path's own call is harmless.
             def finished(_t):
                 from openjarvis.agents.action_ledger import ACTION_LEDGER
+                from openjarvis.core import conversation
 
+                # The customer left: a checkout still running stops at its
+                # next step (spec 2026-10-17 barge-in §5.8).
+                conversation.revoke_committed_turns(session.voice_session_id)
                 ACTION_LEDGER.clear(session.voice_session_id)
                 sessions.end_session(session.voice_session_id, reason="task_done")
                 if getattr(request.app.state, "pipecat_voice_task", None) is _t:

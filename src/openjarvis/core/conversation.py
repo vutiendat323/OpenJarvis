@@ -62,6 +62,8 @@ def turn_nonce_is_active(nonce: str) -> bool:
     """Also invalidate copied worker contexts when their turn ends or is replaced."""
     with _TURN_LOCK:
         state = _TURN_STATE.get()
+        if state is not None and state.revoked:
+            return False
         if (
             state
             and state.active

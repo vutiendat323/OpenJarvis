@@ -308,3 +308,56 @@ def test_active_session_is_the_lease_holder_until_it_ends():
 
     sessions.end_session(session.voice_session_id, reason="done")
     assert sessions.active_session() is None
+
+
+@pytest.mark.anyio
+async def test_finished_voice_task_revokes_committed_turns(monkeypatch):
+    """Spec 2026-10-17 barge-in §5.8: the session's end stops its checkouts."""
+    revoked: list[str] = []
+    monkeypatch.setattr(
+        "openjarvis.core.conversation.revoke_committed_turns",
+        lambda conversation_id: revoked.append(conversation_id) or 0,
+    )
+    sessions = VoiceSessionService()
+    app = FastAPI()
+    app.state.voice_session_service = sessions
+    app.state.native_agent_runtime = SimpleNamespace(bind=lambda model: object())
+    app.state.model = "test-model"
+    app.state.config = None
+    app.state.memory_backend = None
+
+    class Context:
+        def get_messages(self):
+            return []
+
+    class Peer:
+        connectionState = "connected"
+
+        def on(self, event, callback):
+            return None
+
+    class Handler:
+        async def handle_web_request(self, request, webrtc_connection_callback):
+            await webrtc_connection_callback(SimpleNamespace(pc=Peer()))
+            task = app.state.pipecat_voice_task
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.sleep(0)
+            return {"sdp": "answer", "type": "answer"}
+
+    async def renderer():
+        return object()
+
+    monkeypatch.setattr(routes, "_handler", lambda request: Handler())
+    monkeypatch.setattr(routes, "_renderer", renderer)
+    monkeypatch.setattr(routes, "_transcriber", lambda: object())
+    monkeypatch.setattr(
+        routes, "build_voice_pipeline", lambda **kwargs: (object(), Context())
+    )
+    request = Request({"type": "http", "app": app, "headers": []})
+
+    await routes.voice_webrtc_offer(
+        routes.WebRTCOfferRequest(sdp="offer", type="offer"), request
+    )
+
+    assert revoked == list(sessions._sessions)
