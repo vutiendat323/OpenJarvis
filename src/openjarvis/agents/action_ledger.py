@@ -40,8 +40,18 @@ class LedgerEntry:
     # Its run was cut by the customer: a late result is phrased, not read out
     # (spec 2026-10-17 barge-in §5.6). Never shown to the model.
     interrupted: bool = False
+    # "tool": one dispatched write. "run": the whole background Agent run, so a
+    # run without writes is still seen and reported as one unit (spec
+    # 2026-10-18 parallel agent runs).
+    kind: str = "tool"
+    request: str = ""
 
     def as_context(self) -> dict[str, str]:
+        if self.kind == "run":
+            run_item = {"request": self.request, "status": self.status}
+            if self.customer_message:
+                run_item["answer"] = self.customer_message
+            return run_item
         item = {"tool": self.tool, "status": self.status}
         if self.event_context:
             item["event_context"] = self.event_context
@@ -74,6 +84,33 @@ class ActionLedger:
     def start(
         self, conversation_id: str, *, call_id: str, tool: str, run_id: str
     ) -> None:
+        self._add(conversation_id, call_id=call_id, tool=tool, run_id=run_id)
+        logger.warning(
+            "background_action_started tool=%s run=%s call=%s", tool, run_id, call_id
+        )
+
+    def start_run(self, conversation_id: str, run_id: str, request: str) -> None:
+        """A background Agent run begins: one entry for the run as a whole."""
+        self._add(
+            conversation_id,
+            call_id="run",
+            tool="agent_run",
+            run_id=run_id,
+            kind="run",
+            request=request,
+        )
+        logger.warning("background_run_started run=%s", run_id)
+
+    def _add(
+        self,
+        conversation_id: str,
+        *,
+        call_id: str,
+        tool: str,
+        run_id: str,
+        kind: str = "tool",
+        request: str = "",
+    ) -> None:
         key = self._key(run_id, call_id)
         with self._lock:
             entries = self._conversations.setdefault(conversation_id, OrderedDict())
@@ -84,6 +121,8 @@ class ActionLedger:
                 tool=tool,
                 run_id=run_id,
                 interrupted=run_id in self._interrupted_runs.get(conversation_id, ()),
+                kind=kind,
+                request=request,
             )
             while len(entries) > self.MAX_ENTRIES:
                 entries.popitem(last=False)
@@ -92,9 +131,6 @@ class ActionLedger:
                 self._listeners.pop(evicted, None)
                 self._carrying.discard(evicted)
                 self._interrupted_runs.pop(evicted, None)
-        logger.warning(
-            "background_action_started tool=%s run=%s call=%s", tool, run_id, call_id
-        )
 
     def finish(
         self, conversation_id: str, *, call_id: str, run_id: str, result: ToolResult
@@ -153,6 +189,30 @@ class ActionLedger:
                     "background_action_listener_failed tool=%s", snapshot.tool
                 )
 
+    def finish_run(
+        self, conversation_id: str, run_id: str, *, answer: str, status: str
+    ) -> None:
+        """The run ended: ``succeeded`` or ``stopped``, with what it answered."""
+        key = self._key(run_id, "run")
+        with self._lock:
+            entries = self._conversations.get(conversation_id)
+            entry = entries.get(key) if entries is not None else None
+            if entry is None:
+                logger.warning(
+                    "background_run_after_session_end status=%s run=%s", status, run_id
+                )
+                return
+            entry.status = status
+            entry.customer_message = answer.strip() if isinstance(answer, str) else ""
+            snapshot = replace(entry)
+            listeners = list(self._listeners.get(conversation_id, ()))
+        logger.warning("background_run_finished status=%s run=%s", status, run_id)
+        for listener in listeners:
+            try:
+                listener(snapshot)
+            except Exception:
+                logger.warning("background_run_listener_failed run=%s", run_id)
+
     def background_for(self, conversation_id: str, run_id: str) -> list[dict[str, str]]:
         """Earlier runs' writes still running or not yet reported.
 
@@ -206,26 +266,70 @@ class ActionLedger:
             return [
                 replace(entry)
                 for entry in self._conversations.get(conversation_id, {}).values()
-                if entry.run_id != run_id
+                if entry.kind == "tool"
+                and entry.run_id != run_id
                 and entry.status in ("failed", "unknown")
                 and not entry.reported
                 and entry.seen_by_run != run_id
             ]
 
     def mark_run_completed(self, conversation_id: str, run_id: str) -> None:
-        """A run that ended normally told the customer what it saw and did."""
+        """A run that ended normally told the customer what it saw and did.
+
+        A run any of whose entries is folded in here is reported whole: its
+        other finished entries, the run entry included, are marked too. One
+        still running is left, so its own outcome is still reported later.
+        """
         with self._lock:
-            for entry in self._conversations.get(conversation_id, {}).values():
+            entries = list(self._conversations.get(conversation_id, {}).values())
+            folded_runs: set[str] = set()
+            for entry in entries:
                 if entry.status == "running" or entry.reported:
                     continue
                 if entry.run_id == run_id or entry.seen_by_run == run_id:
-                    entry.reported = True
-                    logger.warning(
-                        "background_action_reported via=model tool=%s run=%s call=%s",
-                        entry.tool,
-                        entry.run_id,
-                        entry.call_id,
-                    )
+                    self._report_locked(entry, "model")
+                    folded_runs.add(entry.run_id)
+            for entry in entries:
+                if (
+                    entry.run_id in folded_runs
+                    and entry.status != "running"
+                    and not entry.reported
+                ):
+                    self._report_locked(entry, "model")
+
+    def mark_run_reported(self, conversation_id: str, run_id: str, *, via: str) -> None:
+        """Every entry of this run, the run entry included, is now told."""
+        with self._lock:
+            for entry in self._conversations.get(conversation_id, {}).values():
+                if entry.run_id == run_id and not entry.reported:
+                    self._report_locked(entry, via)
+
+    @staticmethod
+    def _report_locked(entry: LedgerEntry, via: str) -> None:
+        entry.reported = True
+        logger.warning(
+            "background_action_reported via=%s tool=%s run=%s call=%s",
+            via,
+            entry.tool,
+            entry.run_id,
+            entry.call_id,
+        )
+
+    def run_group(
+        self, conversation_id: str, run_id: str
+    ) -> tuple[LedgerEntry | None, list[LedgerEntry]]:
+        """Copies of a run's own entry and of its tool entries, oldest first."""
+        with self._lock:
+            run_entry: LedgerEntry | None = None
+            tools: list[LedgerEntry] = []
+            for entry in self._conversations.get(conversation_id, {}).values():
+                if entry.run_id != run_id:
+                    continue
+                if entry.kind == "run":
+                    run_entry = replace(entry)
+                else:
+                    tools.append(replace(entry))
+            return run_entry, tools
 
     def mark_reported(self, conversation_id: str, key: str, *, via: str) -> None:
         with self._lock:

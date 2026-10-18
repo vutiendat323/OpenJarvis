@@ -334,3 +334,173 @@ def test_clear_forgets_interrupted_runs():
     ledger.clear("c")
     ledger.start("c", call_id="a", tool="add", run_id="r1")
     assert ledger.entries("c")[0].interrupted is False
+
+
+# --- run-level entries (spec 2026-10-18 parallel agent runs) ---------------
+
+
+def test_a_run_entry_is_listed_for_other_runs_with_its_request_and_answer():
+    ledger = ActionLedger()
+    ledger.start_run(CONV, "r1", "cho mình một ly trà")
+    assert ledger.background_for(CONV, "r2") == [
+        {"request": "cho mình một ly trà", "status": "running"}
+    ]
+
+    ledger.finish_run(CONV, "r1", answer="Đã thêm trà.", status="succeeded")
+
+    assert ledger.background_for(CONV, "r2") == [
+        {
+            "request": "cho mình một ly trà",
+            "status": "succeeded",
+            "answer": "Đã thêm trà.",
+        }
+    ]
+    [entry] = ledger.entries(CONV)
+    assert (entry.key, entry.call_id, entry.tool) == ("r1:run", "run", "agent_run")
+    assert entry.kind == "run" and entry.request == "cho mình một ly trà"
+    assert entry.seen_by_run == "r2"
+    # The run's own context lists nothing of itself.
+    assert ledger.background_for(CONV, "r1") == []
+
+
+def test_a_finished_run_without_writes_is_still_seen():
+    ledger = ActionLedger()
+    ledger.start_run(CONV, "r1", "hỏi giờ mở cửa")
+    ledger.finish_run(CONV, "r1", answer="Tám giờ.", status="succeeded")
+
+    assert [e.key for e in ledger.unreported_finished(CONV)] == ["r1:run"]
+    ledger.background_for(CONV, "r2")
+    ledger.mark_run_completed(CONV, "r2")
+
+    assert ledger.unreported_finished(CONV) == []
+    [entry] = ledger.entries(CONV)
+    assert entry.reported is True
+
+
+def test_folding_one_entry_reports_the_whole_run():
+    ledger = ActionLedger()
+    ledger.start_run(CONV, "r1", "thêm hai món")
+    _started(ledger, call_id="a", run_id="r1")
+    _started(ledger, call_id="b", run_id="r1")
+    ledger.finish(CONV, call_id="a", run_id="r1", result=_ok())
+    # r2's model reads only "a"; the rest of r1 finishes afterwards.
+    ledger.background_for(CONV, "r2")
+    ledger.finish(CONV, call_id="b", run_id="r1", result=_ok())
+    ledger.finish_run(CONV, "r1", answer="Xong.", status="succeeded")
+    _started(ledger, call_id="other", run_id="r3")
+    ledger.finish(CONV, call_id="other", run_id="r3", result=_ok())
+
+    ledger.mark_run_completed(CONV, "r2")
+
+    reported = {e.key: e.reported for e in ledger.entries(CONV)}
+    assert reported == {
+        "r1:run": True,
+        "r1:a": True,
+        "r1:b": True,
+        "r3:other": False,
+    }
+
+
+def test_a_still_running_tool_of_a_folded_run_is_not_swallowed():
+    ledger = ActionLedger()
+    _started(ledger, call_id="a", run_id="r1")
+    _started(ledger, call_id="b", run_id="r1")
+    ledger.finish(CONV, call_id="a", run_id="r1", result=_ok())
+    ledger.background_for(CONV, "r2")
+
+    ledger.mark_run_completed(CONV, "r2")
+
+    assert {e.call_id: e.reported for e in ledger.entries(CONV)} == {
+        "a": True,
+        "b": False,
+    }
+
+
+def test_mark_run_reported_marks_every_entry_of_the_run(caplog):
+    ledger = ActionLedger()
+    ledger.start_run(CONV, "r1", "thêm hai món")
+    _started(ledger, call_id="a", run_id="r1")
+    ledger.finish(CONV, call_id="a", run_id="r1", result=_ok())
+    ledger.finish_run(CONV, "r1", answer="Xong.", status="succeeded")
+    _started(ledger, call_id="other", run_id="r2")
+    ledger.finish(CONV, call_id="other", run_id="r2", result=_ok())
+
+    with caplog.at_level(logging.WARNING, logger="openjarvis.agents.action_ledger"):
+        ledger.mark_run_reported(CONV, "r1", via="reporter")
+
+    assert {e.key: e.reported for e in ledger.entries(CONV)} == {
+        "r1:run": True,
+        "r1:a": True,
+        "r2:other": False,
+    }
+    assert [e.key for e in ledger.unreported_finished(CONV)] == ["r2:other"]
+    # Idempotent.
+    ledger.mark_run_reported(CONV, "r1", via="reporter")
+    messages = [r.getMessage() for r in caplog.records]
+    assert (
+        sum(m.startswith("background_action_reported via=reporter") for m in messages)
+        == 2
+    )
+
+
+def test_run_group_returns_copies_of_the_run_entry_and_its_tools():
+    ledger = ActionLedger()
+    assert ledger.run_group(CONV, "r1") == (None, [])
+    ledger.start_run(CONV, "r1", "thêm trà")
+    _started(ledger, call_id="a", run_id="r1")
+    _started(ledger, call_id="x", run_id="r2")
+
+    run, tools = ledger.run_group(CONV, "r1")
+
+    assert run is not None and run.kind == "run"
+    assert [t.call_id for t in tools] == ["a"]
+    run.reported = True
+    tools[0].reported = True
+    assert [e.reported for e in ledger.entries(CONV)] == [False, False, False]
+
+
+def test_run_entries_never_hold_writes_under_d4():
+    ledger = ActionLedger()
+    ledger.start_run(CONV, "r1", "huỷ đơn")
+    ledger.finish_run(CONV, "r1", answer="Đã dừng.", status="stopped")
+    assert ledger.unseen_failures(CONV, "r2") == []
+
+    _started(ledger, call_id="bad", run_id="r1")
+    ledger.finish(CONV, call_id="bad", run_id="r1", result=_failed())
+    assert [e.call_id for e in ledger.unseen_failures(CONV, "r2")] == ["bad"]
+
+
+def test_a_stopped_run_inherits_interrupted_and_is_phrased_context():
+    ledger = ActionLedger()
+    ledger.mark_run_interrupted(CONV, "r1")
+    ledger.start_run(CONV, "r1", "thêm trà")
+    ledger.finish_run(CONV, "r1", answer="", status="stopped")
+
+    [entry] = ledger.entries(CONV)
+    assert entry.interrupted is True
+    assert entry.as_context() == {"request": "thêm trà", "status": "stopped"}
+
+
+def test_finish_run_notifies_listeners(caplog):
+    ledger = ActionLedger()
+    heard = []
+    ledger.subscribe(CONV, heard.append)
+    ledger.start_run(CONV, "r1", "thêm trà")
+
+    with caplog.at_level(logging.WARNING, logger="openjarvis.agents.action_ledger"):
+        ledger.finish_run(CONV, "r1", answer="Xong.", status="succeeded")
+
+    [entry] = heard
+    assert entry.kind == "run" and entry.status == "succeeded"
+    assert entry.customer_message == "Xong."
+    assert "background_run_finished status=succeeded run=r1" in [
+        r.getMessage() for r in caplog.records
+    ]
+
+
+def test_finish_run_after_clear_is_ignored():
+    ledger = ActionLedger()
+    ledger.start_run(CONV, "r1", "thêm trà")
+    ledger.clear(CONV)
+    ledger.finish_run(CONV, "r1", answer="Xong.", status="succeeded")
+    assert ledger.entries(CONV) == []
