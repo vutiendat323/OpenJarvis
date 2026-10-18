@@ -97,6 +97,10 @@ RESPONDER_DECISION_SECONDS = 2.0
 # audio within 1.5 s at p50).
 PHRASE_TIMEOUT_SECONDS = 3.0
 
+# How long the session's end waits for its cancelled runs to unwind. A run
+# stuck in a step that ignores cancellation must not hold the pipeline's end.
+CLEANUP_WAIT_SECONDS = 5.0
+
 
 class VoiceTurnState:
     """Session-local generation identity used to fence interrupted turns."""
@@ -623,7 +627,13 @@ class OpenJarvisLLMService(LLMService):
         tasks = self._cancel_runs()
         if tasks:
             # Only their unwinding is awaited; their cancellation is expected.
-            await asyncio.wait(tasks)
+            _, pending = await asyncio.wait(tasks, timeout=CLEANUP_WAIT_SECONDS)
+            if pending:
+                logger.warning(
+                    "voice_runs_unwinding count=%d after %.1f s at session end",
+                    len(pending),
+                    CLEANUP_WAIT_SECONDS,
+                )
 
     async def _answer(
         self,

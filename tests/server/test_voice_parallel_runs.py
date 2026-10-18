@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import nullcontext
 
 import pytest
@@ -388,6 +389,39 @@ async def test_cleanup_cancels_every_run_and_closes_the_tracker():
     assert task.cancelled()
     assert binding.cancelled == [U1["content"]]
     assert RUN_TRACKER.in_flight(conv) == []
+
+
+@pytest.mark.anyio
+async def test_cleanup_does_not_wait_forever_for_a_run_that_will_not_unwind(
+    monkeypatch, caplog
+):
+    """Minor 8: the session's end waits a bounded time, then warns."""
+    from openjarvis.server.voice import llm as voice_llm
+
+    monkeypatch.setattr(voice_llm, "CLEANUP_WAIT_SECONDS", 0.2)
+    service = OpenJarvisLLMService(_GatedBinding())
+    release = asyncio.Event()
+
+    async def stubborn():
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue  # e.g. a step that swallows the cancellation
+        return True
+
+    task = asyncio.create_task(stubborn())
+    service._runs["stuck"] = task
+    await asyncio.sleep(0)
+    started = asyncio.get_running_loop().time()
+    with caplog.at_level(logging.WARNING, logger="openjarvis.server.voice"):
+        await service.cleanup()
+    took = asyncio.get_running_loop().time() - started
+
+    assert 0.2 <= took < 1.0
+    assert any("voice_runs_unwinding" in r.getMessage() for r in caplog.records)
+    release.set()
+    assert await task is True
 
 
 def _agent_context():
