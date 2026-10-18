@@ -154,7 +154,6 @@ class ToolExecutor:
         tool = self._tools.get(tool_call.name)
         # Reads cannot disturb another run's write, so they never queue.
         read_only = tool is not None and tool.spec.metadata.get("read_only") is True
-        unregister = None
         cid = current_conversation_id()
         run = current_voice_run()
         write = lease is not None and not read_only
@@ -164,49 +163,58 @@ class ToolExecutor:
             timeout = (tool.spec.timeout_seconds if tool else 0.0) or (
                 self._default_timeout
             )
-        if tracked:
-            # Another run froze the cart for its checkout: a write of this
-            # run waits for the thaw (spec 2026-10-18 §5).
-            if not RUN_TRACKER.wait_unfrozen(cid, run, timeout):
-                return self._pending_operation(tool_call)
-        if lease is None or read_only:
-            scope = nullcontext(True)
-        elif in_tool or dispatch_is_committed():
-            # A dispatched tool's own step finishes even after barge-in (D2),
-            # and so does a call the model completed (spec 2026-10-17 §5.4).
-            scope = lease.tool_gate.enter(
-                lease,
-                wait_seconds=WRITE_WAIT_SECONDS,
-                same_conversation_wait_seconds=timeout,
-            )
-        else:
-            # A queued write of a run the customer cut leaves the queue at once.
-            unregister = lease.register_cancellation(lease.tool_gate.wake)
-            scope = lease.tool_gate.enter(
-                lease,
-                wait_seconds=WRITE_WAIT_SECONDS,
-                cancelled=lambda: lease.is_cancelled,
-                same_conversation_wait_seconds=timeout,
-            )
-        try:
-            with scope as acquired:
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = max(0.0, deadline - time.monotonic())
+            if tracked:
+                # Another run froze the cart for its checkout: a write of this
+                # run waits for the thaw (spec 2026-10-18 §5).
+                if not RUN_TRACKER.wait_unfrozen(cid, run, remaining):
+                    return self._pending_operation(tool_call)
+            unregister = None
+            if lease is None or read_only:
+                scope = nullcontext(True)
+            elif in_tool or dispatch_is_committed():
+                # A dispatched tool's own step finishes even after barge-in (D2),
+                # and so does a call the model completed (spec 2026-10-17 §5.4).
+                scope = lease.tool_gate.enter(
+                    lease,
+                    wait_seconds=WRITE_WAIT_SECONDS,
+                    same_conversation_wait_seconds=remaining,
+                )
+            else:
+                # A queued write of a run the customer cut leaves the queue at once.
+                unregister = lease.register_cancellation(lease.tool_gate.wake)
+                scope = lease.tool_gate.enter(
+                    lease,
+                    wait_seconds=WRITE_WAIT_SECONDS,
+                    cancelled=lambda: lease.is_cancelled,
+                    same_conversation_wait_seconds=remaining,
+                )
+            try:
+                with scope as acquired:
+                    if unregister is not None:
+                        unregister()
+                    if not acquired:
+                        return self._pending_operation(tool_call)
+                    # Another run may have taken the freeze while this write
+                    # sat in the gate; check again now that it is held.
+                    if not tracked or RUN_TRACKER.wait_unfrozen(cid, run, 0.0):
+                        if not in_tool:
+                            check_agent_cancelled()
+                            if lease is not None and tool is not None and not read_only:
+                                unsettled = self._earlier_action_unsettled(tool_call)
+                                if unsettled is not None:
+                                    return unsettled
+                        if tracked:
+                            # Only a write that is about to run counts as a change.
+                            RUN_TRACKER.note_write(cid, run)
+                        return self._execute(tool_call)
+            finally:
                 if unregister is not None:
                     unregister()
-                if not acquired:
-                    return self._pending_operation(tool_call)
-                if not in_tool:
-                    check_agent_cancelled()
-                    if lease is not None and tool is not None and not read_only:
-                        unsettled = self._earlier_action_unsettled(tool_call)
-                        if unsettled is not None:
-                            return unsettled
-                if tracked:
-                    # Only a write that is about to run counts as a change.
-                    RUN_TRACKER.note_write(cid, run)
-                return self._execute(tool_call)
-        finally:
-            if unregister is not None:
-                unregister()
+            # Left the gate so FIFO waiters (the freezer's own writes) proceed;
+            # wait for the thaw with the time that remains, then queue again.
 
     @staticmethod
     def _pending_operation(tool_call: ToolCall) -> ToolResult:

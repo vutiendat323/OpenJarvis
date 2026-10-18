@@ -858,3 +858,54 @@ def test_a_read_is_neither_frozen_nor_noted():
     finally:
         RUN_TRACKER.close(conversation)
     assert result.success and tool.calls == 1
+
+
+def test_a_write_queued_in_the_gate_does_not_run_after_a_freeze_taken_meanwhile():
+    conversation = "frozen-in-gate-conv"
+    gate = AgentToolGate()
+    holder, lease_c, lease_a = (
+        AgentWorkerLease(gate, conversation_id=conversation) for _ in range(3)
+    )
+    release = threading.Event()
+    held = _Tool("held", block=release, timeout=5.0)
+    queued = _Tool("queued", timeout=5.0)
+    own = _Tool("own", timeout=5.0)
+    executor = ToolExecutor([held, queued, own])
+    try:
+        with ThreadPoolExecutor(3) as pool:
+            running = pool.submit(
+                _in_run,
+                holder,
+                conversation,
+                "H",
+                lambda: executor.execute(ToolCall("1", "held", "{}")),
+            )
+            _until(lambda: held.calls == 1)
+            waiting = pool.submit(
+                _in_run,
+                lease_c,
+                conversation,
+                "C",
+                lambda: executor.execute(ToolCall("2", "queued", "{}")),
+            )
+            time.sleep(0.15)  # C is past the freeze check and queued in the gate
+            assert RUN_TRACKER.freeze(conversation, "A")
+            release.set()
+            running.result(2)
+            time.sleep(0.2)
+            assert queued.calls == 0 and not waiting.done()
+
+            mine = _in_run(
+                lease_a,
+                conversation,
+                "A",
+                lambda: executor.execute(ToolCall("3", "own", "{}")),
+            )
+            assert mine.success and own.calls == 1
+            assert queued.calls == 0
+
+            RUN_TRACKER.unfreeze(conversation, "A")
+            result = waiting.result(2)
+        assert result.success and queued.calls == 1
+    finally:
+        RUN_TRACKER.close(conversation)
