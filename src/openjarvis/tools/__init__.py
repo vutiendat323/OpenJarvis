@@ -167,4 +167,9 @@ try:
 except ImportError:
     pass
 
+try:
+    import openjarvis.tools.await_requests  # noqa: F401
+except ImportError:
+    pass
+
 __all__ = ["BaseTool", "ToolExecutor", "ToolSpec"]
