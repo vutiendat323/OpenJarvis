@@ -649,7 +649,7 @@ async def test_voice_stays_quiet_when_the_turn_speaks_straight_away():
 
 
 @pytest.mark.anyio
-async def test_cancellation_during_frame_delivery_closes_binding(monkeypatch):
+async def test_cancelling_a_run_during_frame_delivery_closes_binding(monkeypatch):
     binding = _Binding([AgentTextDelta("hello there "), AgentTextDelta("later")])
     service = OpenJarvisLLMService(binding)
     delivering = asyncio.Event()
@@ -660,16 +660,14 @@ async def test_cancellation_during_frame_delivery_closes_binding(monkeypatch):
             await asyncio.Event().wait()
 
     monkeypatch.setattr(service, "push_frame", blocked_delivery)
-    task = asyncio.create_task(
-        service.process_frame(
-            LLMContextFrame(
-                LLMContext(messages=[{"role": "user", "content": "hello"}])
-            ),
-            FrameDirection.DOWNSTREAM,
-        )
+    # The run lives in its own task; process_frame does not wait for it.
+    await service.process_frame(
+        LLMContextFrame(LLMContext(messages=[{"role": "user", "content": "hello"}])),
+        FrameDirection.DOWNSTREAM,
     )
     await asyncio.wait_for(delivering.wait(), 0.5)
-    task.cancel()
+    [task] = service._runs.values()
+    task.cancel()  # as the session's end does
     with pytest.raises(asyncio.CancelledError):
         await task
     assert binding.closed

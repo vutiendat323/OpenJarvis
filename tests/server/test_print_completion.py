@@ -83,6 +83,11 @@ async def test_print_completion_reaches_agent_and_order_status(
     service = OpenJarvisLLMService(
         binding, responder=SimpleNamespace(model="fast-fixture")
     )
+    # Stands in for a customer run that is speaking (a property of its runs).
+    answering = {"now": False}
+    monkeypatch.setattr(
+        OpenJarvisLLMService, "_answering", property(lambda _: answering["now"])
+    )
     ready, spoken = asyncio.Event(), asyncio.Event()
     texts = []
 
@@ -147,7 +152,7 @@ async def test_print_completion_reaches_agent_and_order_status(
                 presentation.replay(session.session_id)["printing_state"] == "submitted"
             )
             assert not ACTION_LEDGER.unreported_finished(conversation)
-            service._answering = True
+            answering["now"] = True
             printer.cups_state = "completed"
 
             def fail_after_runtime_delivery(event):
@@ -165,7 +170,7 @@ async def test_print_completion_reaches_agent_and_order_status(
                 await reporter._event_task
             assert texts == []  # Never interrupt the active customer turn.
             assert ACTION_LEDGER.unreported_finished(conversation)
-            service._answering = False
+            answering["now"] = False
             await reporter.on_idle()
             await asyncio.wait_for(spoken.wait(), 2)
             if reporter._event_task is not None:

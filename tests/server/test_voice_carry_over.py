@@ -1,4 +1,4 @@
-"""An interrupted request is carried into the next turn; a finished one is not."""
+"""An interrupted request keeps running; nothing is carried into the next turn."""
 
 from __future__ import annotations
 
@@ -19,67 +19,39 @@ from openjarvis.agents.action_ledger import ACTION_LEDGER
 from openjarvis.core.conversation import conversation_scope
 from openjarvis.core.types import ToolResult
 from openjarvis.server.voice.background import BackgroundReporter
-from openjarvis.server.voice.llm import (
-    CARRY_OVER_LIMIT,
-    OpenJarvisLLMService,
-    carried_prompt,
-    remember_unfinished,
-)
+from openjarvis.server.voice.llm import OpenJarvisLLMService
 
 STEP, TURN = 2.0, 10.0
 
 
-def test_nothing_unfinished_leaves_the_prompt_alone():
-    assert carried_prompt([], "cho xem menu") == "cho xem menu"
-
-
-def test_carried_prompt_labels_earlier_and_latest():
-    prompt = carried_prompt(["thêm hai cà phê sữa"], "cho xem menu")
-    assert prompt.index("<earlier_unfinished_request>") < prompt.index(
-        "thêm hai cà phê sữa"
-    )
-    assert prompt.index("<latest_request>") < prompt.index("cho xem menu")
-    assert "background_actions" in prompt
-
-
-def test_carried_prompt_skips_text_already_merged():
-    assert carried_prompt(["thêm hai"], "thêm hai cà phê sữa") == "thêm hai cà phê sữa"
-
-
-def test_remember_keeps_the_three_newest_in_order():
-    kept: list[str] = []
-    for text in ["a", "b", "c", "d"]:
-        kept = remember_unfinished(kept, text)
-    assert kept == ["b", "c", "d"] and CARRY_OVER_LIMIT == 3
-
-
-def test_remember_drops_entries_the_latest_repeats_or_extends():
-    same = remember_unfinished(["thêm hai cà phê sữa"], "thêm hai cà phê sữa")
-    assert same == ["thêm hai cà phê sữa"]
-    extended = remember_unfinished(["thêm hai"], "thêm hai cà phê sữa")
-    assert extended == ["thêm hai cà phê sữa"]
-
-
 class _ScriptBinding:
-    """Turn 1 blocks until cancelled; later turns record their prompt and finish."""
+    """Blocking turns wait for ``release``; the others record and finish."""
 
     model = "test-model"
 
     def __init__(self, block_turns=(0,)):
         self.prompts: list[str] = []
         self.blocking = asyncio.Event()
+        self.release = asyncio.Event()
         self.done = asyncio.Event()
+        self.finished: list[int] = []
+        self.cancelled: list[int] = []
         self._block_turns = set(block_turns)
 
     async def run_stream(self, prompt, context):
         del context
         index = len(self.prompts)
         self.prompts.append(prompt)
-        if index in self._block_turns:
-            self.blocking.set()
-            await asyncio.Event().wait()
-        yield AgentTextDelta("Dạ.")
-        yield AgentRunCompleted(AgentResult(content="Dạ.", turns=1))
+        try:
+            if index in self._block_turns:
+                self.blocking.set()
+                await self.release.wait()
+            yield AgentTextDelta("Dạ.")
+            yield AgentRunCompleted(AgentResult(content="Dạ.", turns=1))
+        except asyncio.CancelledError:
+            self.cancelled.append(index)
+            raise
+        self.finished.append(index)
         self.done.set()
 
 
@@ -113,7 +85,7 @@ U3 = {"role": "user", "content": "xem giỏ"}
 
 
 @pytest.mark.anyio
-async def test_interrupted_request_is_carried_and_a_finished_one_is_not():
+async def test_an_interrupted_request_keeps_running_and_is_not_carried():
     binding = _ScriptBinding()
     service = OpenJarvisLLMService(binding)
 
@@ -124,16 +96,18 @@ async def test_interrupted_request_is_carried_and_a_finished_one_is_not():
         await worker.queue_frame(_ctx(U1, A1, U2))
         await asyncio.wait_for(binding.done.wait(), STEP)
         binding.done.clear()
+        # The interrupted request was never cancelled: it finishes now.
+        binding.release.set()
+        await asyncio.wait_for(binding.done.wait(), STEP)
+        binding.done.clear()
         await worker.queue_frame(_ctx(U1, A1, U2, A2, U3))
         await asyncio.wait_for(binding.done.wait(), STEP)
 
     await _drive(service, steps)
 
-    assert binding.prompts[0] == "thêm hai cà phê sữa"
-    assert "<earlier_unfinished_request>" in binding.prompts[1]
-    assert "thêm hai cà phê sữa" in binding.prompts[1]
-    assert "cho xem menu" in binding.prompts[1]
-    assert binding.prompts[2] == "xem giỏ"
+    assert binding.prompts == ["thêm hai cà phê sữa", "cho xem menu", "xem giỏ"]
+    assert binding.finished == [1, 0, 2]
+    assert binding.cancelled == []
 
 
 @pytest.mark.anyio
@@ -166,7 +140,7 @@ async def test_a_rejected_speakers_request_is_never_carried():
 
 
 @pytest.mark.anyio
-async def test_a_repeated_interrupted_request_is_carried_once():
+async def test_a_repeated_interrupted_request_runs_again_and_nothing_is_carried():
     binding = _ScriptBinding(block_turns=(0, 1))
     service = OpenJarvisLLMService(binding)
 
@@ -183,8 +157,7 @@ async def test_a_repeated_interrupted_request_is_carried_once():
 
     await _drive(service, steps)
 
-    assert "<earlier_unfinished_request>" in binding.prompts[2]
-    assert binding.prompts[2].count("thêm hai cà phê sữa") == 1
+    assert binding.prompts == ["thêm hai cà phê sữa", "thêm hai cà phê sữa", "xem giỏ"]
 
 
 async def _eventually(read, timeout=STEP):
@@ -196,8 +169,8 @@ async def _eventually(read, timeout=STEP):
 
 
 @pytest.mark.anyio
-async def test_a_carried_request_still_sees_its_write_after_the_reporter_told_it():
-    """Spec §5.5: actions the earlier request started are in background_actions."""
+async def test_a_told_write_is_not_listed_again_while_its_run_keeps_working():
+    """Nothing is carried: a write the reporter told is not re-listed (spec §7.2)."""
     conv = "voice-carry-told"
     told = "Đã thêm hai cà phê sữa."
     binding = _ScriptBinding()
@@ -237,13 +210,11 @@ async def test_a_carried_request_still_sees_its_write_after_the_reporter_told_it
             ),
         )
         await reporter.on_idle()
-        seen["carried"] = await _eventually(
-            lambda: ACTION_LEDGER.background_for(conv, "r3")
-        )
+        await _eventually(lambda: spoken)
+        seen["listed"] = ACTION_LEDGER.background_for(conv, "r3")
         await worker.queue_frame(_ctx(U1, A1, U3))
         await asyncio.wait_for(binding.done.wait(), STEP)
-        await _eventually(lambda: not ACTION_LEDGER.background_for(conv, "r4"))
-        seen["settled"] = ACTION_LEDGER.background_for(conv, "r4")
+        seen["cancelled"] = list(binding.cancelled)
 
     try:
         with conversation_scope(conv):
@@ -252,14 +223,7 @@ async def test_a_carried_request_still_sees_its_write_after_the_reporter_told_it
         ACTION_LEDGER.clear(conv)
 
     assert spoken == [told]
-    assert seen["carried"] == [
-        {
-            "tool": "skill_add",
-            "status": "succeeded",
-            "message": told,
-            "already_told": "true",
-        }
-    ]
-    assert "<earlier_unfinished_request>" in binding.prompts[1]
-    # A customer turn that completed settles everything already told.
-    assert seen["settled"] == []
+    assert seen["listed"] == []
+    assert binding.prompts[1] == "xem giỏ"
+    # The interrupted request was still working when the next one ran.
+    assert seen["cancelled"] == []

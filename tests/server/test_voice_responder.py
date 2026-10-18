@@ -487,37 +487,6 @@ class _SlowAgent:
 
 
 @pytest.mark.anyio
-async def test_a_turn_carrying_an_interrupted_request_is_never_answered():
-    # Live 2026-10-13 18:05: "Iced coffee." was interrupted; the next turn's
-    # garbled words got "please say it again" and the order was dropped.
-    agent = _SlowAgent(after=0.3)
-    service = OpenJarvisLLMService(
-        agent,
-        responder=_Responder("Bạn nói lại giúp mình nhé.", kind="answer"),
-    )
-    service._unfinished = ["Iced coffee."]
-
-    frames = await _spoken(service, _user("ơ alo"))
-
-    assert "".join(f.text for f in frames) == "Câu trả lời của agent."
-    assert agent.finished and "Iced coffee." in agent.prompt
-
-
-@pytest.mark.anyio
-async def test_a_blocked_answer_still_lets_a_preamble_through():
-    agent = _SlowAgent(after=0.3)
-    service = OpenJarvisLLMService(
-        agent, responder=_Responder("Mình xem món cho bạn nhé.")
-    )
-    service._unfinished = ["Iced coffee."]
-
-    frames = await _spoken(service, _user("ơ alo"))
-
-    assert frames[0].text == "Mình xem món cho bạn nhé. "
-    assert agent.finished
-
-
-@pytest.mark.anyio
 async def test_responder_sends_the_prompt_it_was_given():
     engine = _ToolEngine(StreamChunk(content="Dạ."))
     await VoiceResponder(engine, "fast", "Custom wording.").respond("hi")
@@ -585,7 +554,6 @@ async def test_an_answer_never_starts_the_agent():
 
     assert "".join(f.text for f in frames) == "Dạ, mình nghe rõ ạ. "
     assert agent.prompt is None
-    assert service._unfinished == []
 
 
 @pytest.mark.anyio
@@ -793,7 +761,7 @@ async def test_late_filler_does_not_follow_an_agent_fragment_waiting_for_project
 
 
 @pytest.mark.anyio
-async def test_a_turn_interrupted_before_the_delegation_lands_starts_nothing():
+async def test_a_turn_interrupted_before_the_delegation_lands_runs_the_agent_silently():
     agent = _SlowAgent(after=0.0)
     holder: dict = {}
     responder = _Responder(
@@ -805,13 +773,13 @@ async def test_a_turn_interrupted_before_the_delegation_lands_starts_nothing():
 
     frames = await _spoken(service, _user("cho mình xem menu"))
 
+    # A barge-in fences speech, not work: the delegated request still runs.
     assert frames == []
-    assert agent.prompt is None
-    assert service._unfinished == ["cho mình xem menu"]
+    assert agent.prompt == "cho mình xem menu"
 
 
 @pytest.mark.anyio
-async def test_an_interruption_while_the_responder_decides_starts_nothing():
+async def test_an_interruption_while_the_responder_decides_speaks_nothing():
     agent = _SlowAgent(after=0.0)
     responder = _Responder("Mình mở menu nhé.", after=1.0)
     service = OpenJarvisLLMService(agent, responder=responder)
@@ -851,8 +819,8 @@ async def test_an_interruption_while_the_responder_decides_starts_nothing():
     )
 
     assert seen == []
-    assert agent.prompt is None
-    assert service._unfinished == ["cho mình xem menu"]
+    # The delegation that lands after the barge-in still runs the Agent.
+    assert agent.prompt == "cho mình xem menu" and agent.finished
 
 
 class _SelfCancellingResponder(_Responder):
@@ -871,7 +839,6 @@ async def test_a_responder_task_that_ends_cancelled_is_routed_to_the_agent():
     frames = await _spoken(service, _user("cho mình xem menu"))
 
     assert "".join(f.text for f in frames) == "Dạ, menu đây ạ."
-    assert service._unfinished == []
 
 
 @pytest.mark.anyio
