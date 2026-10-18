@@ -8,7 +8,7 @@ from unittest import mock
 
 from openjarvis.agents._stubs import _RUN_WORKER_LEASE
 from openjarvis.core.conversation import conversation_scope
-from openjarvis.core.runs import RUN_TRACKER, voice_run_scope
+from openjarvis.core.runs import RUN_TRACKER, StableOutcome, voice_run_scope
 from openjarvis.core.types import ToolCall
 from openjarvis.tools import await_requests
 from openjarvis.tools._stubs import ToolExecutor
@@ -122,3 +122,27 @@ def test_a_correction_does_not_wait_for_a_checkout_waiting_for_the_cart():
         RUN_TRACKER.end(C, correction)
         waiter.join(3)
         RUN_TRACKER.end(C, checkout)
+
+
+def test_an_ordering_checkout_is_still_running_until_its_run_ends(monkeypatch):
+    """N1: leaving wait_stable does not mean the merchant order has finished."""
+    monkeypatch.setattr(await_requests, "AWAIT_EARLIER_SECONDS", 0.05)
+    checkout = RUN_TRACKER.begin(C, "pay")
+    assert RUN_TRACKER.wait_stable(C, checkout, 0.0) is StableOutcome.STABLE
+    assert RUN_TRACKER.freeze(C, checkout)
+    correction = RUN_TRACKER.begin(C, "no smoothies")
+    try:
+        frozen = _await_as(correction)
+        assert frozen.success is False
+        assert frozen.content.startswith("earlier_requests_still_running:")
+        RUN_TRACKER.unfreeze(C, checkout)
+        thawed = _await_as(correction)
+        assert thawed.success is False
+        assert thawed.content.startswith("earlier_requests_still_running:")
+        RUN_TRACKER.end(C, checkout)
+        finished = _await_as(correction)
+        assert finished.success is True
+        assert finished.content == "earlier_requests_finished"
+    finally:
+        RUN_TRACKER.end(C, checkout)
+        RUN_TRACKER.end(C, correction)

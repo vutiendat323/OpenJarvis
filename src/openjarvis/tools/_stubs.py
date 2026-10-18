@@ -210,7 +210,7 @@ class ToolExecutor:
                 ):
                     return self._cart_not_settled(tool_call)
             # Held now, so no other checkout can move the epoch. One that ran
-            # since this wait began may already have ordered these very lines;
+            # since this run began may already have ordered these very lines;
             # a replacement-lines checkout has no revision claim to stop a
             # second order (ruling 17).
             if RUN_TRACKER.superseded(cid, run):

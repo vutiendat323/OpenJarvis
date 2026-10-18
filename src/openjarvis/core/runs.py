@@ -23,16 +23,17 @@ class StableOutcome(str, Enum):
 @dataclass
 class _Conversation:
     runs: dict[str, str] = field(default_factory=dict)  # run_id -> request
-    waiting: set[str] = field(default_factory=set)
+    waiting: set[str] = field(default_factory=set)  # currently inside wait_stable
     writes: list[str] = field(default_factory=list)  # run ids, in write order
     freeze_owner: str = ""
     closed: bool = False
-    # Checkout freezes released so far (spec P8, ruling 17): a checkout that
-    # sees this move while it waited lets the other checkout's order stand.
+    # Checkout freezes released so far (spec P8, ruling 17).
     epoch: int = 0
-    # Per checkout that waited: the epoch and the runs it waited for, both
-    # taken when its wait began.
-    waits: dict[str, tuple[int, frozenset[str]]] = field(default_factory=dict)
+    # Epoch at each run's begin, advanced only for its own freeze releases.
+    # A peer's release supersedes the run even before it calls checkout.
+    epochs: dict[str, int] = field(default_factory=dict)
+    # Per checkout that waited: the runs in flight when its wait began.
+    waits: dict[str, frozenset[str]] = field(default_factory=dict)
     # Per run: the runs with words in flight when it began, which its prompt
     # names as in progress (I5).
     named: dict[str, frozenset[str]] = field(default_factory=dict)
@@ -69,6 +70,7 @@ class RunTracker:
                     rid for rid, words in conv.runs.items() if words
                 )
                 conv.runs[run_id] = request
+                conv.epochs[run_id] = conv.epoch
                 self._cond.notify_all()
         return run_id
 
@@ -90,6 +92,7 @@ class RunTracker:
             if conv is None:
                 return
             conv.runs.pop(run_id, None)
+            conv.epochs.pop(run_id, None)
             conv.waiting.discard(run_id)
             conv.waits.pop(run_id, None)
             conv.named.pop(run_id, None)
@@ -129,12 +132,15 @@ class RunTracker:
     def wait_stable(
         self, conversation_id: str, run_id: str, timeout: float
     ) -> StableOutcome:
-        """Wait until no other run that is not itself waiting is in flight.
+        """Wait until no non-checkout peer is in flight.
 
         Every such run counts, also one begun during the wait (ruling 16): a
         request still thinking may yet change the cart. A write by a run that
         was not in flight when the wait began is a change: the customer asked
         for something new, so the checkout is dropped (spec 7.7).
+
+        Peer checkouts stay excluded until end(), including after their wait
+        returns. The exclusive freeze and superseded check serialize them.
         """
         if not conversation_id or not run_id:
             return StableOutcome.STABLE
@@ -144,9 +150,9 @@ class RunTracker:
             if conv is None:
                 return StableOutcome.CLOSED
             snapshot = frozenset(
-                rid for rid in conv.runs if rid != run_id and rid not in conv.waiting
+                rid for rid in conv.runs if rid != run_id and rid not in conv.waits
             )
-            conv.waits[run_id] = (conv.epoch, snapshot)
+            conv.waits[run_id] = snapshot
             seen = len(conv.writes)
             conv.waiting.add(run_id)
             # A peer checkout waits for this run until it is marked waiting.
@@ -160,7 +166,7 @@ class RunTracker:
                     ):
                         return StableOutcome.CHANGED
                     if not any(
-                        rid != run_id and rid not in conv.waiting for rid in conv.runs
+                        rid != run_id and rid not in conv.waits for rid in conv.runs
                     ):
                         return StableOutcome.STABLE
                     remaining = deadline - time.monotonic()
@@ -168,8 +174,9 @@ class RunTracker:
                         return StableOutcome.TIMEOUT
                     self._cond.wait(remaining)
             finally:
-                # Stays marked until end(): a checkout that has waited is
-                # never something another checkout must wait for.
+                conv.waiting.discard(run_id)
+                # Keep its snapshot until end() so peer checkouts still ignore
+                # it. Corrections only skip it while it is actually waiting.
                 self._cond.notify_all()
 
     def waited_for(self, conversation_id: str, run_id: str) -> frozenset[str]:
@@ -178,11 +185,12 @@ class RunTracker:
             return frozenset()
         with self._cond:
             conv = self._convs.get(conversation_id)
-            wait = conv.waits.get(run_id) if conv is not None else None
-            return wait[1] if wait is not None else frozenset()
+            return (
+                conv.waits.get(run_id, frozenset()) if conv is not None else frozenset()
+            )
 
     def superseded(self, conversation_id: str, run_id: str) -> bool:
-        """True when another checkout's freeze ended since this run's wait began.
+        """True when another checkout's freeze ended since this run began.
 
         Checked by a checkout once it holds the freeze, so no other checkout
         can move the epoch meanwhile (ruling 17). A closed conversation counts
@@ -194,15 +202,16 @@ class RunTracker:
             conv = self._convs.get(conversation_id)
             if conv is None:
                 return conversation_id in self._closed
-            wait = conv.waits.get(run_id)
-            return conv.closed or (wait is not None and wait[0] != conv.epoch)
+            epoch = conv.epochs.get(run_id)
+            return conv.closed or (epoch is not None and epoch != conv.epoch)
 
     def wait_others(self, conversation_id: str, run_id: str, timeout: float) -> bool:
-        """Wait for the runs begun before this one, except waiting checkouts.
+        """Wait for earlier runs, except checkouts currently waiting for stability.
 
         A later run is never waited for, nor is a checkout waiting for a stable
         cart: that checkout waits for this run, so waiting for it in turn would
-        hold both until their timeouts (I4).
+        hold both until their timeouts (I4). A freeze owner is ordering and
+        must never be skipped, even if it is also inside wait_stable (N1).
         """
         if not conversation_id or not run_id:
             return True
@@ -219,7 +228,9 @@ class RunTracker:
                 if conv.closed:
                     return False
                 if not any(
-                    rid in conv.runs and rid not in conv.waiting for rid in earlier
+                    rid in conv.runs
+                    and (rid not in conv.waiting or rid == conv.freeze_owner)
+                    for rid in earlier
                 ):
                     return True
                 remaining = deadline - time.monotonic()
@@ -241,8 +252,11 @@ class RunTracker:
 
     @staticmethod
     def _release_freeze(conv: _Conversation) -> None:
+        owner = conv.freeze_owner
         conv.freeze_owner = ""
         conv.epoch += 1
+        if owner in conv.epochs:
+            conv.epochs[owner] += 1
 
     def unfreeze(self, conversation_id: str, run_id: str) -> None:
         if not conversation_id or not run_id:

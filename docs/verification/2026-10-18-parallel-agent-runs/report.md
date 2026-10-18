@@ -5,6 +5,124 @@ Branch `feat/live-voice-mode`, commits `758e8df9`..`92c58906`, the Task 12 commi
 
 Status: nothing is pushed and nothing is deployed. The stack was not started or restarted. What the running stack has loaded is not established by this report.
 
+## Residual C2 / N1 fix and re-review (2026-10-19)
+
+Baseline: `59e1b102`, branch `feat/live-voice-mode`. This section records the
+current bounded verification; the older counts below remain historical.
+
+- **C2 residual fixed:** each run captures the checkout epoch in `begin()`,
+  before model work or slot waiting. A peer's freeze release supersedes that
+  run even when its checkout call starts after the release. `end()` removes
+  the run's epoch. Own releases advance its baseline by exactly one, rather
+  than resetting it to the current epoch, so they neither supersede their
+  owner nor hide an earlier peer release. Re-entering `wait_stable` cannot
+  reset this protection.
+- **N1 fixed:** `waiting` now means currently inside `wait_stable` and is
+  cleared in `finally`. Checkout snapshots remain in `waits` until `end()` so
+  peer checkouts still ignore one another. `wait_others` skips only an active
+  stability waiter and never a freeze owner; after a checkout leaves that
+  wait, corrections wait for its run to end, including after thaw.
+
+TDD evidence, with HTTP requests intercepted by the existing checkout fixture:
+
+| Regression | RED before its fix | GREEN after |
+|---|---|---|
+| Core: peer release before the checkout wait, via thaw or owner end; repeated waits; own releases | 3 failed: peer release missed; own release incorrectly superseded itself | Passed |
+| Checkout: B2 begins during B1's held order POST, then calls checkout after B1 returns; both `cart_lines` and revision; B1 ended or still running | 4 failed: `cart_lines` checkout succeeded again; revision reached the consumed claim instead of being superseded before dispatch | All four refuse B2 before dispatch; exactly one order POST and one payment POST |
+| Core: correction after STABLE, after thaw, or after a timed-out stable wait | 3 failed: `wait_others` returned True before checkout ended | Passed |
+| Await tool and real checkout fixture: correction while earlier checkout holds freeze / order POST | 1 failure in each suite: `earlier_requests_finished` while order still posting | Reports still running until checkout ends |
+
+Each requested suite ran in a separate process using
+`uv run --offline --no-sync pytest <suite> -q --tb=short -m "not live and not cloud and not hub"`
+with `UV_CACHE_DIR=/tmp/openjarvis-uv-cache`:
+
+| Suite | Current result |
+|---|---|
+| `tests/core/test_runs.py` | 32 passed |
+| `tests/skills/test_checkout_stable_cart.py` | 21 passed |
+| `tests/skills/test_checkout_barge_in.py` | 6 passed |
+| `tests/tools/test_await_requests.py` | 7 passed |
+| `tests/server/test_voice_parallel_scenarios.py` | 11 passed, 2 dependency warnings; runner workaround below |
+| `tests/agents/test_write_queue.py` | 39 passed |
+
+Total: **116 passed**. Ruff check and format check passed for all five changed
+Python files; `git diff --check` passed. No live/cloud/hub tests, stack restart,
+deployment, push, or real merchant calls were performed.
+
+Voice runner qualification: the ordinary suite stalled in pipeline setup and
+executor teardown. A first-scenario run using the exact HEAD tracker loaded
+from `/tmp` also timed out at 45 s. Independently,
+`asyncio.run(asyncio.to_thread(lambda: 42))` returned 42 but hung during
+executor shutdown (10 s timeout). Scheduling a recurring 10 ms event-loop
+timer let that minimal example close normally. The full voice suite then
+passed in 7.87 s with a temporary pytest plugin that only schedules that
+timer, without replacing product methods or assertions. The plugin and probe
+are in `/tmp/openjarvis-c2-n1-review/`, outside the committed changes. Re-run:
+
+```sh
+PYTHONPATH=/tmp/openjarvis-c2-n1-review:.:src UV_CACHE_DIR=/tmp/openjarvis-uv-cache \
+  timeout --signal=INT --kill-after=5s 120s uv run --offline --no-sync pytest \
+  tests/server/test_voice_parallel_scenarios.py -p loop_wakeup_plugin \
+  -q --tb=short -m "not live and not cloud and not hub"
+```
+
+The interrupted/timeout runs are not passing evidence. The two warnings in
+the completed run concern Pipecat's deprecated `AudioContextTTSService` and
+google-auth's future grpcio minimum version.
+
+### Critical re-review result
+
+Self-review of the diff plus a read-only independent reviewer found no
+introduced defect in C2/N1. The review checked peer epoch changes before and
+during waits, own-release exclusion without masking a peer, owner `end()`,
+retrying a wait, revision claims, exclusive freeze, and the correction / peer
+checkout waiting distinction. The tested overlapping-checkout schedules now
+produce a single order; this is not a proof of all merchant-order paths.
+
+**Remaining Important finding — `cart_lines` can overwrite a later correction
+and create a stale merchant order (pre-existing, not fixed in this wave).**
+`src/openjarvis/tools/_stubs.py:223` follows revisions only when the arguments
+contain `cart_revision`; `src/openjarvis/tools/display.py:1257` replaces the
+draft from `cart_lines` without a check for intervening draft changes. Two
+offline characterization probes with real tracker/gate/cart/skill code and
+mocked HTTP confirmed these schedules:
+
+1. B supplies the visible coffee quantity 1 and waits behind a read-only A.
+   A touch updates that line to quantity 2 (`total=70000`), then A ends.
+   Touch does not call `note_write`, so B reaches STABLE, replaces the
+   correction with quantity 1 and posts `total=35000` successfully.
+2. B reaches STABLE with quantity 1. Before `freeze()` acquires the freeze,
+   a new voice run clears the cart through the real `ToolExecutor` and ends.
+   B then freezes, replaces the empty cart from its older `cart_lines` and
+   posts `total=35000` successfully. The equivalent revision path is already
+   refused by the existing stale-revision test.
+
+Probe: `/tmp/openjarvis-c2-n1-review/test_remaining_checkout_paths.py`
+(`test_cart_lines_overwrites_a_later_touch_correction`,
+`test_cart_lines_reintroduces_a_voice_removal_before_freeze`). Both
+characterizations assert the observed bad outcome and passed; they are not
+regression acceptance tests. Both also reproduced with the exact HEAD tracker
+loaded by the baseline plugin (2 passed, the same stale POSTs). Neither
+requires a network call. The fix should
+bind replacement lines to the draft/change history they observed and refuse
+later corrections atomically before reserving checkout; an older draft being
+intentionally replaced must remain distinguishable. The earlier background
+add being replaced is not reported separately because the configured prompt
+explicitly permits replacement of an older draft.
+
+The requested C2/N1 fixes and regression tests are the scope of this commit;
+the remaining finding is reported for the next fix wave. The kiosk TOML,
+`frontend/tsconfig.tsbuildinfo`, and unrelated untracked files remain unstaged.
+
+Commit delivery limitation: the sandbox mounts this checkout's `.git`
+read-only. `git add` failed creating `.git/index.lock`; no index or branch
+ref was changed. A conventional commit with the requested final co-author
+line is prepared in a temporary clone instead, with bundle
+`/tmp/openjarvis-c2-n1-review/c2-n1-fix.bundle` and mail patch
+`/tmp/openjarvis-c2-n1-review/c2-n1-fix.patch`. The original checkout keeps
+the six task files modified and uncommitted. The bundle contains only those
+six files, with parent `59e1b102`.
+
 ## What was replayed
 
 `tests/server/test_voice_parallel_scenarios.py` drives the real voice service over the real `NativeAgentRuntime(max_concurrent_runs=2)`, the real `OrchestratorAgent`, the real action ledger, run tracker, write gate and `DisplayCartTool` (and, for payment, the real checkout `SkillTool` with its stable-cart wait). Only the edges are scripted: a streaming engine, a fake Responder and a sink in place of TTS. Delays are held with events rather than timed, and no assertion bounds a duration. A few negative checks ("nothing happened yet") sleep 0.2-0.4 s before looking, so they can only pass too early, never fail on a slow machine.

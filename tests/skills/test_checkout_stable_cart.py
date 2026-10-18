@@ -31,6 +31,7 @@ from openjarvis.skills.types import SkillManifest
 from openjarvis.system.builder import SystemBuilder
 from openjarvis.tools import _stubs as tool_stubs
 from openjarvis.tools._stubs import ToolExecutor
+from openjarvis.tools.await_requests import AwaitEarlierRequestsTool
 from openjarvis.tools.display import DisplayCartTool
 from openjarvis.tools.http_request import HttpRequestTool
 from tests.skills.test_checkout_barge_in import (
@@ -507,10 +508,94 @@ def test_a_checkout_that_waits_while_another_is_ordering_is_refused(
     assert fx.order_posts() == ["total=35000"]
 
 
+def test_a_correction_cannot_claim_completion_while_an_earlier_order_is_posting(
+    monkeypatch, conversation
+):
+    """N1: await_earlier_requests must see the real checkout's frozen POST."""
+    monkeypatch.setattr("openjarvis.tools.await_requests.AWAIT_EARLIER_SECONDS", 0.05)
+    order_started, release = threading.Event(), threading.Event()
+
+    def on_post():
+        order_started.set()
+        assert release.wait(5)
+
+    fx = _Fixture(monkeypatch, conversation, on_post=on_post)
+    revision = fx.seed()
+    checkout = RUN_TRACKER.begin(conversation, "pay")
+    with ThreadPoolExecutor(1) as pool:
+        first = pool.submit(fx.checkout, fx.lease(), checkout, revision)
+        try:
+            assert order_started.wait(5)
+            correction = RUN_TRACKER.begin(conversation, "remove the coffee")
+            with conversation_scope(conversation), voice_run_scope(correction):
+                result = AwaitEarlierRequestsTool().execute()
+            assert not result.success
+            assert result.content.startswith("earlier_requests_still_running:")
+        finally:
+            release.set()
+        assert first.result(10).success
+    RUN_TRACKER.end(conversation, checkout)
+    with conversation_scope(conversation), voice_run_scope(correction):
+        result = AwaitEarlierRequestsTool().execute()
+    assert result.success
+    assert result.content == "earlier_requests_finished"
+    assert fx.posts() == [(ORDERS, "total=35000"), (PAYMENT, "")]
+    RUN_TRACKER.end(conversation, correction)
+
+
+@pytest.mark.parametrize("end_first", [False, True])
+@pytest.mark.parametrize("cart_lines", [False, True])
+def test_a_repeat_pay_begun_during_ordering_is_refused_after_the_order_finishes(
+    monkeypatch, conversation, end_first, cart_lines
+):
+    """C2 residual: begin B2 before thaw, delay its checkout until after thaw."""
+    order_started, release = threading.Event(), threading.Event()
+
+    def on_post():
+        order_started.set()
+        assert release.wait(5)
+
+    fx = _Fixture(
+        monkeypatch, conversation, on_post=on_post, accepts_cart_lines=cart_lines
+    )
+    revision = fx.seed()
+    extra = {"cart_lines": LINES, "order_type": "take-out", "table": ""}
+    run_b1 = RUN_TRACKER.begin(conversation, "tea, pay")
+    with ThreadPoolExecutor(1) as pool:
+        first = pool.submit(
+            fx.checkout,
+            fx.lease(),
+            run_b1,
+            None if cart_lines else revision,
+            **(extra if cart_lines else {}),
+        )
+        try:
+            assert order_started.wait(5)
+            run_b2 = RUN_TRACKER.begin(conversation, "tea, pay (repeated)")
+        finally:
+            release.set()
+        result = first.result(10)
+    assert result.success, result.content
+    if end_first:
+        RUN_TRACKER.end(conversation, run_b1)
+
+    repeated = fx.checkout(
+        fx.lease(),
+        run_b2,
+        None if cart_lines else revision,
+        **(extra if cart_lines else {}),
+    )
+
+    assert _superseded(repeated), repeated.content
+    assert fx.posts() == [(ORDERS, "total=35000"), (PAYMENT, "")]
+    RUN_TRACKER.end(conversation, run_b1)
+    RUN_TRACKER.end(conversation, run_b2)
+
+
 def test_a_later_checkout_is_not_refused_by_an_earlier_finished_one(
     monkeypatch, conversation
 ):
-    """The epoch is taken at the wait's start: a checkout after another is fine."""
+    """A run begun after the earlier checkout finished may create a new order."""
     fx = _Fixture(monkeypatch, conversation, accepts_cart_lines=True)
     fx.seed()
     lines = {"cart_lines": LINES, "order_type": "take-out", "table": ""}

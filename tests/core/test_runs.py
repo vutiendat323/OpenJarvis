@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 import time
 
+import pytest
+
 from openjarvis.core.runs import (
     RunTracker,
     StableOutcome,
@@ -226,6 +228,37 @@ def test_a_correction_does_not_wait_for_a_waiting_checkout():
     assert out["checkout"] is StableOutcome.STABLE
 
 
+@pytest.mark.parametrize("frozen", [False, True])
+def test_a_correction_waits_for_a_checkout_that_finished_waiting(frozen):
+    """N1: a checkout that has left wait_stable may already be ordering."""
+    t = RunTracker()
+    checkout = t.begin(C, "pay")
+    assert t.wait_stable(C, checkout, 0.0) is StableOutcome.STABLE
+    if frozen:
+        assert t.freeze(C, checkout)
+    correction = t.begin(C, "no smoothies")
+
+    assert t.wait_others(C, correction, 0.0) is False
+    if frozen:
+        t.unfreeze(C, checkout)
+        assert t.wait_others(C, correction, 0.0) is False
+    t.end(C, checkout)
+    assert t.wait_others(C, correction, 0.0) is True
+
+
+def test_a_correction_waits_for_a_checkout_that_timed_out_waiting():
+    t = RunTracker()
+    checkout = t.begin(C, "pay")
+    adding = t.begin(C, "add tea")
+    assert t.wait_stable(C, checkout, 0.0) is StableOutcome.TIMEOUT
+    correction = t.begin(C, "no tea")
+    t.end(C, adding)
+
+    assert t.wait_others(C, correction, 0.0) is False
+    t.end(C, checkout)
+    assert t.wait_others(C, correction, 0.0) is True
+
+
 def test_a_correction_begun_during_a_checkout_wait_drops_it_without_waiting():
     t = RunTracker()
     a = t.begin(C, "add smoothies")
@@ -398,6 +431,37 @@ def test_a_freeze_ended_by_its_runs_end_moves_the_epoch_too():
     assert t.freeze(C, b1)
     t.end(C, b1)
     assert t.superseded(C, b2) is True
+
+
+@pytest.mark.parametrize("end_first", [False, True])
+def test_a_peer_release_before_the_checkout_wait_still_supersedes_it(end_first):
+    """C2 residual: B2 begins during B1's order but calls checkout after it."""
+    t = RunTracker()
+    b1 = t.begin(C, "pay")
+    assert t.wait_stable(C, b1, 0.0) is StableOutcome.STABLE
+    assert t.freeze(C, b1)
+    b2 = t.begin(C, "pay again")
+    if end_first:
+        t.end(C, b1)
+    else:
+        t.unfreeze(C, b1)
+
+    for _ in range(2):  # retrying the wait must not reset the run's epoch
+        assert t.wait_stable(C, b2, 0.0) is StableOutcome.STABLE
+        assert t.freeze(C, b2)
+        assert t.superseded(C, b2) is True
+        t.unfreeze(C, b2)
+
+
+def test_a_runs_own_freeze_releases_do_not_supersede_it():
+    t = RunTracker()
+    checkout = t.begin(C, "pay")
+    for _ in range(2):
+        assert t.wait_stable(C, checkout, 0.0) is StableOutcome.STABLE
+        assert t.freeze(C, checkout)
+        assert t.superseded(C, checkout) is False
+        t.unfreeze(C, checkout)
+        assert t.superseded(C, checkout) is False
 
 
 def test_a_checkout_begun_after_another_ended_is_not_superseded():
