@@ -909,3 +909,48 @@ def test_a_write_queued_in_the_gate_does_not_run_after_a_freeze_taken_meanwhile(
         assert result.success and queued.calls == 1
     finally:
         RUN_TRACKER.close(conversation)
+
+
+def test_a_nested_step_of_a_dispatched_skill_ignores_a_freeze_taken_meanwhile():
+    conversation = "frozen-nested-conv"
+    gate = AgentToolGate()
+    lease_c, lease_a = (
+        AgentWorkerLease(gate, conversation_id=conversation) for _ in range(2)
+    )
+    started, release = threading.Event(), threading.Event()
+    step = _Tool("step", timeout=0.5)
+    own = _Tool("own", timeout=5.0)
+    skill = _ThenNested(
+        "skill",
+        started,
+        release,
+        lambda: executor.execute(ToolCall("n", "step", "{}")),
+    )
+    executor = ToolExecutor([skill, step, own])
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            running = pool.submit(
+                _in_run,
+                lease_c,
+                conversation,
+                "C",
+                lambda: executor.execute(ToolCall("1", "skill", "{}")),
+            )
+            assert started.wait(2)  # C passed the freeze check and holds the gate
+            assert RUN_TRACKER.freeze(conversation, "A")
+            begun = time.monotonic()
+            release.set()
+            result = running.result(3)
+
+        # The nested write step finished at once, not after its 0.5 s timeout.
+        assert result.success and step.calls == 1
+        assert time.monotonic() - begun < 0.4
+        mine = _in_run(
+            lease_a,
+            conversation,
+            "A",
+            lambda: executor.execute(ToolCall("2", "own", "{}")),
+        )
+        assert mine.success and own.calls == 1
+    finally:
+        RUN_TRACKER.close(conversation)

@@ -297,8 +297,19 @@ class SkillTool(BaseTool):
                     "runtime_arguments_if_present",
                 )
                 if key in policy
-            },
+            }
+            | ({"waits_for_stable_cart": True} if self._manifest.checkout else {}),
         )
+
+    def current_cart_revision(self) -> Optional[int]:
+        """The conversation's draft revision, or None without a non-empty draft."""
+        get_tool = getattr(self._executor._tool_executor, "get_tool", None)
+        cart = get_tool("display_cart") if callable(get_tool) else None
+        snapshot = getattr(cart, "current_snapshot", None)
+        snapshot = snapshot() if callable(snapshot) else None
+        if not snapshot or not snapshot.get("lines"):
+            return None
+        return snapshot.get("revision")
 
     def execute(self, **params: Any) -> ToolResult:
         """Execute the skill.

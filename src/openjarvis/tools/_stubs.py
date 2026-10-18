@@ -21,13 +21,28 @@ from uuid import uuid4
 
 from openjarvis.core.conversation import current_conversation_id
 from openjarvis.core.events import EventBus, EventType
-from openjarvis.core.runs import RUN_TRACKER, current_voice_run
+from openjarvis.core.runs import RUN_TRACKER, StableOutcome, current_voice_run
 from openjarvis.core.types import ToolCall, ToolResult
 from openjarvis.tools import evidence as _evidence
 
 # How long a write from one Agent run waits for another run's write to finish
 # before it is answered "pending" instead of dispatched (spec 2026-10-10 §5.2).
 WRITE_WAIT_SECONDS = 5.0
+
+# How long a checkout waits for the other runs of its session to stop changing
+# the cart before it is answered "not settled" and creates no order (spec
+# 2026-10-17 P8 / §7.7).
+STABLE_CART_WAIT_SECONDS = 15.0
+
+CART_NOT_SETTLED = (
+    "cart_not_settled: other requests are still changing the cart after 15 s. "
+    "No order was created. Tell the customer the cart is still being updated "
+    "and ask whether to wait."
+)
+CART_CHANGED = (
+    "cart_changed_during_checkout: the customer changed the cart while checkout "
+    "waited. No order was created. Handle the change, then ask whether to pay."
+)
 
 # True while a tool's own ``execute`` runs. A tool already dispatched runs all
 # its steps (spec 2026-10-10 D2): a skill's later steps call ``ToolExecutor``
@@ -141,6 +156,92 @@ class ToolExecutor:
         self._boundary_guard = boundary_guard
 
     def execute(self, tool_call: ToolCall) -> ToolResult:
+        if not _IN_TOOL.get():
+            tool = self._tools.get(tool_call.name)
+            cid, run = current_conversation_id(), current_voice_run()
+            if (
+                cid
+                and run
+                and tool is not None
+                and tool.spec.metadata.get("waits_for_stable_cart") is True
+            ):
+                from openjarvis.agents._stubs import check_agent_cancelled
+
+                check_agent_cancelled()
+                return self._execute_when_cart_is_stable(tool_call, tool, cid, run)
+        return self._execute_gated(tool_call)
+
+    def _execute_when_cart_is_stable(
+        self, tool_call: ToolCall, tool: BaseTool, cid: str, run: str
+    ) -> ToolResult:
+        """Hold a checkout until other runs stop changing the cart (spec P8).
+
+        Nothing is dispatched unless the cart is stable; once it is, the cart
+        stays frozen against other runs' writes until the checkout has ended.
+        """
+        started = time.monotonic()
+        deadline = started + STABLE_CART_WAIT_SECONDS
+        revision_now = getattr(tool, "current_cart_revision", None)
+        revision_before = revision_now() if callable(revision_now) else None
+        outcome = RUN_TRACKER.wait_stable(cid, run, STABLE_CART_WAIT_SECONDS)
+        if outcome is StableOutcome.CHANGED:
+            return ToolResult(
+                tool_name=tool_call.name,
+                success=False,
+                content=CART_CHANGED,
+                metadata={"dispatched": False, "cart_changed": True},
+            )
+        if outcome is not StableOutcome.STABLE:
+            return self._cart_not_settled(tool_call)
+        contended = False
+        try:
+            # The freeze is exclusive: another checkout may hold it. Wait for
+            # its thaw within what is left of the stable-cart budget.
+            while not RUN_TRACKER.freeze(cid, run):
+                contended = True
+                if not RUN_TRACKER.wait_unfrozen(
+                    cid, run, max(0.0, deadline - time.monotonic())
+                ):
+                    return self._cart_not_settled(tool_call)
+            if not contended and callable(revision_now):
+                tool_call = self._follow_cart_revision(
+                    tool_call, revision_before, revision_now()
+                )
+            return self._execute_gated(tool_call)
+        finally:
+            RUN_TRACKER.unfreeze(cid, run)
+
+    @staticmethod
+    def _cart_not_settled(tool_call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_name=tool_call.name,
+            success=False,
+            content=CART_NOT_SETTLED,
+            metadata={"dispatched": False, "cart_not_settled": True},
+        )
+
+    @staticmethod
+    def _follow_cart_revision(tool_call: ToolCall, before: Any, now: Any) -> ToolCall:
+        """Carry the checkout's revision across changes made while it waited.
+
+        The model bound ``cart_revision`` to the cart it saw when checkout
+        began. Runs already in flight then, and finished before the cart
+        settled, are meant to be in the order (spec 7.7). Only a revision that
+        was current when the wait began is carried forward; any other
+        mismatch stays for the revision claim to refuse.
+        """
+        if type(before) is not int or type(now) is not int or before == now:
+            return tool_call
+        try:
+            arguments = json.loads(tool_call.arguments or "{}")
+        except json.JSONDecodeError:
+            return tool_call
+        if not isinstance(arguments, dict) or arguments.get("cart_revision") != before:
+            return tool_call
+        arguments["cart_revision"] = now
+        return ToolCall(tool_call.id, tool_call.name, json.dumps(arguments))
+
+    def _execute_gated(self, tool_call: ToolCall) -> ToolResult:
         from openjarvis.agents._stubs import (
             _RUN_WORKER_LEASE,
             check_agent_cancelled,
@@ -158,6 +259,12 @@ class ToolExecutor:
         run = current_voice_run()
         write = lease is not None and not read_only
         tracked = bool(cid and run) and write
+        # A nested step's outer call already passed the freeze check and holds
+        # the gate: waiting here would block the freezer behind it (ruling 4).
+        freezable = tracked and not in_tool
+        waits_for_stable = (
+            tool is not None and tool.spec.metadata.get("waits_for_stable_cart") is True
+        )
         timeout = 0.0
         if write:
             timeout = (tool.spec.timeout_seconds if tool else 0.0) or (
@@ -166,7 +273,7 @@ class ToolExecutor:
         deadline = time.monotonic() + timeout
         while True:
             remaining = max(0.0, deadline - time.monotonic())
-            if tracked:
+            if freezable:
                 # Another run froze the cart for its checkout: a write of this
                 # run waits for the thaw (spec 2026-10-18 §5).
                 if not RUN_TRACKER.wait_unfrozen(cid, run, remaining):
@@ -199,15 +306,19 @@ class ToolExecutor:
                         return self._pending_operation(tool_call)
                     # Another run may have taken the freeze while this write
                     # sat in the gate; check again now that it is held.
-                    if not tracked or RUN_TRACKER.wait_unfrozen(cid, run, 0.0):
+                    if not freezable or RUN_TRACKER.wait_unfrozen(cid, run, 0.0):
                         if not in_tool:
                             check_agent_cancelled()
                             if lease is not None and tool is not None and not read_only:
                                 unsettled = self._earlier_action_unsettled(tool_call)
                                 if unsettled is not None:
                                     return unsettled
-                        if tracked:
-                            # Only a write that is about to run counts as a change.
+                        if tracked and not in_tool and not waits_for_stable:
+                            # Only a write that is about to run counts as a
+                            # change. A nested step belongs to an outer call
+                            # already noted, and a checkout is not a change
+                            # another waiting checkout must abort for: the
+                            # revision claim refuses the second order.
                             RUN_TRACKER.note_write(cid, run)
                         return self._execute(tool_call)
             finally:
