@@ -298,10 +298,18 @@ class ActionLedger:
                     self._report_locked(entry, "model")
 
     def mark_run_reported(self, conversation_id: str, run_id: str, *, via: str) -> None:
-        """Every entry of this run, the run entry included, is now told."""
+        """Every finished entry of this run, the run entry included, is now told.
+
+        An entry still running is left, as in ``mark_run_completed``: its own
+        outcome is still to be reported once it finishes.
+        """
         with self._lock:
             for entry in self._conversations.get(conversation_id, {}).values():
-                if entry.run_id == run_id and not entry.reported:
+                if (
+                    entry.run_id == run_id
+                    and entry.status != "running"
+                    and not entry.reported
+                ):
                     self._report_locked(entry, via)
 
     @staticmethod

@@ -249,16 +249,25 @@ class OrchestratorAgent(ToolUsingAgent):
         speaking = context.metadata.get(RUN_SPEAKING) if context else None
         return bool(speaking()) if callable(speaking) else True
 
-    @classmethod
-    def _mark_run_completed(cls, context: AgentContext | None = None) -> None:
+    @staticmethod
+    def _run_not_cancelled() -> bool:
         # A run the customer interrupted told them nothing, even when a sync
         # fallback worker still reaches a normal ending after the consumer left.
         try:
             check_agent_cancelled()
         except asyncio.CancelledError:
-            return
+            return False
+        return True
+
+    @classmethod
+    def _run_told_customer(cls, context: AgentContext | None) -> bool:
+        """A completed run the customer was not cut off from and could hear."""
         # A fenced run was silenced: its outcomes stay for the reporter.
-        if not cls._run_may_speak(context):
+        return cls._run_not_cancelled() and cls._run_may_speak(context)
+
+    @classmethod
+    def _mark_run_completed(cls, context: AgentContext | None = None) -> None:
+        if not cls._run_told_customer(context):
             return
         conversation_id = current_conversation_id()
         if conversation_id:
@@ -344,15 +353,17 @@ class OrchestratorAgent(ToolUsingAgent):
                     self._mark_run_completed(context)
             finally:
                 if recorded:
+                    # A cancelled run that still reached its ending is stopped.
+                    ended = completed and self._run_not_cancelled()
                     ACTION_LEDGER.finish_run(
                         conversation_id,
                         nonce,
                         answer=answer or "",
-                        status="succeeded" if completed else "stopped",
+                        status="succeeded" if ended else "stopped",
                     )
-                    if completed and self._run_may_speak(context):
-                        # The customer heard this run's answer, so the run
-                        # entry itself is told too. A fenced run leaves it.
+                    if ended and self._run_may_speak(context):
+                        # The customer heard this run's answer, so its finished
+                        # entries are told too. A fenced run leaves them.
                         ACTION_LEDGER.mark_run_reported(
                             conversation_id, nonce, via="answered"
                         )

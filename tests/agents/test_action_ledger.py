@@ -443,6 +443,25 @@ def test_mark_run_reported_marks_every_entry_of_the_run(caplog):
     )
 
 
+def test_mark_run_reported_leaves_a_running_entry_to_be_reported_after_it_finishes():
+    ledger = ActionLedger()
+    ledger.start_run(CONV, "r1", "thêm hai món")
+    _started(ledger, call_id="done", run_id="r1")
+    ledger.finish(CONV, call_id="done", run_id="r1", result=_ok())
+    _started(ledger, call_id="slow", run_id="r1")
+    ledger.finish_run(CONV, "r1", answer="Xong.", status="succeeded")
+
+    ledger.mark_run_reported(CONV, "r1", via="answered")
+
+    assert {e.key: e.reported for e in ledger.entries(CONV)} == {
+        "r1:run": True,
+        "r1:done": True,
+        "r1:slow": False,
+    }
+    ledger.finish(CONV, call_id="slow", run_id="r1", result=_ok())
+    assert [e.key for e in ledger.unreported_finished(CONV)] == ["r1:slow"]
+
+
 def test_run_group_returns_copies_of_the_run_entry_and_its_tools():
     ledger = ActionLedger()
     assert ledger.run_group(CONV, "r1") == (None, [])

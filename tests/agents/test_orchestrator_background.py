@@ -18,7 +18,7 @@ from openjarvis.agents._stubs import (
 from openjarvis.agents.action_ledger import ACTION_LEDGER
 from openjarvis.agents.orchestrator import OrchestratorAgent
 from openjarvis.agents.runtime import NativeAgentRuntime
-from openjarvis.core.conversation import conversation_scope
+from openjarvis.core.conversation import conversation_scope, current_turn_nonce
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import Role, ToolResult
 from openjarvis.engine._stubs import StreamChunk
@@ -94,6 +94,8 @@ _CONVERSATIONS = (
     "c-no-request",
     "c-fenced",
     "c-speaking",
+    "c-running",
+    "c-cancelled-done",
 )
 
 
@@ -626,3 +628,76 @@ async def test_a_speaking_run_still_reports_its_writes_on_completion():
     [run], [entry] = _run_entries("c-speaking")
     assert (entry.tool, entry.status, entry.reported) == ("add", "succeeded", True)
     assert (run.status, run.reported) == ("succeeded", True)
+
+
+@pytest.mark.asyncio
+async def test_a_speaking_run_leaves_a_write_still_running_to_be_reported_later():
+    engine = StreamingEngine([_stream_final_round("Đang thêm.")])
+    agent = OrchestratorAgent(engine, "fake", tools=[_Tool("menu", read_only=True)])
+
+    def speaking() -> bool:
+        # A write of this run is still in flight as the run ends (called inside
+        # the run's turn, so the nonce is the run's own).
+        if not any(e.call_id == "slow" for e in ACTION_LEDGER.entries("c-running")):
+            ACTION_LEDGER.start(
+                "c-running", call_id="slow", tool="add", run_id=current_turn_nonce()
+            )
+        return True
+
+    context = AgentContext(
+        metadata={CUSTOMER_REQUEST: "thêm cà phê", RUN_SPEAKING: speaking}
+    )
+
+    with conversation_scope("c-running"):
+        [event async for event in agent.run_stream("thêm cà phê", context)]
+        [run], [entry] = _run_entries("c-running")
+        assert (run.status, run.reported) == ("succeeded", True)
+        assert (entry.status, entry.reported) == ("running", False)
+        ACTION_LEDGER.finish(
+            "c-running",
+            call_id="slow",
+            run_id=entry.run_id,
+            result=ToolResult(
+                tool_name="add",
+                content="ok",
+                success=True,
+                metadata={"customer_message": "Đã thêm."},
+            ),
+        )
+
+    [unreported] = ACTION_LEDGER.unreported_finished("c-running")
+    assert (unreported.tool, unreported.status) == ("add", "succeeded")
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_run_reaching_completion_is_stopped_and_reports_nothing(
+    monkeypatch,
+):
+    from openjarvis.agents import orchestrator as orchestrator_module
+    from openjarvis.agents._stubs import AgentRunCompleted
+
+    cancelled = threading.Event()
+    real_check = orchestrator_module.check_agent_cancelled
+
+    def check():
+        if cancelled.is_set():
+            raise asyncio.CancelledError
+        real_check()
+
+    monkeypatch.setattr(orchestrator_module, "check_agent_cancelled", check)
+    write = _Tool("add", message="Đã thêm.")
+    engine = StreamingEngine(
+        [_tool_round("", ("add", "{}")), _stream_final_round("Xong.")]
+    )
+    agent = OrchestratorAgent(engine, "fake", tools=[write])
+    context = AgentContext(metadata={CUSTOMER_REQUEST: "thêm cà phê"})
+
+    with conversation_scope("c-cancelled-done"):
+        async for event in agent.run_stream("thêm cà phê", context):
+            if isinstance(event, AgentRunCompleted):
+                # The customer cuts in as the run ends.
+                cancelled.set()
+
+    [run], [entry] = _run_entries("c-cancelled-done")
+    assert (run.status, run.reported) == ("stopped", False)
+    assert (entry.status, entry.reported) == ("succeeded", False)
