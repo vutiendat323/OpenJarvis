@@ -114,9 +114,6 @@ class _GatedBinding:
     async def wait_finished(self, message):
         await _eventually(lambda: message["content"] in self.finished)
 
-    def prompt_of(self, message):
-        return self.prompts[self.keys.index(message["content"])]
-
 
 class _Responder:
     """Answers a hear check itself; delegates everything else without a filler."""

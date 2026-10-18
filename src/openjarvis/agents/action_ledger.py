@@ -35,8 +35,6 @@ class LedgerEntry:
     # so one run's read must not hide another's (I2).
     seen_by: frozenset[str] = frozenset()
     reported: bool = False
-    # A customer turn completed after it: told, and no longer carried.
-    settled: bool = False
     # Verified workflow facts for a model-written notification, never spoken text.
     event_context: str = ""
     # Its run was cut by the customer: a late result is phrased, not read out
@@ -74,8 +72,6 @@ class ActionLedger:
             OrderedDict()
         )
         self._listeners: dict[str, list[Listener]] = {}
-        # Conversations whose interrupted request is carried into the next turn.
-        self._carrying: set[str] = set()
         # Runs the customer interrupted, per conversation.
         self._interrupted_runs: dict[str, set[str]] = {}
         # Runs a completed run folded into its reply while their run entry was
@@ -134,7 +130,6 @@ class ActionLedger:
             while len(self._conversations) > self.MAX_CONVERSATIONS:
                 evicted, _ = self._conversations.popitem(last=False)
                 self._listeners.pop(evicted, None)
-                self._carrying.discard(evicted)
                 self._interrupted_runs.pop(evicted, None)
                 self._folded_runs.pop(evicted, None)
 
@@ -229,19 +224,12 @@ class ActionLedger:
         """Earlier runs' writes still running or not yet reported.
 
         Running entries are listed but not marked seen: the run has only seen
-        "not done yet", so its outcome must still be reported later. While an
-        interrupted request is carried, what it already told is listed too,
-        marked ``already_told``, so the carried request does not do it again.
+        "not done yet", so its outcome must still be reported later.
         """
         with self._lock:
-            carrying = conversation_id in self._carrying
             listed = []
             for entry in self._conversations.get(conversation_id, {}).values():
-                if entry.run_id == run_id:
-                    continue
-                if entry.reported:
-                    if carrying and not entry.settled:
-                        listed.append({**entry.as_context(), "already_told": "true"})
+                if entry.run_id == run_id or entry.reported:
                     continue
                 if entry.status != "running":
                     entry.seen_by = entry.seen_by | {run_id}
@@ -255,18 +243,6 @@ class ActionLedger:
             for entry in self._conversations.get(conversation_id, {}).values():
                 if entry.run_id == run_id:
                     entry.interrupted = True
-
-    def carry(self, conversation_id: str) -> None:
-        """An interrupted request is carried into the conversation's next turn."""
-        with self._lock:
-            self._carrying.add(conversation_id)
-
-    def settle(self, conversation_id: str) -> None:
-        """A customer turn completed: nothing earlier is carried any more."""
-        with self._lock:
-            self._carrying.discard(conversation_id)
-            for entry in self._conversations.get(conversation_id, {}).values():
-                entry.settled = True
 
     def unseen_failures(self, conversation_id: str, run_id: str) -> list[LedgerEntry]:
         """Earlier runs' failed or unknown outcomes this run's model has not read.
@@ -410,7 +386,6 @@ class ActionLedger:
         with self._lock:
             self._conversations.pop(conversation_id, None)
             self._listeners.pop(conversation_id, None)
-            self._carrying.discard(conversation_id)
             self._interrupted_runs.pop(conversation_id, None)
             self._folded_runs.pop(conversation_id, None)
 

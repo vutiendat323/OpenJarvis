@@ -238,69 +238,6 @@ def test_unseen_failures_are_other_runs_failed_or_unknown_outcomes_not_yet_seen(
     assert ledger.unseen_failures("other-conversation", "r3") == []
 
 
-def _told(ledger, call_id, run_id="r1", message="Đã thêm."):
-    _started(ledger, call_id=call_id, run_id=run_id)
-    ledger.finish(CONV, call_id=call_id, run_id=run_id, result=_ok(message))
-    key = next(e.key for e in ledger.entries(CONV) if e.call_id == call_id)
-    ledger.mark_reported(CONV, key, via="reporter")
-
-
-def test_a_carried_request_still_sees_what_it_already_told():
-    """Spec §5.5: what the carried request started stays in background_actions."""
-    ledger = ActionLedger()
-    _told(ledger, "told")
-    _told(ledger, "own", run_id="r2")
-    assert ledger.background_for(CONV, "r2") == []
-
-    ledger.carry(CONV)
-
-    assert ledger.background_for(CONV, "r2") == [
-        {
-            "tool": "add",
-            "status": "succeeded",
-            "message": "Đã thêm.",
-            "already_told": "true",
-        }
-    ]
-    assert {e.call_id: e.seen_by for e in ledger.entries(CONV)} == {
-        "told": set(),
-        "own": set(),
-    }
-
-
-def test_settling_ends_the_carry_and_retires_what_was_told():
-    ledger = ActionLedger()
-    _told(ledger, "told")
-    ledger.carry(CONV)
-    _started(ledger, call_id="later", run_id="r2")
-    ledger.finish(CONV, call_id="later", run_id="r2", result=_ok("Đã thêm trà."))
-
-    ledger.settle(CONV)
-
-    assert all(e.settled for e in ledger.entries(CONV))
-    # Unreported outcomes are still listed; told ones are not, even if carried
-    # again later.
-    assert ledger.background_for(CONV, "r3") == [
-        {"tool": "add", "status": "succeeded", "message": "Đã thêm trà."}
-    ]
-    ledger.carry(CONV)
-    assert ledger.background_for(CONV, "r4") == [
-        {"tool": "add", "status": "succeeded", "message": "Đã thêm trà."}
-    ]
-
-
-def test_clear_ends_a_carry():
-    ledger = ActionLedger()
-    ledger.carry(CONV)
-    ledger.clear(CONV)
-    _told(ledger, "told")
-
-    assert ledger.background_for(CONV, "r2") == []
-
-
-# --- interrupted runs (spec 2026-10-17 barge-in §5.6) -----------------------
-
-
 def test_interrupted_run_flags_existing_and_later_entries():
     ledger = ActionLedger()
     ledger.start("c", call_id="a", tool="add", run_id="r1")
