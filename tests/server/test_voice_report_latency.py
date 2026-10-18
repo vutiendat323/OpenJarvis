@@ -17,7 +17,7 @@ import pytest
 pytest.importorskip("pipecat", reason="openjarvis[voice] not installed")
 
 from openjarvis.agents.action_ledger import LedgerEntry
-from openjarvis.server.voice.background import report_text
+from openjarvis.server.voice.background import report_text, run_report_text
 from openjarvis.server.voice.responder import VoiceResponder, load_responder_settings
 
 PRESET = "configs/openjarvis/examples/ordering-kiosk-mcp.toml"
@@ -80,6 +80,58 @@ async def test_live_phrasing_is_fast_and_never_claims_a_cancel(monkeypatch):
 
     p50 = statistics.median(seconds)
     print(f"\nphrase p50={p50:.2f}s max={max(seconds):.2f}s")
+    for line in lines:
+        print(f"  {line}")
+    assert all(lines)
+    assert not [line for line in lines if any(c in line.lower() for c in CLAIMS)]
+    assert p50 <= LINE_P50_SECONDS
+
+
+def _run_group(language: str) -> tuple[LedgerEntry, list[LedgerEntry]]:
+    """A finished background run: its answer and the one write it made."""
+    request = (
+        "Thêm tất cả các món sinh tố vào giỏ."
+        if language == "vi"
+        else "Add every smoothie to the cart."
+    )
+    answer = "Đã thêm các món sinh tố." if language == "vi" else "Smoothies added."
+    run = LedgerEntry(
+        key="run:run",
+        call_id="run",
+        tool="agent_run",
+        run_id="run",
+        status="succeeded",
+        customer_message=answer,
+        interrupted=True,
+        kind="run",
+        request=request,
+    )
+    return run, [_entry(language)]
+
+
+@pytest.mark.live
+@pytest.mark.anyio
+async def test_live_whole_run_report_is_fast_and_never_claims_a_cancel(monkeypatch):
+    """One report for a whole background run, phrased by the fast model."""
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        pytest.skip("DEEPSEEK_API_KEY not set")
+    monkeypatch.setenv("OPENJARVIS_CONFIG", PRESET)
+    settings = load_responder_settings()
+    from openjarvis.engine.cloud import CloudEngine
+
+    responder = VoiceResponder(
+        CloudEngine(), settings.model, settings.prompt, settings.report_prompt
+    )
+    seconds, lines = [], []
+    for language, conversation in CASES:
+        run, tools = _run_group(language)
+        started = time.monotonic()
+        line = await responder.report(run_report_text(run, tools), conversation)
+        seconds.append(time.monotonic() - started)
+        lines.append(line)
+
+    p50 = statistics.median(seconds)
+    print(f"\nwhole-run phrase p50={p50:.2f}s max={max(seconds):.2f}s")
     for line in lines:
         print(f"  {line}")
     assert all(lines)
