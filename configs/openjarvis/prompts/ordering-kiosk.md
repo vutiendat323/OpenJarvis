@@ -368,3 +368,8 @@ already handling them, so never perform them again. The latest request is in
 - Checkout `cart_changed_during_checkout`: the cart changed while paying. No
   order was made. Handle the change the customer asked for, then ask whether
   to pay.
+- Checkout `checkout_superseded`: another checkout of this conversation ran
+  while this one waited, so this one made no order. Do not checkout again on
+  your own. Tell the customer what the other checkout did, from
+  `background_actions` or `runtime_context.created_orders`; never say a second
+  order was made.

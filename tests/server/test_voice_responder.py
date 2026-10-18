@@ -1026,6 +1026,10 @@ def test_kiosk_prompt_handles_unsettled_and_changed_checkouts():
     assert "never say an order was made" in lowered
     assert "`cart_changed_during_checkout`" in lowered
     assert "then ask whether to pay" in lowered
+    # Ruling 17: the second waiting checkout is refused before any order.
+    assert "`checkout_superseded`" in lowered
+    assert "do not checkout again on your own" in lowered
+    assert "never say a second order was made" in lowered
 
 
 def test_kiosk_prompt_waits_before_correcting_in_progress_work():

@@ -43,6 +43,11 @@ CART_CHANGED = (
     "cart_changed_during_checkout: the customer changed the cart while checkout "
     "waited. No order was created. Handle the change, then ask whether to pay."
 )
+CHECKOUT_SUPERSEDED = (
+    "checkout_superseded: another checkout of this conversation ran while this "
+    "one waited, so this one created no order. Do not retry it on your own; "
+    "tell the customer what the other checkout did."
+)
 
 # True while a tool's own ``execute`` runs. A tool already dispatched runs all
 # its steps (spec 2026-10-10 D2): a skill's later steps call ``ToolExecutor``
@@ -204,6 +209,17 @@ class ToolExecutor:
                     cid, run, max(0.0, deadline - time.monotonic())
                 ):
                     return self._cart_not_settled(tool_call)
+            # Held now, so no other checkout can move the epoch. One that ran
+            # since this wait began may already have ordered these very lines;
+            # a replacement-lines checkout has no revision claim to stop a
+            # second order (ruling 17).
+            if RUN_TRACKER.superseded(cid, run):
+                return ToolResult(
+                    tool_name=tool_call.name,
+                    success=False,
+                    content=CHECKOUT_SUPERSEDED,
+                    metadata={"dispatched": False, "checkout_superseded": True},
+                )
             tool_call = self._follow_cart_revision(
                 tool, tool_call, revision_before, waited_for
             )

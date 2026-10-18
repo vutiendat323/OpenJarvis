@@ -43,7 +43,9 @@ from tests.skills.test_checkout_barge_in import (
 
 
 class _Fixture:
-    def __init__(self, monkeypatch, conversation, *, on_post=None):
+    def __init__(
+        self, monkeypatch, conversation, *, on_post=None, accepts_cart_lines=False
+    ):
         self.conversation = conversation
         self.cart = DisplayCartTool()
         self.cart._bus = EventBus()
@@ -67,6 +69,7 @@ class _Fixture:
         manifest = SkillManifest(
             name="checkout",
             checkout=True,
+            accepts_cart_lines=accepts_cart_lines,
             steps=[
                 _step("http_request", {"url": MENU, "method": "GET"}),
                 _step(
@@ -123,7 +126,9 @@ class _Fixture:
                 agent_turn_scope() as nonce,
                 committed_dispatch(),
             ):
-                arguments = {"turn_nonce": nonce, "cart_revision": revision, **extra}
+                arguments = {"turn_nonce": nonce, **extra}
+                if revision is not None:
+                    arguments["cart_revision"] = revision
                 return self.executor.execute(
                     ToolCall(f"checkout-{run}", "skill_checkout", json.dumps(arguments))
                 )
@@ -154,6 +159,18 @@ def _in_copy(fn):
     import contextvars
 
     return contextvars.copy_context().run(fn)
+
+
+LINES = [{"variant_id": "tea", "name": "Tea", "unit_price": 35000, "quantity": 1}]
+
+
+def _superseded(result):
+    return (
+        not result.success
+        and result.metadata.get("dispatched") is False
+        and result.metadata.get("checkout_superseded") is True
+        and result.content.startswith("checkout_superseded:")
+    )
 
 
 @pytest.fixture
@@ -360,8 +377,9 @@ def test_two_waiting_checkouts_create_one_order(monkeypatch, conversation):
     succeeded = [r for r in results if r.success]
     refused = [r for r in results if not r.success]
     assert len(succeeded) == 1 and len(refused) == 1
-    assert "already consumed" in refused[0].content
-    assert refused[0].metadata["execution_started"] is False
+    # Ruling 17: refused before dispatch, ahead of the revision claim that
+    # refused it before ("cart revision already consumed").
+    assert _superseded(refused[0]), refused[0].content
     assert ACTION_LEDGER.entries(conversation) == []
 
 
@@ -392,7 +410,7 @@ def test_two_waiting_checkouts_after_an_add_create_one_order_with_the_full_cart(
     assert fx.order_posts() == ["total=70000"]
     assert [r.success for r in results].count(True) == 1
     refused = next(r for r in results if not r.success)
-    assert refused.metadata["execution_started"] is False
+    assert _superseded(refused), refused.content
     assert fx.posts() == [(ORDERS, "total=70000"), (PAYMENT, "")]
     assert ACTION_LEDGER.entries(conversation) == []
 
@@ -430,14 +448,81 @@ def test_two_waiting_checkouts_that_set_the_order_type_create_one_order(
     assert fx.order_posts() == ["total=70000"]
     assert [r.success for r in results].count(True) == 1
     refused = next(r for r in results if not r.success)
-    assert refused.metadata["execution_started"] is False
-    assert refused.content in (
-        "cart revision already consumed",
-        "cart revision is stale or empty",
-    )
+    assert _superseded(refused), refused.content
     # The type reached begin_checkout, so the revision did move on its own.
     assert fx.cart._order_types[conversation] == "take-out"
     assert len([1 for url, _ in fx.posts() if url == ORDERS]) == 1
+
+
+def test_two_waiting_cart_lines_checkouts_create_one_order(monkeypatch, conversation):
+    """C2: the replacement-lines path has no revision claim to refuse B2."""
+    fx = _Fixture(monkeypatch, conversation, accepts_cart_lines=True)
+    fx.seed()
+    run_a = RUN_TRACKER.begin(conversation, "add cake")
+    run_b1 = RUN_TRACKER.begin(conversation, "tea, pay")
+    run_b2 = RUN_TRACKER.begin(conversation, "tea, pay (repeated)")
+    lines = {"cart_lines": LINES, "order_type": "take-out", "table": ""}
+
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(fx.checkout, fx.lease(), run_b1, None, **lines)
+        second = pool.submit(fx.checkout, fx.lease(), run_b2, None, **lines)
+        time.sleep(0.15)
+        RUN_TRACKER.end(conversation, run_a)
+        results = [first.result(10), second.result(10)]
+
+    assert fx.order_posts() == ["total=35000"]
+    assert [r.success for r in results].count(True) == 1, [r.content for r in results]
+    refused = next(r for r in results if not r.success)
+    assert _superseded(refused), refused.content
+    assert ACTION_LEDGER.entries(conversation) == []
+
+
+def test_a_checkout_that_waits_while_another_is_ordering_is_refused(
+    monkeypatch, conversation
+):
+    """Ruling 17: B1 already holds the freeze when B2 begins its wait."""
+    order_started, release = threading.Event(), threading.Event()
+
+    def on_post():
+        order_started.set()
+        assert release.wait(5)
+
+    fx = _Fixture(monkeypatch, conversation, on_post=on_post, accepts_cart_lines=True)
+    fx.seed()
+    run_b1 = RUN_TRACKER.begin(conversation, "tea, pay")
+    lines = {"cart_lines": LINES, "order_type": "take-out", "table": ""}
+
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(fx.checkout, fx.lease(), run_b1, None, **lines)
+        assert order_started.wait(5)
+        # Asked again while B1 is already ordering.
+        run_b2 = RUN_TRACKER.begin(conversation, "tea, pay (repeated)")
+        second = pool.submit(fx.checkout, fx.lease(), run_b2, None, **lines)
+        time.sleep(0.2)
+        release.set()
+        results = [first.result(10), second.result(10)]
+
+    assert results[0].success, results[0].content
+    assert _superseded(results[1]), results[1].content
+    assert fx.order_posts() == ["total=35000"]
+
+
+def test_a_later_checkout_is_not_refused_by_an_earlier_finished_one(
+    monkeypatch, conversation
+):
+    """The epoch is taken at the wait's start: a checkout after another is fine."""
+    fx = _Fixture(monkeypatch, conversation, accepts_cart_lines=True)
+    fx.seed()
+    lines = {"cart_lines": LINES, "order_type": "take-out", "table": ""}
+    run_b1 = RUN_TRACKER.begin(conversation, "tea, pay")
+    assert fx.checkout(fx.lease(), run_b1, None, **lines).success
+    RUN_TRACKER.end(conversation, run_b1)
+    run_b2 = RUN_TRACKER.begin(conversation, "another tea, pay")
+
+    result = fx.checkout(fx.lease(), run_b2, None, **lines)
+
+    assert result.success, result.content
+    assert fx.order_posts() == ["total=35000", "total=35000"]
 
 
 def test_a_touch_edit_during_the_wait_is_not_carried_into_the_order(

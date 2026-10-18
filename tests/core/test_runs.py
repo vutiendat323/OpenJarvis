@@ -374,3 +374,43 @@ def test_closed_ids_are_remembered_up_to_a_bound():
         t.close(f"c{number}")
     assert list(t._closed) == ["c2", "c3", "c4"]
     assert t.wait_stable("c4", "r", 0.1) is StableOutcome.CLOSED
+
+
+def test_a_checkout_freeze_released_since_the_wait_began_supersedes_it():
+    """Ruling 17: the epoch moves when a checkout's freeze ends."""
+    t = RunTracker()
+    b1 = t.begin(C, "pay")
+    assert t.wait_stable(C, b1, 0.5) is StableOutcome.STABLE
+    assert t.freeze(C, b1)  # b1 is ordering
+    b2 = t.begin(C, "pay again")
+    assert t.wait_stable(C, b2, 0.5) is StableOutcome.STABLE
+    assert t.superseded(C, b2) is False
+    t.unfreeze(C, b1)
+    assert t.freeze(C, b2)
+    assert t.superseded(C, b2) is True
+
+
+def test_a_freeze_ended_by_its_runs_end_moves_the_epoch_too():
+    t = RunTracker()
+    b1 = t.begin(C, "pay")
+    b2 = t.begin(C, "pay again")
+    assert t.wait_stable(C, b2, 0.0) is StableOutcome.TIMEOUT  # b1 still runs
+    assert t.freeze(C, b1)
+    t.end(C, b1)
+    assert t.superseded(C, b2) is True
+
+
+def test_a_checkout_begun_after_another_ended_is_not_superseded():
+    t = RunTracker()
+    b1 = t.begin(C, "pay")
+    assert t.freeze(C, b1)
+    t.end(C, b1)
+    b2 = t.begin(C, "pay for a new order")
+    assert t.wait_stable(C, b2, 0.5) is StableOutcome.STABLE
+    assert t.freeze(C, b2)
+    assert t.superseded(C, b2) is False
+    assert t.waited_for(C, b2) == frozenset()
+    t.end(C, b2)
+    assert t.superseded(C, b2) is False  # its record ended with it
+    t.close(C)
+    assert t.superseded(C, b2) is True  # nothing is ordered after the end
