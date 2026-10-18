@@ -40,8 +40,8 @@ CART_NOT_SETTLED = (
     "and ask whether to wait."
 )
 CART_CHANGED = (
-    "cart_changed_during_checkout: the customer changed the cart while checkout "
-    "waited. No order was created. Handle the change, then ask whether to pay."
+    "cart_changed_during_checkout: the cart changed after this request began. "
+    "No order was created. Handle the change, then ask whether to pay."
 )
 CHECKOUT_SUPERSEDED = (
     "checkout_superseded: another checkout of this conversation ran while this "

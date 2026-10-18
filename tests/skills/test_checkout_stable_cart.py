@@ -163,6 +163,9 @@ def _in_copy(fn):
 
 
 LINES = [{"variant_id": "tea", "name": "Tea", "unit_price": 35000, "quantity": 1}]
+COFFEE_LINES = [
+    {"variant_id": "coffee", "name": "Coffee", "unit_price": 35000, "quantity": 1}
+]
 
 
 def _superseded(result):
@@ -718,3 +721,222 @@ def test_a_checkout_without_other_runs_dispatches_at_once(monkeypatch, conversat
     assert fx.order_posts() == ["total=35000"]
     # The freeze is released: another run can write straight away.
     assert RUN_TRACKER.freeze(conversation, "someone-else")
+
+
+@pytest.mark.parametrize("initially_empty", [False, True])
+def test_cart_lines_preserves_a_touch_correction_during_the_wait(
+    monkeypatch, conversation, initially_empty
+):
+    fx = _Fixture(monkeypatch, conversation, accepts_cart_lines=True)
+    if not initially_empty:
+        fx.seed()
+    earlier = RUN_TRACKER.begin(conversation, "read the menu")
+    checkout = RUN_TRACKER.begin(conversation, "one coffee, pay")
+    waiting = threading.Event()
+    original_wait = RUN_TRACKER._cond.wait
+
+    def observe_wait(timeout=None):
+        waiting.set()
+        return original_wait(timeout)
+
+    monkeypatch.setattr(RUN_TRACKER._cond, "wait", observe_wait)
+    with ThreadPoolExecutor(1) as pool:
+        ordered = pool.submit(
+            fx.checkout,
+            fx.lease(),
+            checkout,
+            None,
+            cart_lines=COFFEE_LINES,
+            order_type="take-out",
+            table="",
+        )
+        try:
+            assert waiting.wait(2)
+            with conversation_scope(conversation):
+                if initially_empty:
+                    fx.add()
+                line_id = fx.cart.current_snapshot()["lines"][0]["line_id"]
+                assert fx.cart.edit_without_display(
+                    "update", {"line_id": line_id, "quantity": 2}
+                ).success
+                corrected = fx.cart.current_snapshot()
+                assert corrected["total"] == 70000
+        finally:
+            RUN_TRACKER.end(conversation, earlier)
+        result = ordered.result(5)
+
+    assert not result.success, result.content
+    assert "cart_changed_during_checkout" in result.content
+    assert result.metadata["execution_started"] is False
+    assert fx.sent == []
+    with conversation_scope(conversation):
+        assert fx.cart.current_snapshot() == corrected
+
+
+@pytest.mark.parametrize("initially_empty", [False, True])
+def test_cart_lines_does_not_restore_a_voice_removal_before_freeze(
+    monkeypatch, conversation, initially_empty
+):
+    fx = _Fixture(monkeypatch, conversation, accepts_cart_lines=True)
+    if not initially_empty:
+        fx.seed()
+    checkout = RUN_TRACKER.begin(conversation, "one coffee, pay")
+    freeze = RUN_TRACKER.freeze
+    corrected = []
+
+    def freeze_after_correction(cid, run):
+        if run == checkout and not corrected:
+            correction = RUN_TRACKER.begin(conversation, "no coffee")
+
+            def clear():
+                _RUN_WORKER_LEASE.set(fx.lease())
+                with conversation_scope(conversation), voice_run_scope(correction):
+                    return fx.executor.execute(
+                        ToolCall("remove", "display_cart", '{"action":"clear"}')
+                    )
+
+            try:
+                assert _in_copy(clear).success
+                corrected.append(fx.cart.current_snapshot())
+                assert corrected[0]["lines"] == []
+            finally:
+                RUN_TRACKER.end(conversation, correction)
+        return freeze(cid, run)
+
+    monkeypatch.setattr(RUN_TRACKER, "freeze", freeze_after_correction)
+    result = fx.checkout(
+        fx.lease(),
+        checkout,
+        None,
+        cart_lines=COFFEE_LINES,
+        order_type="take-out",
+        table="",
+    )
+
+    assert corrected
+    assert not result.success, result.content
+    assert "cart_changed_during_checkout" in result.content
+    assert result.metadata["execution_started"] is False
+    assert fx.sent == []
+    with conversation_scope(conversation):
+        assert fx.cart.current_snapshot() == corrected[0]
+
+
+def test_cart_lines_checks_for_touch_edits_at_the_atomic_claim(
+    monkeypatch, conversation
+):
+    fx = _Fixture(monkeypatch, conversation, accepts_cart_lines=True)
+    fx.seed()
+    checkout = RUN_TRACKER.begin(conversation, "one coffee, pay")
+    begin_checkout = fx.cart.begin_checkout
+    corrected = []
+
+    def claim_after_touch(*args, **kwargs):
+        # Already frozen and inside the tool gate: touch edits use the cart lock.
+        with voice_run_scope(""):
+            line_id = fx.cart.current_snapshot()["lines"][0]["line_id"]
+            assert fx.cart.edit_without_display(
+                "update", {"line_id": line_id, "quantity": 2}
+            ).success
+            corrected.append(fx.cart.current_snapshot())
+        return begin_checkout(*args, **kwargs)
+
+    monkeypatch.setattr(fx.cart, "begin_checkout", claim_after_touch)
+    result = fx.checkout(
+        fx.lease(),
+        checkout,
+        None,
+        cart_lines=COFFEE_LINES,
+        order_type="take-out",
+        table="",
+    )
+
+    assert not result.success, result.content
+    assert "cart_changed_during_checkout" in result.content
+    assert result.metadata["execution_started"] is False
+    assert fx.sent == []
+    with conversation_scope(conversation):
+        assert fx.cart.current_snapshot() == corrected[0]
+
+
+@pytest.mark.parametrize("seed", [False, True])
+def test_cart_lines_can_replace_an_unchanged_draft(monkeypatch, conversation, seed):
+    fx = _Fixture(monkeypatch, conversation, accepts_cart_lines=True)
+    if seed:
+        fx.seed()
+    checkout = RUN_TRACKER.begin(conversation, "one tea instead, pay")
+
+    result = fx.checkout(
+        fx.lease(),
+        checkout,
+        None,
+        cart_lines=LINES,
+        order_type="take-out",
+        table="",
+    )
+
+    assert result.success, result.content
+    assert fx.posts() == [(ORDERS, "total=35000"), (PAYMENT, "")]
+    with conversation_scope(conversation):
+        assert fx.cart.current_snapshot()["lines"][0]["variant_id"] == "tea"
+
+
+@pytest.mark.parametrize("change", ["touch", "touch_noop", "settled", "evicted"])
+def test_cart_lines_preserves_a_cart_change_before_checkout_is_called(
+    monkeypatch, conversation, change
+):
+    fx = _Fixture(monkeypatch, conversation, accepts_cart_lines=True)
+    fx.seed()
+    checkout = RUN_TRACKER.begin(conversation, "one coffee, pay")
+    with conversation_scope(conversation):
+        if change in {"touch", "touch_noop"}:
+            line_id = fx.cart.current_snapshot()["lines"][0]["line_id"]
+            assert fx.cart.edit_without_display(
+                "update",
+                {"line_id": line_id, "quantity": 1 if change == "touch_noop" else 2},
+            ).success
+        elif change == "settled":
+            assert fx.cart.settle_current()
+        else:
+            for index in range(64):
+                with conversation_scope(f"{conversation}-{index}"):
+                    fx.add()
+            assert fx.cart.current_snapshot()["lines"] == []
+        corrected = fx.cart.current_snapshot()
+
+    # Retrying within this run must not rebase its older replacement lines.
+    lines = (
+        [{**COFFEE_LINES[0], "quantity": 2}] if change == "touch_noop" else COFFEE_LINES
+    )
+    for _ in range(2):
+        result = fx.checkout(
+            fx.lease(),
+            checkout,
+            None,
+            cart_lines=lines,
+            order_type="take-out",
+            table="",
+        )
+        assert not result.success, result.content
+        assert "cart_changed_during_checkout" in result.content
+        assert result.metadata["execution_started"] is False
+    assert fx.sent == []
+    with conversation_scope(conversation):
+        assert fx.cart.current_snapshot() == corrected
+
+
+def test_cart_lines_allows_the_runs_own_cart_edits(monkeypatch, conversation):
+    fx = _Fixture(monkeypatch, conversation, accepts_cart_lines=True)
+    fx.seed()
+    checkout = RUN_TRACKER.begin(conversation, "add tea, pay")
+    assert fx.add_as(fx.lease(), checkout, "tea").success
+    result = fx.checkout(
+        fx.lease(),
+        checkout,
+        None,
+        cart_lines=COFFEE_LINES + LINES,
+        order_type="take-out",
+        table="",
+    )
+    assert result.success, result.content
+    assert fx.posts() == [(ORDERS, "total=70000"), (PAYMENT, "")]

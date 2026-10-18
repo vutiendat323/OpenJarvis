@@ -37,6 +37,36 @@ def test_in_flight_lists_other_requests_in_arrival_order():
     assert t.in_flight(C, exclude=b) == ["c"]
 
 
+@pytest.mark.parametrize("author", ["", "peer"])
+def test_cart_changes_invalidate_only_runs_already_in_flight(author):
+    t = RunTracker()
+    t.note_cart_change(C, "")  # No run to invalidate yet.
+    checkout = t.begin(C, "one coffee, pay")
+    writer = t.begin(C, "change coffee") if author else ""
+    assert not t.cart_changed_since_begin(C, checkout)
+    t.note_cart_change("another-conversation", "")
+    assert not t.cart_changed_since_begin(C, checkout)
+    t.note_cart_change(C, writer)
+    assert t.cart_changed_since_begin(C, checkout)
+    if writer:
+        assert not t.cart_changed_since_begin(C, writer)
+        t.end(C, writer)
+    # Neither the writer ending nor our own write can erase the conflict.
+    t.note_cart_change(C, checkout)
+    assert t.cart_changed_since_begin(C, checkout)
+    later = t.begin(C, "new confirmation")
+    assert not t.cart_changed_since_begin(C, later)
+    t.end(C, checkout)
+    assert not t.cart_changed_since_begin(C, checkout)
+
+
+def test_own_cart_changes_do_not_invalidate_the_run():
+    t = RunTracker()
+    checkout = t.begin(C, "add tea, pay")
+    t.note_cart_change(C, checkout)
+    assert not t.cart_changed_since_begin(C, checkout)
+
+
 def test_wait_stable_returns_stable_once_snapshot_runs_end():
     t = RunTracker()
     a = t.begin(C, "a")

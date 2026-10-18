@@ -5,10 +5,110 @@ Branch `feat/live-voice-mode`, commits `758e8df9`..`92c58906`, the Task 12 commi
 
 Status: nothing is pushed and nothing is deployed. The stack was not started or restarted. What the running stack has loaded is not established by this report.
 
+## Cart-lines correction fix and re-review (2026-10-19)
+
+Baseline: `24f77240e1b8e05075caee2cdfc594d90bc6982d`, applied on
+`feat/live-voice-mode`. This wave fixes the remaining Important finding from
+the C2/N1 review below. The previous sections' counts remain historical.
+
+Accepted cart edits now invalidate replacement lines belonging to other
+active runs of that conversation. Touch edits invalidate all active runs;
+own edits do not invalidate their author or erase an earlier conflict.
+`begin_checkout` checks that conflict under the same cart lock before
+consuming the nonce, replacing the draft, or starting any recipe step. The
+conflict lasts until the run ends, including across retries. This covers
+edits while the model is thinking, during the stability wait, between STABLE
+and freeze, and between freeze and cart reservation. A later request may
+still intentionally replace an older draft.
+
+Successful no-op edits also count: clearing an empty cart can cancel an
+older run's intended replacement, and reaffirming quantity 1 must not permit
+that run to replace it with 2. Ordinary views and rejected edits do not
+invalidate the run. Settlement and cache eviction also invalidate affected
+active runs when they remove a draft without issuing a new revision.
+Revision-based checkout retains its existing exact-revision/follow rules;
+replacement lines conservatively refuse any accepted peer edit since the
+run began, including edits by an earlier background run.
+
+### TDD evidence
+
+The probes from `/tmp/openjarvis-c2-n1-review/test_remaining_checkout_paths.py`
+are now acceptance tests in `tests/skills/test_checkout_stable_cart.py`.
+All checkout HTTP is intercepted by the existing fixture.
+
+| Regression | Observed RED | Final GREEN |
+|---|---|---|
+| Touch quantity correction during wait, populated or initially empty cart | 2 stale successful checkouts | Refused; corrected snapshot unchanged; zero HTTP |
+| Voice removal between STABLE and freeze; touch edit immediately before atomic claim | 2 stale successful checkouts | Refused before recipe execution; corrected snapshot unchanged |
+| Touch correction before the checkout call, while its run is already active | 1 stale successful checkout | Refused on first call and retry in the same run |
+| Settlement or eviction before the checkout call | 2 stale successful checkouts | Empty draft preserved; zero HTTP, including retry |
+| Successful clear of an empty cart; successful no-op quantity correction | 2 stale successful checkouts | Both invalidate older replacement intent |
+| Tracker lifecycle, conversation isolation, peer/touch authors, own edits | 3 failures before the new tracker API existed | Conflicts persist across own edits and author end; new runs start clean |
+
+Positive controls also pass: replacing an unchanged empty/populated draft,
+including the checkout run's own cart edits, and a distinct later purchase.
+Existing overlapping-checkout tests continue to assert one merchant order
+and one payment POST.
+
+### Bounded verification
+
+Each suite in this table ran in its own process, bounded by 120 s, using
+`uv run --offline --no-sync pytest <suite> -q --tb=short -m "not live and not cloud and not hub"`
+and `UV_CACHE_DIR=/tmp/openjarvis-uv-cache`.
+
+| Suite | Result |
+|---|---|
+| `tests/core/test_runs.py` | 35 passed |
+| `tests/skills/test_checkout_stable_cart.py` | 33 passed |
+| `tests/skills/test_checkout_barge_in.py` | 6 passed |
+| `tests/tools/test_await_requests.py` | 7 passed |
+| `tests/server/test_voice_parallel_scenarios.py` | 11 passed, 2 dependency warnings; workaround below |
+| `tests/agents/test_write_queue.py` | 39 passed |
+| `tests/tools/test_display.py` | 98 passed, 4 context cleanup warnings |
+| `tests/skills/test_checkout_runtime_revision.py` | 4 passed |
+| `tests/skills/test_checkout_mutation_scope.py` | 4 passed |
+
+Required suites: **131 passed**; additional affected suites: **106 passed**.
+Ruff check and format check passed on all five changed Python files.
+`git diff --check` passed. No live/cloud/hub tests, real merchant requests,
+push, deployment, or stack restart were performed.
+
+Voice used the same temporary `loop_wakeup_plugin` and command documented in
+the C2/N1 section below, scheduling a 10 ms event-loop timer for this
+sandbox. Its 11 tests passed in 8.00 s; no product method or assertion was
+replaced. The display suite reported four `PytestUnraisableExceptionWarning`
+warnings from `agent_turn_scope` context-token cleanup in the two existing
+cross-run add-dedup tests. These are passing results with warnings, not a
+claim of warning-free verification.
+
+### Critical re-review result
+
+Self-review and independent read-only review found and fixed the additional
+pre-invocation, empty-clear, settlement, and eviction cases above. Final
+review found no remaining substantive defect in this diff or remaining
+second/stale-order path in the exercised tracked-run schedules. It checked
+atomicity before nonce/merchant dispatch, retries, own versus peer edits,
+empty drafts, run cleanup, existing epoch/claim protection, and lock order.
+The new calls acquire the cart lock before the tracker condition; tracker
+methods do not acquire the cart lock or invoke external callbacks.
+
+The guarantee applies to active registered runs. Direct checkout calls
+without a registered voice run retain their existing behavior. A run with
+a recorded conflict cannot use replacement lines even after refreshing its
+inference; the safe response asks for a new payment confirmation. These
+limits do not establish the behavior of the currently running kiosk stack.
+
+Commit delivery: `.git` is still mounted read-only. Staging the six scoped
+files failed creating `.git/index.lock`; the original index and HEAD remain
+unchanged. The authorized fallback is a conventional commit in a temporary
+clone, exported as `fix-cart-lines.bundle` and `fix-cart-lines.patch` under
+`/tmp/openjarvis-cart-lines-fix.BHtZM3/`, based on `24f77240`. Neither artifact
+includes the kiosk TOML, `frontend/tsconfig.tsbuildinfo`, or unrelated files.
+
 ## Residual C2 / N1 fix and re-review (2026-10-19)
 
 Baseline: `59e1b102`, branch `feat/live-voice-mode`. This section records the
-current bounded verification; the older counts below remain historical.
+that wave's bounded verification; the older counts below remain historical.
 
 - **C2 residual fixed:** each run captures the checkout epoch in `begin()`,
   before model work or slot waiting. A peer's freeze release supersedes that

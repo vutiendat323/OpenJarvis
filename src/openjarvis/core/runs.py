@@ -37,6 +37,8 @@ class _Conversation:
     # Per run: the runs with words in flight when it began, which its prompt
     # names as in progress (I5).
     named: dict[str, frozenset[str]] = field(default_factory=dict)
+    # Runs whose replacement lines may predate a peer or touch cart edit.
+    cart_changed: set[str] = field(default_factory=set)
 
 
 class RunTracker:
@@ -96,6 +98,7 @@ class RunTracker:
             conv.waiting.discard(run_id)
             conv.waits.pop(run_id, None)
             conv.named.pop(run_id, None)
+            conv.cart_changed.discard(run_id)
             if conv.freeze_owner == run_id:
                 self._release_freeze(conv)
             self._cond.notify_all()
@@ -128,6 +131,23 @@ class RunTracker:
                 return
             conv.writes.append(run_id)
             self._cond.notify_all()
+
+    def note_cart_change(self, conversation_id: str, author: str) -> None:
+        """Invalidate replacement lines of active peers, including for touch edits.
+
+        Called under the draft cart lock for accepted edits, even a no-op clear.
+        Own edits cannot erase a conflict already recorded for the run.
+        """
+        with self._cond:
+            conv = self._convs.get(conversation_id)
+            if conv is not None:
+                conv.cart_changed.update(rid for rid in conv.runs if rid != author)
+
+    def cart_changed_since_begin(self, conversation_id: str, run_id: str) -> bool:
+        """Whether a peer or touch edit has changed the cart since this run began."""
+        with self._cond:
+            conv = self._convs.get(conversation_id)
+            return conv is not None and run_id in conv.cart_changed
 
     def wait_stable(
         self, conversation_id: str, run_id: str, timeout: float

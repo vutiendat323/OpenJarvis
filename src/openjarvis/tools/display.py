@@ -22,10 +22,10 @@ from uuid import uuid4
 from openjarvis.core.conversation import current_conversation_id, current_turn_nonce
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.registry import ToolRegistry
-from openjarvis.core.runs import current_voice_run
+from openjarvis.core.runs import RUN_TRACKER, current_voice_run
 from openjarvis.core.types import ToolResult
 from openjarvis.tools import evidence as _evidence
-from openjarvis.tools._stubs import BaseTool, ToolSpec
+from openjarvis.tools._stubs import CART_CHANGED, BaseTool, ToolSpec
 
 if TYPE_CHECKING:
     from openjarvis.kiosk.presentation import PresentationSessionManager
@@ -1014,9 +1014,14 @@ class DisplayCartTool(_DisplayTool):
             ):
                 revision = self._bump_revision(conversation_id)
                 self._checkout_claims.pop(conversation_id, None)
+            elif action != "view":
+                # Clearing an already empty cart still cancels an older run's
+                # intended replacement, as does reconfirming a quantity.
+                RUN_TRACKER.note_cart_change(conversation_id, current_voice_run())
             self._cart_revisions[conversation_id] = revision
             while len(self._carts) > 64:
                 stale_id, _ = self._carts.popitem(last=False)
+                RUN_TRACKER.note_cart_change(stale_id, "")
                 self._cart_revisions.pop(stale_id, None)
                 self._checkout_claims.pop(stale_id, None)
                 self._order_notes.pop(stale_id, None)
@@ -1060,6 +1065,7 @@ class DisplayCartTool(_DisplayTool):
 
     def _bump_revision(self, conversation_id: str) -> int:
         """Issue the next revision and record which run made it."""
+        RUN_TRACKER.note_cart_change(conversation_id, current_voice_run())
         self._revision_sequence += 1
         revision = self._revision_sequence
         if len(self._revision_log) == self._revision_log.maxlen:
@@ -1134,6 +1140,13 @@ class DisplayCartTool(_DisplayTool):
                 raise ValueError("checkout contract is not active")
             if replacement_lines is not None and revision is not None:
                 raise ValueError("provide cart lines or cart revision, not both")
+            if replacement_lines is not None and RUN_TRACKER.cart_changed_since_begin(
+                owner, current_voice_run()
+            ):
+                # Refuse before consuming the nonce or overwriting the draft.
+                # The same lock protects revision bumps and the pending claim,
+                # including corrections before this checkout call even began.
+                raise ValueError(CART_CHANGED)
             normalized_lines = None
             normalized_order_type = order_type
             normalized_order_note = order_note
@@ -1342,6 +1355,8 @@ class DisplayCartTool(_DisplayTool):
             return False
         with self._cart_lock:
             removed = self._carts.pop(conversation_id, None) is not None
+            if removed:
+                RUN_TRACKER.note_cart_change(conversation_id, current_voice_run())
             self._cart_revisions.pop(conversation_id, None)
             self._checkout_claims.pop(conversation_id, None)
             self._order_notes.pop(conversation_id, None)
