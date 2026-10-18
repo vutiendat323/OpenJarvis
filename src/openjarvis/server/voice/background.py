@@ -205,11 +205,16 @@ class BackgroundReporter:
         outcome = "failed"
         if self._run_phrased_report is not None:
             outcome = await self._run_phrased_report(text)
+        # Only what the text was built from: a tool still running then, or
+        # finished since, has not been told and gets its own report.
+        told = {run.key} | {t.key for t in tools if t.status != "running"}
         if outcome == "spoken":
-            self._ledger.mark_run_reported(self._conversation_id, run_id, via="phrased")
+            self._ledger.mark_run_reported(
+                self._conversation_id, run_id, via="phrased", keys=told
+            )
         elif outcome == "failed" and await self._run_event_turn(text):
             self._ledger.mark_run_reported(
-                self._conversation_id, run_id, via="event_turn"
+                self._conversation_id, run_id, via="event_turn", keys=told
             )
 
     async def _report_phrased(self, entry: LedgerEntry) -> None:

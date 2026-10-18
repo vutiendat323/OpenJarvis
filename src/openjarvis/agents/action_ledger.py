@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, replace
 
 from openjarvis.core.types import ToolResult
@@ -297,11 +297,20 @@ class ActionLedger:
                 ):
                     self._report_locked(entry, "model")
 
-    def mark_run_reported(self, conversation_id: str, run_id: str, *, via: str) -> None:
+    def mark_run_reported(
+        self,
+        conversation_id: str,
+        run_id: str,
+        *,
+        via: str,
+        keys: Collection[str] | None = None,
+    ) -> None:
         """Every finished entry of this run, the run entry included, is now told.
 
         An entry still running is left, as in ``mark_run_completed``: its own
-        outcome is still to be reported once it finishes.
+        outcome is still to be reported once it finishes. With ``keys``, only
+        those entries are marked: a report names the entries it was built from,
+        and one that finished after that stays to be reported on its own.
         """
         with self._lock:
             for entry in self._conversations.get(conversation_id, {}).values():
@@ -309,6 +318,7 @@ class ActionLedger:
                     entry.run_id == run_id
                     and entry.status != "running"
                     and not entry.reported
+                    and (keys is None or entry.key in keys)
                 ):
                     self._report_locked(entry, via)
 

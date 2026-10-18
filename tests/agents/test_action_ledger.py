@@ -523,3 +523,14 @@ def test_finish_run_after_clear_is_ignored():
     ledger.clear(CONV)
     ledger.finish_run(CONV, "r1", answer="Xong.", status="succeeded")
     assert ledger.entries(CONV) == []
+
+
+def test_mark_run_reported_with_keys_marks_only_those_entries():
+    ledger = ActionLedger()
+    for call_id in ("a", "b"):
+        _started(ledger, call_id=call_id, run_id="r1")
+        ledger.finish(CONV, call_id=call_id, run_id="r1", result=_ok())
+
+    ledger.mark_run_reported(CONV, "r1", via="reporter", keys={"r1:a"})
+
+    assert [e.key for e in ledger.unreported_finished(CONV)] == ["r1:b"]

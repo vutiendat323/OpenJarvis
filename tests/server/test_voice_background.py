@@ -1040,6 +1040,84 @@ async def test_entries_without_a_run_keep_the_per_entry_path():
     assert ledger.unreported_finished(CONV) == []
 
 
+@pytest.mark.anyio
+async def test_a_tool_finishing_while_the_run_is_phrased_gets_its_own_report():
+    ledger, fakes = ActionLedger(), _Fakes()
+    _run_with_write(ledger)
+    ledger.start(CONV, call_id="late", tool="add", run_id="r1")  # still running
+    phrased: list[str] = []
+
+    async def run_phrased_report(event):
+        phrased.append(event)
+        _finish(ledger, "late", message="Đã thêm trà đào.", run_id="r1")
+        return "spoken"
+
+    reporter = BackgroundReporter(
+        ledger,
+        CONV,
+        speak=fakes.speak,
+        flush=fakes.flush,
+        run_event_turn=fakes.run_event_turn,
+        run_phrased_report=run_phrased_report,
+    )
+
+    await reporter.on_idle()
+    await _settle()
+
+    assert len(phrased) == 1 and "trà đào" not in phrased[0]
+    assert [e.call_id for e in ledger.unreported_finished(CONV)] == ["late"]
+
+    await reporter.on_idle()
+    await _settle()
+
+    assert fakes.spoken == ["Đã thêm trà đào."]
+    assert ledger.unreported_finished(CONV) == []
+
+
+@pytest.mark.anyio
+async def test_a_run_finishing_mid_phrase_is_reported_once_afterwards():
+    ledger, fakes = ActionLedger(), _Fakes()
+    phrased: list[str] = []
+    gate = asyncio.Event()
+
+    async def run_phrased_report(event):
+        phrased.append(event)
+        await gate.wait()
+        return "spoken"
+
+    reporter = BackgroundReporter(
+        ledger,
+        CONV,
+        speak=fakes.speak,
+        flush=fakes.flush,
+        run_event_turn=fakes.run_event_turn,
+        run_phrased_report=run_phrased_report,
+    )
+    reporter.start()
+    ledger.start_run(CONV, "first", "request one")
+    ledger.start_run(CONV, "second", "request two")
+    ledger.finish_run(CONV, "first", answer="answer one", status="succeeded")
+
+    await reporter.on_idle()
+    await _settle()
+    assert len(phrased) == 1
+
+    ledger.finish_run(CONV, "second", answer="answer two", status="succeeded")
+    await reporter.on_idle()  # what the flush it triggers would do
+    await _settle()
+    assert len(phrased) == 1  # not phrased over the first, nor lost
+
+    gate.set()
+    await _settle()
+    await reporter.on_idle()
+    await _settle()
+    reporter.stop()
+
+    assert len(phrased) == 2
+    assert "answer one" in phrased[0] and "answer two" in phrased[1]
+    assert ledger.unreported_finished(CONV) == []
+
+
 # --- carry-over from the Task 8 review ---
 
 
