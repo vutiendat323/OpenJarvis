@@ -309,6 +309,117 @@ def test_two_waiting_checkouts_create_one_order(monkeypatch, conversation):
     assert ACTION_LEDGER.entries(conversation) == []
 
 
+def test_two_waiting_checkouts_after_an_add_create_one_order_with_the_full_cart(
+    monkeypatch, conversation
+):
+    fx = _Fixture(monkeypatch, conversation)
+    revision = fx.seed()
+    run_a = RUN_TRACKER.begin(conversation, "add tea")
+    run_b1 = RUN_TRACKER.begin(conversation, "pay")
+    run_b2 = RUN_TRACKER.begin(conversation, "pay again")
+    lease_a, lease_1, lease_2 = fx.lease(), fx.lease(), fx.lease()
+
+    def background():
+        time.sleep(0.2)
+        try:
+            assert fx.add_as(lease_a, run_a, "tea").success
+        finally:
+            RUN_TRACKER.end(conversation, run_a)
+
+    with ThreadPoolExecutor(3) as pool:
+        first = pool.submit(fx.checkout, lease_1, run_b1, revision)
+        second = pool.submit(fx.checkout, lease_2, run_b2, revision)
+        added = pool.submit(background)
+        results = [first.result(10), second.result(10)]
+        added.result(5)
+
+    assert fx.order_posts() == ["total=70000"]
+    assert [r.success for r in results].count(True) == 1
+    refused = next(r for r in results if not r.success)
+    assert refused.metadata["execution_started"] is False
+    assert fx.posts() == [(ORDERS, "total=70000"), (PAYMENT, "")]
+    assert ACTION_LEDGER.entries(conversation) == []
+
+
+def test_a_touch_edit_during_the_wait_is_not_carried_into_the_order(
+    monkeypatch, conversation
+):
+    fx = _Fixture(monkeypatch, conversation)
+    revision = fx.seed()
+    run_a = RUN_TRACKER.begin(conversation, "add tea")
+    run_b = RUN_TRACKER.begin(conversation, "pay")
+    lease_a, lease_b = fx.lease(), fx.lease()
+
+    def background():
+        time.sleep(0.2)
+        try:
+            assert fx.add_as(lease_a, run_a, "tea").success
+            with conversation_scope(conversation):  # a touch: no run id
+                assert fx.cart.edit_without_display(
+                    "set_order_note", {"order_note": "Touch edit"}
+                ).success
+        finally:
+            RUN_TRACKER.end(conversation, run_a)
+
+    with ThreadPoolExecutor(2) as pool:
+        added = pool.submit(background)
+        result = pool.submit(fx.checkout, lease_b, run_b, revision).result(10)
+        added.result(5)
+
+    assert not result.success
+    assert result.content == "cart revision is stale or empty"
+    assert result.metadata["execution_started"] is False
+    assert fx.posts() == []
+
+
+def test_a_new_runs_write_between_stable_and_freeze_is_not_carried(
+    monkeypatch, conversation
+):
+    fx = _Fixture(monkeypatch, conversation)
+    revision = fx.seed()
+    run_a = RUN_TRACKER.begin(conversation, "add tea")
+    run_b = RUN_TRACKER.begin(conversation, "pay")
+    freeze = RUN_TRACKER.freeze
+    slipped = []
+
+    def freeze_after_a_slip(cid, run):
+        if run == run_b and not slipped:
+            run_c = RUN_TRACKER.begin(conversation, "add cake")
+            slipped.append(run_c)
+            with voice_run_scope(run_c):  # lands after STABLE, before the freeze
+                assert fx.cart.execute(
+                    action="add",
+                    item={
+                        "variant_id": "cake",
+                        "name": "Cake",
+                        "unit_price": 35000,
+                        "quantity": 1,
+                    },
+                ).success
+        return freeze(cid, run)
+
+    monkeypatch.setattr(RUN_TRACKER, "freeze", freeze_after_a_slip)
+    lease_a, lease_b = fx.lease(), fx.lease()
+
+    def background():
+        time.sleep(0.2)
+        try:
+            assert fx.add_as(lease_a, run_a, "tea").success
+        finally:
+            RUN_TRACKER.end(conversation, run_a)
+
+    with ThreadPoolExecutor(2) as pool:
+        added = pool.submit(background)
+        result = pool.submit(fx.checkout, lease_b, run_b, revision).result(10)
+        added.result(5)
+
+    assert slipped
+    assert not result.success
+    assert result.content == "cart revision is stale or empty"
+    assert fx.posts() == []
+    RUN_TRACKER.end(conversation, slipped[0])
+
+
 def test_a_checkout_does_not_follow_a_revision_that_was_already_stale(
     monkeypatch, conversation
 ):

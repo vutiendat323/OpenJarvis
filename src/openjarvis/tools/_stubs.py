@@ -183,6 +183,7 @@ class ToolExecutor:
         deadline = started + STABLE_CART_WAIT_SECONDS
         revision_now = getattr(tool, "current_cart_revision", None)
         revision_before = revision_now() if callable(revision_now) else None
+        in_flight = RUN_TRACKER.in_flight_ids(cid, exclude=run)
         outcome = RUN_TRACKER.wait_stable(cid, run, STABLE_CART_WAIT_SECONDS)
         if outcome is StableOutcome.CHANGED:
             return ToolResult(
@@ -193,20 +194,17 @@ class ToolExecutor:
             )
         if outcome is not StableOutcome.STABLE:
             return self._cart_not_settled(tool_call)
-        contended = False
         try:
             # The freeze is exclusive: another checkout may hold it. Wait for
             # its thaw within what is left of the stable-cart budget.
             while not RUN_TRACKER.freeze(cid, run):
-                contended = True
                 if not RUN_TRACKER.wait_unfrozen(
                     cid, run, max(0.0, deadline - time.monotonic())
                 ):
                     return self._cart_not_settled(tool_call)
-            if not contended and callable(revision_now):
-                tool_call = self._follow_cart_revision(
-                    tool_call, revision_before, revision_now()
-                )
+            tool_call = self._follow_cart_revision(
+                tool, tool_call, revision_before, in_flight
+            )
             return self._execute_gated(tool_call)
         finally:
             RUN_TRACKER.unfreeze(cid, run)
@@ -221,16 +219,31 @@ class ToolExecutor:
         )
 
     @staticmethod
-    def _follow_cart_revision(tool_call: ToolCall, before: Any, now: Any) -> ToolCall:
+    def _follow_cart_revision(
+        tool: BaseTool, tool_call: ToolCall, before: Any, in_flight: set[str]
+    ) -> ToolCall:
         """Carry the checkout's revision across changes made while it waited.
 
         The model bound ``cart_revision`` to the cart it saw when checkout
         began. Runs already in flight then, and finished before the cart
-        settled, are meant to be in the order (spec 7.7). Only a revision that
-        was current when the wait began is carried forward; any other
-        mismatch stays for the revision claim to refuse.
+        settled, are meant to be in the order (spec 7.7). The revision moves
+        forward only when it was current when the wait began and every bump
+        since was made by one of those runs. A touch edit, a run that began
+        later or an unknown author leaves the stale revision for the revision
+        claim to refuse, so no order is created.
         """
-        if type(before) is not int or type(now) is not int or before == now:
+        changes_since = getattr(tool, "cart_revision_changes", None)
+        if type(before) is not int or not callable(changes_since):
+            return tool_call
+        changes = changes_since(before)
+        if changes is None:
+            return tool_call
+        now, authors = changes
+        if (
+            now == before
+            or not authors
+            or not all(author and author in in_flight for author in authors)
+        ):
             return tool_call
         try:
             arguments = json.loads(tool_call.arguments or "{}")

@@ -301,6 +301,15 @@ class SkillTool(BaseTool):
             | ({"waits_for_stable_cart": True} if self._manifest.checkout else {}),
         )
 
+    def cart_revision_changes(self, revision: Any) -> Optional[tuple[int, list[str]]]:
+        """The draft's current revision and who bumped it since ``revision``."""
+        get_tool = getattr(self._executor._tool_executor, "get_tool", None)
+        cart = get_tool("display_cart") if callable(get_tool) else None
+        changes = getattr(cart, "revision_changes_since", None)
+        if not callable(changes) or type(revision) is not int:
+            return None
+        return changes(revision)
+
     def current_cart_revision(self) -> Optional[int]:
         """The conversation's draft revision, or None without a non-empty draft."""
         get_tool = getattr(self._executor._tool_executor, "get_tool", None)

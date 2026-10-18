@@ -72,6 +72,16 @@ class RunTracker:
                 return []
             return [req for rid, req in conv.runs.items() if rid != exclude]
 
+    def in_flight_ids(self, conversation_id: str, *, exclude: str = "") -> set[str]:
+        """Run ids in flight now (read-only; ``in_flight`` returns requests)."""
+        if not conversation_id:
+            return set()
+        with self._cond:
+            conv = self._convs.get(conversation_id)
+            if conv is None:
+                return set()
+            return {rid for rid in conv.runs if rid != exclude}
+
     def note_write(self, conversation_id: str, run_id: str) -> None:
         if not conversation_id or not run_id:
             return

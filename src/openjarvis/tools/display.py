@@ -12,7 +12,7 @@ test does not classify them as either.
 from __future__ import annotations
 
 import json
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from contextvars import ContextVar
 from dataclasses import replace
 from threading import RLock
@@ -22,6 +22,7 @@ from uuid import uuid4
 from openjarvis.core.conversation import current_conversation_id, current_turn_nonce
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.registry import ToolRegistry
+from openjarvis.core.runs import current_voice_run
 from openjarvis.core.types import ToolResult
 from openjarvis.tools import evidence as _evidence
 from openjarvis.tools._stubs import BaseTool, ToolSpec
@@ -496,6 +497,10 @@ class DisplayCartTool(_DisplayTool):
         self._pickup_minutes: dict[str, int] = {}
         self._cart_revisions: dict[str, int] = {}
         self._revision_sequence = 0
+        # (conversation, revision, voice run that made it) for recent bumps; ""
+        # marks a change made outside any run (a touch edit).
+        self._revision_log: deque[tuple[str, int, str]] = deque(maxlen=512)
+        self._revision_log_floor = 0
         self._checkout_claims: dict[str, int] = {}
         self._checkout_pending: set[str] = set()
         self._checkout_contracts: set[bytes] | None = None
@@ -993,8 +998,7 @@ class DisplayCartTool(_DisplayTool):
                 or table_name != stored_table_name
                 or pickup_minutes != stored_pickup_minutes
             ):
-                self._revision_sequence += 1
-                revision = self._revision_sequence
+                revision = self._bump_revision(conversation_id)
                 self._checkout_claims.pop(conversation_id, None)
             self._cart_revisions[conversation_id] = revision
             while len(self._carts) > 64:
@@ -1035,6 +1039,38 @@ class DisplayCartTool(_DisplayTool):
                 success=True,
                 metadata=metadata,
             )
+
+    def _bump_revision(self, conversation_id: str) -> int:
+        """Issue the next revision and record which run made it."""
+        self._revision_sequence += 1
+        revision = self._revision_sequence
+        if len(self._revision_log) == self._revision_log.maxlen:
+            self._revision_log_floor = self._revision_log[0][1]
+        self._revision_log.append((conversation_id, revision, current_voice_run()))
+        return revision
+
+    def revision_changes_since(self, revision: int) -> tuple[int, list[str]] | None:
+        """The current revision and who made every bump after ``revision``.
+
+        ``None`` when the draft is empty or the record no longer reaches back
+        to ``revision``; an author of ``""`` is a change made outside any run.
+        """
+        conversation_id = current_conversation_id()
+        if not conversation_id:
+            return None
+        with self._cart_lock:
+            now = self._cart_revisions.get(conversation_id, 0)
+            if (
+                not self._carts.get(conversation_id)
+                or revision < self._revision_log_floor
+            ):
+                return None
+            authors = [
+                run
+                for owner, number, run in self._revision_log
+                if owner == conversation_id and revision < number <= now
+            ]
+            return now, authors
 
     def current_snapshot(self) -> dict[str, Any] | None:
         """Return a copy of this conversation's draft and revision."""
@@ -1169,8 +1205,7 @@ class DisplayCartTool(_DisplayTool):
                     if normalized_order_type == "take-out"
                     else 0
                 )
-                self._revision_sequence += 1
-                revision = self._revision_sequence
+                revision = self._bump_revision(owner)
                 self._cart_revisions[owner] = revision
                 self._order_types[owner] = normalized_order_type
                 self._tables[owner] = updated_table
@@ -1202,8 +1237,7 @@ class DisplayCartTool(_DisplayTool):
                         }
                     )
             if normalized_lines is not None:
-                self._revision_sequence += 1
-                revision = self._revision_sequence
+                revision = self._bump_revision(owner)
                 self._carts[owner] = normalized_lines
                 self._cart_revisions[owner] = revision
                 self._order_types[owner] = normalized_order_type or ""
