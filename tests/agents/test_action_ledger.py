@@ -81,8 +81,8 @@ def test_background_for_lists_other_runs_and_marks_them_seen():
         {"tool": "add", "status": "succeeded", "message": "Đã thêm."},
         {"tool": "add", "status": "running"},
     ]
-    seen = {e.call_id: e.seen_by_run for e in ledger.entries(CONV)}
-    assert seen == {"old": "r2", "still": "", "own": ""}
+    seen = {e.call_id: e.seen_by for e in ledger.entries(CONV)}
+    assert seen == {"old": {"r2"}, "still": set(), "own": set()}
 
 
 def test_a_write_seen_running_is_not_reported_when_it_finishes_before_the_run_ends():
@@ -262,9 +262,9 @@ def test_a_carried_request_still_sees_what_it_already_told():
             "already_told": "true",
         }
     ]
-    assert {e.call_id: e.seen_by_run for e in ledger.entries(CONV)} == {
-        "told": "",
-        "own": "",
+    assert {e.call_id: e.seen_by for e in ledger.entries(CONV)} == {
+        "told": set(),
+        "own": set(),
     }
 
 
@@ -358,7 +358,7 @@ def test_a_run_entry_is_listed_for_other_runs_with_its_request_and_answer():
     [entry] = ledger.entries(CONV)
     assert (entry.key, entry.call_id, entry.tool) == ("r1:run", "run", "agent_run")
     assert entry.kind == "run" and entry.request == "cho mình một ly trà"
-    assert entry.seen_by_run == "r2"
+    assert entry.seen_by == {"r2"}
     # The run's own context lists nothing of itself.
     assert ledger.background_for(CONV, "r1") == []
 
@@ -534,3 +534,32 @@ def test_mark_run_reported_with_keys_marks_only_those_entries():
     ledger.mark_run_reported(CONV, "r1", via="reporter", keys={"r1:a"})
 
     assert [e.key for e in ledger.unreported_finished(CONV)] == ["r1:b"]
+
+
+# --- final review I2 ------------------------------------------------------
+
+
+def test_an_entry_seen_by_two_parallel_runs_is_told_by_either():
+    """I2: A's next round must not hide that foreground B saw the entry."""
+    ledger = ActionLedger()
+    _started(ledger, call_id="x", run_id="X")
+    ledger.finish(CONV, call_id="x", run_id="X", result=_ok("Đã thêm."))
+    ledger.background_for(CONV, "B")  # foreground B sees it
+    ledger.background_for(CONV, "A")  # background A's next round sees it too
+
+    ledger.mark_run_completed(CONV, "B")
+
+    assert ledger.entries(CONV)[0].reported is True
+
+
+def test_d4_does_not_hold_a_run_that_saw_the_failure_before_another_run_did():
+    """I2: B read the failure; A reading it later must not make B's write wait."""
+    ledger = ActionLedger()
+    _started(ledger, call_id="bad", run_id="X")
+    ledger.finish(CONV, call_id="bad", run_id="X", result=_failed())
+    ledger.background_for(CONV, "B")
+    ledger.background_for(CONV, "A")
+
+    assert ledger.unseen_failures(CONV, "B") == []
+    assert ledger.unseen_failures(CONV, "A") == []
+    assert [e.call_id for e in ledger.unseen_failures(CONV, "C")] == ["bad"]

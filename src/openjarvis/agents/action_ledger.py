@@ -31,7 +31,9 @@ class LedgerEntry:
     status: str = "running"
     customer_message: str = ""
     error: str = ""
-    seen_by_run: str = ""
+    # Every run whose model read this finished outcome; runs run in parallel,
+    # so one run's read must not hide another's (I2).
+    seen_by: frozenset[str] = frozenset()
     reported: bool = False
     # A customer turn completed after it: told, and no longer carried.
     settled: bool = False
@@ -232,7 +234,7 @@ class ActionLedger:
                         listed.append({**entry.as_context(), "already_told": "true"})
                     continue
                 if entry.status != "running":
-                    entry.seen_by_run = run_id
+                    entry.seen_by = entry.seen_by | {run_id}
                 listed.append(entry.as_context())
             return listed
 
@@ -270,7 +272,7 @@ class ActionLedger:
                 and entry.run_id != run_id
                 and entry.status in ("failed", "unknown")
                 and not entry.reported
-                and entry.seen_by_run != run_id
+                and run_id not in entry.seen_by
             ]
 
     def mark_run_completed(self, conversation_id: str, run_id: str) -> None:
@@ -286,7 +288,7 @@ class ActionLedger:
             for entry in entries:
                 if entry.status == "running" or entry.reported:
                     continue
-                if entry.run_id == run_id or entry.seen_by_run == run_id:
+                if entry.run_id == run_id or run_id in entry.seen_by:
                     self._report_locked(entry, "model")
                     folded_runs.add(entry.run_id)
             for entry in entries:

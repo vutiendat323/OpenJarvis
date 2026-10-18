@@ -294,7 +294,7 @@ async def test_an_interrupted_run_marks_nothing_reported():
             await task
 
     [entry] = ACTION_LEDGER.entries("c-interrupt")
-    assert entry.seen_by_run != "" and entry.reported is False
+    assert entry.seen_by and entry.reported is False
 
 
 def test_the_blocking_path_reports_on_completion_too():
