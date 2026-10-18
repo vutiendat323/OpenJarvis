@@ -862,6 +862,70 @@ async def test_no_smoothies_asked_while_checkout_waits_drops_the_stale_checkout(
 
 
 @pytest.mark.anyio
+async def test_a_run_that_waited_for_a_slot_sees_the_named_request_was_told(
+    conversation,
+):
+    """I5: "Bạn thêm chưa?" waits for the one slot while the smoothies run ends
+    and is told; it must not answer "still adding" after "đã thêm"."""
+    cart = _Cart([])
+    cart.hold_adds_of("sinh-to")
+    seen = {}
+
+    async def script(messages):
+        ask = _asked(messages)
+        results = _tool_results(messages)
+        if ask == SMOOTHIES:
+            if not results:
+                return _call(
+                    "display_cart", {"action": "add", "item": _item("sinh-to")}
+                )
+            return _say("Đã thêm sinh tố.")
+        assert ask == DID_YOU
+        background = _runtime_context(messages).get("background_actions", [])
+        seen["background"] = background
+        done = [
+            item
+            for item in background
+            if item.get("request") == SMOOTHIES and item.get("status") == "succeeded"
+        ]
+        if done:
+            return _say("Sinh tố đã có trong giỏ rồi ạ.")
+        return _say("Mình đang thêm sinh tố, chưa xong ạ.")
+
+    rig = _Rig(conversation, script, [cart], slots=1)
+    cart.log = rig.log
+
+    def reporter_tells(entry):
+        # Stands in for the reporter: the smoothies run is told as it ends,
+        # before the waiting run gets the slot.
+        if entry.kind == "run" and entry.request == SMOOTHIES:
+            ACTION_LEDGER.mark_run_reported(conversation, entry.run_id, via="phrased")
+
+    unsubscribe = ACTION_LEDGER.subscribe(conversation, reporter_tells)
+
+    async def steps(worker):
+        await worker.queue_frame(_ctx(_user(SMOOTHIES)))
+        await _wait_set(cart.holds["sinh-to"].started)
+        await worker.queue_frame(_ctx(_user(SMOOTHIES), _bot(), _user(DID_YOU)))
+        await asyncio.sleep(0.2)
+        seen["waited_for_the_slot"] = rig.engine.asked(DID_YOU) == 0
+        cart.holds["sinh-to"].release.set()
+        await _settled(rig)
+
+    try:
+        await rig.drive(steps)
+        assert seen["waited_for_the_slot"] is True
+        assert rig.sink.spoke("Sinh tố đã có trong giỏ rồi ạ.")
+        assert not rig.sink.spoke("chưa xong")
+        [told] = [i for i in seen["background"] if i.get("request") == SMOOTHIES]
+        assert told["already_told"] == "true"
+        assert cart.writes == [("add", ("sinh-to",))]
+    finally:
+        unsubscribe()
+        rig.cleanup()
+
+
+@pytest.mark.anyio
 async def test_alo_is_answered_before_the_first_run_finishes(conversation):
     log: list[str] = []
     cart = _Cart(log)

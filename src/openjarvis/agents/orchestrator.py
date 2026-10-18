@@ -49,6 +49,7 @@ from openjarvis.core.conversation import (
 )
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.registry import AgentRegistry
+from openjarvis.core.runs import RUN_TRACKER, current_voice_run
 from openjarvis.core.types import Message, Role, ToolCall, ToolResult
 from openjarvis.engine._stubs import InferenceEngine, merge_tool_call_fragments
 from openjarvis.tools._stubs import BaseTool
@@ -340,7 +341,9 @@ class OrchestratorAgent(ToolUsingAgent):
             request = context.metadata.get(CUSTOMER_REQUEST) if context else None
             recorded = bool(request and conversation_id)
             if recorded:
-                ACTION_LEDGER.start_run(conversation_id, nonce, request)
+                ACTION_LEDGER.start_run(
+                    conversation_id, nonce, request, voice_run=current_voice_run()
+                )
             try:
                 async for event in self._run_stream_in_turn(input, context, **kwargs):
                     completed = isinstance(event, AgentRunCompleted)
@@ -1194,7 +1197,11 @@ class OrchestratorAgent(ToolUsingAgent):
         conversation_id = current_conversation_id()
         if conversation_id:
             background = ACTION_LEDGER.background_for(
-                conversation_id, current_turn_nonce()
+                conversation_id,
+                current_turn_nonce(),
+                # Requests the prompt names as in progress may have finished
+                # while this run waited for a slot (I5).
+                named=RUN_TRACKER.named_at_begin(conversation_id, current_voice_run()),
             )
             if background:
                 runtime_context["background_actions"] = background
@@ -1213,9 +1220,10 @@ class OrchestratorAgent(ToolUsingAgent):
                 "when present, are outcomes of the customer's earlier requests "
                 "that may finish after they spoke again: mention each finished "
                 "one once in your reply and never repeat its action; a running "
-                "one is not done yet. Ones marked already_told were already told "
-                "to the customer: do not mention them again and never repeat "
-                "their action. Never proceed to payment past a failed or "
+                "one is not done yet. Ones marked already_told are finished and "
+                "were already told to the customer: do not report them again "
+                "unless the customer asks about them, and never repeat their "
+                "action. Never proceed to payment past a failed or "
                 "unknown background action; tell the customer and ask first."
                 "\n<runtime_context>"
                 + json.dumps(runtime_context, ensure_ascii=False, separators=(",", ":"))

@@ -33,6 +33,9 @@ class _Conversation:
     # Per checkout that waited: the epoch and the runs it waited for, both
     # taken when its wait began.
     waits: dict[str, tuple[int, frozenset[str]]] = field(default_factory=dict)
+    # Per run: the runs with words in flight when it began, which its prompt
+    # names as in progress (I5).
+    named: dict[str, frozenset[str]] = field(default_factory=dict)
 
 
 class RunTracker:
@@ -62,9 +65,22 @@ class RunTracker:
         with self._cond:
             conv = self._get(conversation_id)
             if conv is not None:
+                conv.named[run_id] = frozenset(
+                    rid for rid, words in conv.runs.items() if words
+                )
                 conv.runs[run_id] = request
                 self._cond.notify_all()
         return run_id
+
+    def named_at_begin(self, conversation_id: str, run_id: str) -> frozenset[str]:
+        """The runs with words in flight when this run began, while it runs."""
+        if not conversation_id or not run_id:
+            return frozenset()
+        with self._cond:
+            conv = self._convs.get(conversation_id)
+            if conv is None:
+                return frozenset()
+            return conv.named.get(run_id, frozenset())
 
     def end(self, conversation_id: str, run_id: str) -> None:
         if not conversation_id or not run_id:
@@ -76,6 +92,7 @@ class RunTracker:
             conv.runs.pop(run_id, None)
             conv.waiting.discard(run_id)
             conv.waits.pop(run_id, None)
+            conv.named.pop(run_id, None)
             if conv.freeze_owner == run_id:
                 self._release_freeze(conv)
             self._cond.notify_all()

@@ -550,3 +550,36 @@ def test_d4_does_not_hold_a_run_that_saw_the_failure_before_another_run_did():
     assert ledger.unseen_failures(CONV, "B") == []
     assert ledger.unseen_failures(CONV, "A") == []
     assert [e.call_id for e in ledger.unseen_failures(CONV, "C")] == ["bad"]
+
+
+# --- final review I5 ----------------------------------------------------------
+
+
+def test_a_named_run_already_told_is_listed_as_finished_and_told():
+    """I5: the prompt named A as in progress; A finished and was told since."""
+    ledger = ActionLedger()
+    ledger.start_run(CONV, "nonce-a", "thêm sinh tố", voice_run="A")
+    ledger.finish_run(CONV, "nonce-a", answer="Đã thêm sinh tố.", status="succeeded")
+    ledger.mark_run_reported(CONV, "nonce-a", via="phrased")
+
+    assert ledger.background_for(CONV, "nonce-b", named={"A"}) == [
+        {
+            "request": "thêm sinh tố",
+            "status": "succeeded",
+            "answer": "Đã thêm sinh tố.",
+            "already_told": "true",
+        }
+    ]
+    # Not named: a told run stays out, as before.
+    assert ledger.background_for(CONV, "nonce-c") == []
+    assert ledger.background_for(CONV, "nonce-c", named={"other"}) == []
+    [entry] = ledger.entries(CONV)
+    assert entry.seen_by == frozenset()
+
+
+def test_a_named_run_still_running_is_listed_once_as_running():
+    ledger = ActionLedger()
+    ledger.start_run(CONV, "nonce-a", "thêm sinh tố", voice_run="A")
+    assert ledger.background_for(CONV, "nonce-b", named={"A"}) == [
+        {"request": "thêm sinh tố", "status": "running"}
+    ]

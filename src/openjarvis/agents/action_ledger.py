@@ -45,6 +45,8 @@ class LedgerEntry:
     # 2026-10-18 parallel agent runs).
     kind: str = "tool"
     request: str = ""
+    # The voice run (RunTracker id) a run entry belongs to; never shown.
+    voice_run: str = ""
 
     def as_context(self) -> dict[str, str]:
         if self.kind == "run":
@@ -90,7 +92,9 @@ class ActionLedger:
             "background_action_started tool=%s run=%s call=%s", tool, run_id, call_id
         )
 
-    def start_run(self, conversation_id: str, run_id: str, request: str) -> None:
+    def start_run(
+        self, conversation_id: str, run_id: str, request: str, *, voice_run: str = ""
+    ) -> None:
         """A background Agent run begins: one entry for the run as a whole."""
         self._add(
             conversation_id,
@@ -99,6 +103,7 @@ class ActionLedger:
             run_id=run_id,
             kind="run",
             request=request,
+            voice_run=voice_run,
         )
         logger.warning("background_run_started run=%s", run_id)
 
@@ -111,6 +116,7 @@ class ActionLedger:
         run_id: str,
         kind: str = "tool",
         request: str = "",
+        voice_run: str = "",
     ) -> None:
         key = self._key(run_id, call_id)
         with self._lock:
@@ -124,6 +130,7 @@ class ActionLedger:
                 interrupted=run_id in self._interrupted_runs.get(conversation_id, ()),
                 kind=kind,
                 request=request,
+                voice_run=voice_run,
             )
             while len(entries) > self.MAX_ENTRIES:
                 entries.popitem(last=False)
@@ -220,16 +227,33 @@ class ActionLedger:
             except Exception:
                 logger.warning("background_run_listener_failed run=%s", run_id)
 
-    def background_for(self, conversation_id: str, run_id: str) -> list[dict[str, str]]:
+    def background_for(
+        self,
+        conversation_id: str,
+        run_id: str,
+        *,
+        named: Collection[str] = (),
+    ) -> list[dict[str, str]]:
         """Earlier runs' writes still running or not yet reported.
 
         Running entries are listed but not marked seen: the run has only seen
-        "not done yet", so its outcome must still be reported later.
+        "not done yet", so its outcome must still be reported later. ``named``
+        holds the voice runs this run's prompt names as in progress: one that
+        finished and was told since is listed too, marked ``already_told``, so
+        the run does not answer it is still in progress (I5).
         """
         with self._lock:
             listed = []
             for entry in self._conversations.get(conversation_id, {}).values():
-                if entry.run_id == run_id or entry.reported:
+                if entry.run_id == run_id:
+                    continue
+                if entry.reported:
+                    if (
+                        entry.kind == "run"
+                        and entry.voice_run
+                        and entry.voice_run in named
+                    ):
+                        listed.append({**entry.as_context(), "already_told": "true"})
                     continue
                 if entry.status != "running":
                     entry.seen_by = entry.seen_by | {run_id}

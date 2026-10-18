@@ -414,3 +414,18 @@ def test_a_checkout_begun_after_another_ended_is_not_superseded():
     assert t.superseded(C, b2) is False  # its record ended with it
     t.close(C)
     assert t.superseded(C, b2) is True  # nothing is ordered after the end
+
+
+def test_a_run_remembers_the_requests_in_flight_when_it_began():
+    """I5: what its prompt named as in progress, by run id."""
+    t = RunTracker()
+    a = t.begin(C, "add smoothies")
+    rejected = t.begin(C, "")  # not named: it has no words
+    b = t.begin(C, "did you add them?")
+    assert t.named_at_begin(C, b) == frozenset({a})
+    assert t.named_at_begin(C, a) == frozenset()
+    t.end(C, a)
+    assert t.named_at_begin(C, b) == frozenset({a})  # fixed at its begin
+    t.end(C, b)
+    assert t.named_at_begin(C, b) == frozenset()
+    t.end(C, rejected)
