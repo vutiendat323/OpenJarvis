@@ -7,7 +7,7 @@ Status: nothing is pushed and nothing is deployed. The stack was not started or 
 
 ## What was replayed
 
-`tests/server/test_voice_parallel_scenarios.py` drives the real voice service over the real `NativeAgentRuntime(max_concurrent_runs=2)`, the real `OrchestratorAgent`, the real action ledger, run tracker, write gate and `DisplayCartTool` (and, for payment, the real checkout `SkillTool` with its stable-cart wait). Only the edges are scripted: a streaming engine, a fake Responder and a sink in place of TTS. Delays are held with events, so no test depends on the clock.
+`tests/server/test_voice_parallel_scenarios.py` drives the real voice service over the real `NativeAgentRuntime(max_concurrent_runs=2)`, the real `OrchestratorAgent`, the real action ledger, run tracker, write gate and `DisplayCartTool` (and, for payment, the real checkout `SkillTool` with its stable-cart wait). Only the edges are scripted: a streaming engine, a fake Responder and a sink in place of TTS. Delays are held with events rather than timed, and no assertion bounds a duration. A few negative checks ("nothing happened yet") sleep 0.2-0.4 s before looking, so they can only pass too early, never fail on a slow machine.
 
 The scenarios were written from the 18:14-18:16 session in `.stack-logs/backend.log` (lines 17721-18087 were still present and were read; they were not rotated). In that log "Alo" cut the juice run (18:15:00), so the juice was never added and the customer asked again; the smoothies run was cut by two "Alo" and a later "Bạn thêm chưa?" started a new run.
 
@@ -20,9 +20,9 @@ The scenarios were written from the 18:14-18:16 session in `.stack-logs/backend.
 | `test_smoothies_then_no_smoothies_waits_and_ends_without_them` | the second run calls `await_earlier_requests` (blocked while the add is held), then reads the real cart and removes; cart ends empty; writes are add then remove |
 | `test_pay_while_smoothies_are_added_orders_them` | the checkout posts nothing while the add is held, then orders `total=70000` (coffee + smoothie) once; one payment POST; the finished checkout ends the run |
 | `test_alo_is_answered_before_the_first_run_finishes` | the Responder's text frame precedes the first run's write (spec §6 shape); wall-clock targets are checked live |
-| `test_two_fenced_draining_runs_release_their_slots_for_a_third` | extra replay from review: with the real two-slot runtime, a third request waits while two runs hold the slots, then proceeds after both are fenced and drain; no cancellation; both slots free at the end |
+| `test_two_fenced_draining_runs_release_their_slots_for_a_third` | extra replay from review: with the real two-slot runtime, a third request waits while two runs hold the slots, then proceeds after both are fenced and drain. Drain, not cancel, is proved by each request's model round completing after its hold (a cancelled run never reaches it), all three completing, the first two ledger run entries being `succeeded` and unreported, and both slots free at the end |
 
-Sensitivity check: with the rig's runtime set to one slot (temporary edit, reverted), 6 of the 8 tests fail, so they depend on the two-slot runtime.
+Sensitivity check (before fix round 1): with the rig's runtime set to one slot (temporary edit, reverted), 6 of the 8 tests fail, so they depend on the two-slot runtime.
 
 ## Suite counts (each in its own process, `-m "not live and not cloud and not hub"`)
 
@@ -33,7 +33,7 @@ Sensitivity check: with the rig's runtime set to one slot (temporary edit, rever
 | tests/core/test_config.py | 65 passed |
 | tests/agents/test_write_queue.py | 39 passed |
 | tests/agents/test_background_scenarios.py | 4 passed |
-| tests/skills/test_checkout_stable_cart.py | 10 passed |
+| tests/skills/test_checkout_stable_cart.py | 11 passed (10 plus the Ruling 15 test, added in fix round 1) |
 | tests/skills/test_checkout_barge_in.py | 6 passed |
 | tests/skills/test_checkout_mutation_scope.py | 4 passed |
 | tests/skills/test_tool_adapter_v2.py | 27 passed |
@@ -86,8 +86,9 @@ From the Task 8 commit `36c6054c` (a barge-in no longer cancels the run, nothing
 12. A rejected-speaker turn begins its run with request "" and no `CUSTOMER_REQUEST`; in-progress lists skip empty requests.
 13. The plan's quoted "I hear you" in `voice-responder.md` became policy wording ("say that you can hear them"): the user's no-fixed-customer-sentence rule wins.
 14. See the flipped `test_preset_configs.py` set above.
+15. Add the two-waiter test with the production argument shape (`update_order_type=True`, `order_type`), where B1's `begin_checkout` bumps the revision itself.
 
-Deferred minors and carried-over items are listed in `.superpowers/sdd/2026-10-18-barge-in-parallel-agent-runs/progress.md`. The Task 4 priority item (no two-waiter test with `update_order_type=True`) is not covered by this replay either.
+Deferred minors and carried-over items are listed in `.superpowers/sdd/2026-10-18-barge-in-parallel-agent-runs/progress.md`. The Task 4 priority item (two waiting checkouts with `update_order_type=True` and an `order_type`) is now covered by `test_two_waiting_checkouts_that_set_the_order_type_create_one_order` in `tests/skills/test_checkout_stable_cart.py` (Ruling 15): exactly one order POST with the full total, the other checkout refused with no order started, and the type saved.
 
 ## Known limits of this replay
 
@@ -101,7 +102,7 @@ Not done: the stack was not restarted. For the user, after a restart they reques
 
 1. Juice + "Alo": the juice is added without asking again.
 2. Smoothies + "Alo" + "Bạn thêm chưa?": no second add; the answer is "in progress" or the result.
-3. Smoothies + "thêm một cà phê sữa": both are added, the second without waiting.
+3. Smoothies + "thêm một cà phê sữa": both are added, the second run starts without waiting; its write follows the first's.
 4. Smoothies + "đổi sang mang đi": the smoothies are added and the order is take-out.
 
 Compare with spec §6, from these lines:

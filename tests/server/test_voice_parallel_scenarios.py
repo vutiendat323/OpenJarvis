@@ -750,10 +750,8 @@ async def test_alo_is_answered_before_the_first_run_finishes(conversation):
         await worker.queue_frame(_ctx(_user(JUICE)))
         await _wait_set(cart.holds["juice"].started)
         await _barge_in(worker)
-        started = time.monotonic()
         await worker.queue_frame(_ctx(_user(JUICE), _bot(), _user(ALO)))
         await _eventually(lambda: rig.sink.spoke(HEARD))
-        seen["answer_seconds"] = time.monotonic() - started
         seen["first_run_done"] = bool(cart.writes)
         cart.holds["juice"].release.set()
         await _settled(rig)
@@ -764,7 +762,6 @@ async def test_alo_is_answered_before_the_first_run_finishes(conversation):
         # the shape behind spec §6's 1.0 s target (wall clock is checked live).
         assert seen["first_run_done"] is False
         assert rig.log.index(f"said:{HEARD}") < rig.log.index("add:juice")
-        assert seen["answer_seconds"] < 2.0
     finally:
         rig.cleanup()
 
@@ -774,7 +771,11 @@ async def test_two_fenced_draining_runs_release_their_slots_for_a_third(conversa
     """The real two-slot runtime: runs that drain unheard free their slots."""
     first, second, third = "Một cà phê.", "Hai trà đào.", "Ba bánh."
 
+    done: list[str] = []
+
     async def script(messages):
+        # Reached only after the request's hold: a cancelled run never gets here.
+        done.append(_asked(messages))
         return _say(f"Xong: {_asked(messages)}")
 
     rig = _Rig(conversation, script, [], plan=lambda _u: ("delegate", ""))
@@ -805,10 +806,18 @@ async def test_two_fenced_draining_runs_release_their_slots_for_a_third(conversa
         await rig.drive(steps)
         assert seen["third_waited"] is True
         assert seen["free_slots_full"] == 0
-        # Every run, the fenced ones included, finished; nothing was cancelled
-        # and every slot is back.
-        assert {ask for ask, _ in rig.engine.rounds} == {first, second, third}
+        # Every run completed its model round after the hold, the fenced ones
+        # included (drained, not cancelled), and every slot is back.
+        assert sorted(done) == sorted([first, second, third])
         assert rig.runtime._slots._value == 2
+        runs = {
+            entry.request: entry
+            for entry in ACTION_LEDGER.entries(conversation)
+            if entry.kind == "run"
+        }
+        for request in (first, second):
+            assert runs[request].status == "succeeded"
+            assert not runs[request].reported
         assert not rig.sink.spoke(f"Xong: {first}")
         assert not rig.sink.spoke(f"Xong: {second}")
     finally:

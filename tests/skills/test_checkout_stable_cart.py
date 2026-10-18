@@ -114,7 +114,7 @@ class _Fixture:
     def order_posts(self):
         return [body for url, body in self.posts() if url == ORDERS]
 
-    def checkout(self, lease, run, revision):
+    def checkout(self, lease, run, revision, **extra):
         def go():
             _RUN_WORKER_LEASE.set(lease)
             with (
@@ -123,7 +123,7 @@ class _Fixture:
                 agent_turn_scope() as nonce,
                 committed_dispatch(),
             ):
-                arguments = {"turn_nonce": nonce, "cart_revision": revision}
+                arguments = {"turn_nonce": nonce, "cart_revision": revision, **extra}
                 return self.executor.execute(
                     ToolCall(f"checkout-{run}", "skill_checkout", json.dumps(arguments))
                 )
@@ -339,6 +339,49 @@ def test_two_waiting_checkouts_after_an_add_create_one_order_with_the_full_cart(
     assert refused.metadata["execution_started"] is False
     assert fx.posts() == [(ORDERS, "total=70000"), (PAYMENT, "")]
     assert ACTION_LEDGER.entries(conversation) == []
+
+
+def test_two_waiting_checkouts_that_set_the_order_type_create_one_order(
+    monkeypatch, conversation
+):
+    """The production shape: update_order_type bumps the revision on its own.
+
+    B1's begin_checkout applies the type and bumps the revision; B2, waiting on
+    the same snapshot, then holds a revision that is no longer current.
+    """
+    fx = _Fixture(monkeypatch, conversation)
+    revision = fx.seed()
+    run_a = RUN_TRACKER.begin(conversation, "add tea")
+    run_b1 = RUN_TRACKER.begin(conversation, "pay")
+    run_b2 = RUN_TRACKER.begin(conversation, "pay again")
+    lease_a, lease_1, lease_2 = fx.lease(), fx.lease(), fx.lease()
+    dining = {"update_order_type": True, "order_type": "take-out"}
+
+    def background():
+        time.sleep(0.2)
+        try:
+            assert fx.add_as(lease_a, run_a, "tea").success
+        finally:
+            RUN_TRACKER.end(conversation, run_a)
+
+    with ThreadPoolExecutor(3) as pool:
+        first = pool.submit(fx.checkout, lease_1, run_b1, revision, **dining)
+        second = pool.submit(fx.checkout, lease_2, run_b2, revision, **dining)
+        added = pool.submit(background)
+        results = [first.result(10), second.result(10)]
+        added.result(5)
+
+    assert fx.order_posts() == ["total=70000"]
+    assert [r.success for r in results].count(True) == 1
+    refused = next(r for r in results if not r.success)
+    assert refused.metadata["execution_started"] is False
+    assert refused.content in (
+        "cart revision already consumed",
+        "cart revision is stale or empty",
+    )
+    # The type reached begin_checkout, so the revision did move on its own.
+    assert fx.cart._order_types[conversation] == "take-out"
+    assert len([1 for url, _ in fx.posts() if url == ORDERS]) == 1
 
 
 def test_a_touch_edit_during_the_wait_is_not_carried_into_the_order(
