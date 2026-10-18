@@ -9,7 +9,12 @@ import time
 
 import pytest
 
-from openjarvis.agents._stubs import AgentContext, AgentToolStarted
+from openjarvis.agents._stubs import (
+    CUSTOMER_REQUEST,
+    RUN_SPEAKING,
+    AgentContext,
+    AgentToolStarted,
+)
 from openjarvis.agents.action_ledger import ACTION_LEDGER
 from openjarvis.agents.orchestrator import OrchestratorAgent
 from openjarvis.agents.runtime import NativeAgentRuntime
@@ -85,6 +90,10 @@ _CONVERSATIONS = (
     "c-handoff",
     "c-streaming",
     "c-done",
+    "c-run-entry",
+    "c-no-request",
+    "c-fenced",
+    "c-speaking",
 )
 
 
@@ -539,3 +548,81 @@ async def test_a_completed_run_does_not_flag_its_entries():
 
     [entry] = ACTION_LEDGER.entries("c-done")
     assert (entry.status, entry.interrupted) == ("succeeded", False)
+
+
+def _run_entries(conversation: str):
+    entries = ACTION_LEDGER.entries(conversation)
+    return (
+        [e for e in entries if e.kind == "run"],
+        [e for e in entries if e.kind != "run"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_voice_run_leaves_a_run_entry_with_its_request_and_answer():
+    engine = StreamingEngine([_stream_final_round("Xin chào anh.")])
+    agent = OrchestratorAgent(engine, "fake", tools=[_Tool("menu", read_only=True)])
+    context = AgentContext(metadata={CUSTOMER_REQUEST: "cho tôi menu"})
+
+    with conversation_scope("c-run-entry"):
+        [event async for event in agent.run_stream("cho tôi menu", context)]
+
+    [run], _ = _run_entries("c-run-entry")
+    assert (run.request, run.status, run.customer_message) == (
+        "cho tôi menu",
+        "succeeded",
+        "Xin chào anh.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_run_without_a_customer_request_leaves_no_run_entry():
+    engine = StreamingEngine([_stream_final_round("Xong.")])
+    agent = OrchestratorAgent(engine, "fake", tools=[_Tool("menu", read_only=True)])
+
+    with conversation_scope("c-no-request"):
+        [event async for event in agent.run_stream("menu", AgentContext())]
+
+    assert ACTION_LEDGER.entries("c-no-request") == []
+
+
+@pytest.mark.asyncio
+async def test_a_fenced_run_completes_without_marking_its_writes_reported():
+    write = _Tool("add", message="Đã thêm.")
+    engine = StreamingEngine(
+        [_tool_round("", ("add", "{}")), _stream_final_round("Xong.")]
+    )
+    agent = OrchestratorAgent(engine, "fake", tools=[write])
+    context = AgentContext(
+        metadata={CUSTOMER_REQUEST: "thêm cà phê", RUN_SPEAKING: lambda: False}
+    )
+
+    with conversation_scope("c-fenced"):
+        [event async for event in agent.run_stream("thêm cà phê", context)]
+
+    [run], [entry] = _run_entries("c-fenced")
+    assert (entry.tool, entry.status, entry.reported) == ("add", "succeeded", False)
+    assert (run.status, run.customer_message, run.reported) == (
+        "succeeded",
+        "Xong.",
+        False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_speaking_run_still_reports_its_writes_on_completion():
+    write = _Tool("add", message="Đã thêm.")
+    engine = StreamingEngine(
+        [_tool_round("", ("add", "{}")), _stream_final_round("Xong.")]
+    )
+    agent = OrchestratorAgent(engine, "fake", tools=[write])
+    context = AgentContext(
+        metadata={CUSTOMER_REQUEST: "thêm cà phê", RUN_SPEAKING: lambda: True}
+    )
+
+    with conversation_scope("c-speaking"):
+        [event async for event in agent.run_stream("thêm cà phê", context)]
+
+    [run], [entry] = _run_entries("c-speaking")
+    assert (entry.tool, entry.status, entry.reported) == ("add", "succeeded", True)
+    assert (run.status, run.reported) == ("succeeded", True)

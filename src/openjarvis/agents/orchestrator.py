@@ -25,7 +25,9 @@ from contextlib import aclosing
 from typing import Any, List, Optional
 
 from openjarvis.agents._stubs import (
+    CUSTOMER_REQUEST,
     PREAMBLE_SPOKEN,
+    RUN_SPEAKING,
     AgentContext,
     AgentResult,
     AgentRunCompleted,
@@ -242,12 +244,21 @@ class OrchestratorAgent(ToolUsingAgent):
         return state
 
     @staticmethod
-    def _mark_run_completed() -> None:
+    def _run_may_speak(context: AgentContext | None) -> bool:
+        """False only for a fenced run: its answer never reached the customer."""
+        speaking = context.metadata.get(RUN_SPEAKING) if context else None
+        return bool(speaking()) if callable(speaking) else True
+
+    @classmethod
+    def _mark_run_completed(cls, context: AgentContext | None = None) -> None:
         # A run the customer interrupted told them nothing, even when a sync
         # fallback worker still reaches a normal ending after the consumer left.
         try:
             check_agent_cancelled()
         except asyncio.CancelledError:
+            return
+        # A fenced run was silenced: its outcomes stay for the reporter.
+        if not cls._run_may_speak(context):
             return
         conversation_id = current_conversation_id()
         if conversation_id:
@@ -280,7 +291,7 @@ class OrchestratorAgent(ToolUsingAgent):
                 result = self._run_structured(input, context, **kwargs)
             else:
                 result = self._run_function_calling(input, context, **kwargs)
-            self._mark_run_completed()
+            self._mark_run_completed(context)
             return result
 
     async def run_stream(
@@ -314,23 +325,41 @@ class OrchestratorAgent(ToolUsingAgent):
     ) -> AsyncIterator[AgentStreamEvent]:
         with agent_turn_scope():
             completed = False
+            answer = ""
+            conversation_id = current_conversation_id()
+            nonce = current_turn_nonce()
+            request = context.metadata.get(CUSTOMER_REQUEST) if context else None
+            recorded = bool(request and conversation_id)
+            if recorded:
+                ACTION_LEDGER.start_run(conversation_id, nonce, request)
             try:
                 async for event in self._run_stream_in_turn(input, context, **kwargs):
                     completed = isinstance(event, AgentRunCompleted)
+                    if completed:
+                        answer = event.result.content
                     yield event
                 # An interrupted consumer never resumes the generator, so only a
                 # run that ended normally gets here with ``completed``.
                 if completed:
-                    self._mark_run_completed()
+                    self._mark_run_completed(context)
             finally:
-                if not completed:
+                if recorded:
+                    ACTION_LEDGER.finish_run(
+                        conversation_id,
+                        nonce,
+                        answer=answer or "",
+                        status="succeeded" if completed else "stopped",
+                    )
+                    if completed and self._run_may_speak(context):
+                        # The customer heard this run's answer, so the run
+                        # entry itself is told too. A fenced run leaves it.
+                        ACTION_LEDGER.mark_run_reported(
+                            conversation_id, nonce, via="answered"
+                        )
+                if not completed and conversation_id:
                     # Its late results are phrased for the conversation as it
                     # is now, not read out (spec 2026-10-17 barge-in §5.6).
-                    conversation_id = current_conversation_id()
-                    if conversation_id:
-                        ACTION_LEDGER.mark_run_interrupted(
-                            conversation_id, current_turn_nonce()
-                        )
+                    ACTION_LEDGER.mark_run_interrupted(conversation_id, nonce)
 
     async def _run_stream_in_turn(
         self,

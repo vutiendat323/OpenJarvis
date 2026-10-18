@@ -370,6 +370,14 @@ class AgentContext:
 # it spoke a preamble for this turn, so the Agent does not add a second one.
 PREAMBLE_SPOKEN = "preamble_spoken"
 
+# ``AgentContext.metadata`` key: the customer's words that started this voice
+# run. Its presence makes the orchestrator record the run in the ActionLedger.
+CUSTOMER_REQUEST = "customer_request"
+
+# ``AgentContext.metadata`` key: a ``Callable[[], bool]``, True while this run
+# may speak. A run that was fenced (silenced) did not tell the customer.
+RUN_SPEAKING = "run_speaking"
+
 
 @dataclass(slots=True)
 class AgentResult:
