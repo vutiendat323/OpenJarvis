@@ -32,6 +32,7 @@ from openjarvis.server.voice.background import (
     BackgroundReporter,
     event_text,
     report_text,
+    run_report_text,
 )
 from openjarvis.server.voice.lifecycle import VoiceSessionLifecycle
 from openjarvis.server.voice.llm import OpenJarvisLLMService
@@ -910,4 +911,214 @@ async def test_run_phrased_report_does_not_start_while_a_customer_turn_runs():
     await _drive_texts(service, steps)
 
     assert outcome["result"] == "cut"
+    assert responder.events == []
+
+
+# --- one phrased report per finished background run (spec 2026-10-18) ---
+
+ANSWER = "Bạn muốn dùng tại quán hay mang đi?"
+CONFIRMATION = "Đã thêm hai cà phê sữa."
+
+
+def _run_with_write(ledger, run_id="r1", *, request="thêm hai cà phê sữa", finish=True):
+    """A fenced run: it wrote once, then answered after the customer cut in."""
+    ledger.start_run(CONV, run_id, request)
+    _finish(ledger, f"{run_id}-add", message=CONFIRMATION, run_id=run_id)
+    if finish:
+        ledger.finish_run(CONV, run_id, answer=ANSWER, status="succeeded")
+
+
+@pytest.mark.anyio
+async def test_a_finished_run_is_phrased_from_its_answer_and_tools_not_read_out():
+    ledger, fakes = ActionLedger(), _Fakes()
+    _run_with_write(ledger)
+    reporter, phrased = _phrasing_reporter(ledger, fakes, "spoken")
+
+    await reporter.on_idle()
+    await _settle()
+
+    run, tools = ledger.run_group(CONV, "r1")
+    assert fakes.spoken == [] and fakes.events == []
+    assert phrased == [run_report_text(run, tools)]
+    assert ANSWER in phrased[0] and CONFIRMATION in phrased[0]
+    assert "thêm hai cà phê sữa" in phrased[0]
+    assert "succeeded" in phrased[0]
+    assert "since" in phrased[0]
+    assert ledger.unreported_finished(CONV) == []
+
+
+@pytest.mark.anyio
+async def test_a_running_run_is_not_reported_tool_by_tool():
+    ledger, fakes = ActionLedger(), _Fakes()
+    _run_with_write(ledger, finish=False)
+    reporter, phrased = _phrasing_reporter(ledger, fakes, "spoken")
+
+    await reporter.on_idle()
+    await _settle()
+
+    assert phrased == [] and fakes.spoken == [] and fakes.events == []
+    assert [e.call_id for e in ledger.unreported_finished(CONV)] == ["r1-add"]
+
+    ledger.finish_run(CONV, "r1", answer=ANSWER, status="succeeded")
+    await reporter.on_idle()
+    await _settle()
+
+    assert len(phrased) == 1 and ANSWER in phrased[0] and CONFIRMATION in phrased[0]
+    assert ledger.unreported_finished(CONV) == []
+
+
+@pytest.mark.anyio
+async def test_a_cut_run_report_stays_pending():
+    ledger, fakes = ActionLedger(), _Fakes()
+    _run_with_write(ledger)
+    reporter, phrased = _phrasing_reporter(ledger, fakes, "cut")
+
+    await reporter.on_idle()
+    await _settle()
+
+    assert len(phrased) == 1
+    assert fakes.spoken == [] and fakes.events == []
+    assert {e.call_id for e in ledger.unreported_finished(CONV)} == {"run", "r1-add"}
+
+
+@pytest.mark.anyio
+async def test_a_failed_phrasing_falls_back_to_one_event_turn_for_the_run():
+    ledger, fakes = ActionLedger(), _Fakes()
+    _run_with_write(ledger)
+    reporter, phrased = _phrasing_reporter(ledger, fakes, "failed")
+
+    await reporter.on_idle()
+    await _settle()
+
+    run, tools = ledger.run_group(CONV, "r1")
+    assert len(phrased) == 1
+    assert fakes.spoken == []
+    assert fakes.events == [run_report_text(run, tools)]
+    assert ledger.unreported_finished(CONV) == []
+
+
+@pytest.mark.anyio
+async def test_two_finished_runs_are_phrased_once_each_in_order():
+    ledger, fakes = ActionLedger(), _Fakes()
+    reporter, phrased = _phrasing_reporter(ledger, fakes, "spoken")
+    reporter.start()
+    ledger.start_run(CONV, "first", "request one")
+    ledger.start_run(CONV, "second", "request two")
+    # The run that started last finishes first, and is reported first.
+    ledger.finish_run(CONV, "second", answer="answer two", status="succeeded")
+    ledger.finish_run(CONV, "first", answer="answer one", status="succeeded")
+
+    await reporter.on_idle()
+    await _settle()
+    await reporter.on_idle()
+    await _settle()
+    await reporter.on_idle()
+    await _settle()
+    reporter.stop()
+
+    assert len(phrased) == 2
+    assert "answer two" in phrased[0] and "answer one" in phrased[1]
+    assert ledger.unreported_finished(CONV) == []
+
+
+@pytest.mark.anyio
+async def test_entries_without_a_run_keep_the_per_entry_path():
+    ledger, fakes = ActionLedger(), _Fakes()
+    _finish(ledger, "a", message="Đã thêm cà phê sữa.", run_id="norun")
+    _finish(ledger, "b", success=False, run_id="norun")
+    reporter, phrased = _phrasing_reporter(ledger, fakes, "spoken")
+
+    await reporter.on_idle()
+    await _settle()
+    await reporter.on_idle()
+    await _settle()
+
+    [_, failed] = ledger.entries(CONV)
+    assert fakes.spoken == ["Đã thêm cà phê sữa."]
+    assert fakes.events == [event_text(failed)]
+    assert phrased == []
+    assert ledger.unreported_finished(CONV) == []
+
+
+# --- carry-over from the Task 8 review ---
+
+
+@pytest.mark.anyio
+async def test_a_fenced_phrased_report_is_cut_not_spoken():
+    responder = _FakeResponder("Đơn đã tạo.")
+    service = OpenJarvisLLMService(_RecordingBinding(), responder=responder)
+    outcome = {}
+    speak = service._speak_responder
+
+    async def fenced_speak(text, context, turn_id):
+        await speak(text, context, turn_id)
+        service._turn_state.interrupt()  # the customer cut in as it was spoken
+
+    service._speak_responder = fenced_speak
+
+    async def steps(worker):
+        del worker
+        outcome["result"] = await service.run_phrased_report("EVENT")
+
+    await _drive_texts(service, steps)
+
+    assert outcome["result"] == "cut"
+
+
+@pytest.mark.anyio
+async def test_a_new_run_during_phrasing_cuts_the_report_without_fencing_it():
+    responder = _FakeResponder("Đơn đã tạo.", delay=0.05)
+    binding = _BlockingBinding()
+    service = OpenJarvisLLMService(binding, responder=responder)
+    outcome = {}
+
+    async def steps(worker):
+        task = asyncio.create_task(service.run_phrased_report("EVENT"))
+        await asyncio.wait_for(responder.started.wait(), 2)
+        await worker.queue_frame(
+            LLMContextFrame(
+                LLMContext(messages=[{"role": "user", "content": "thêm hai cà phê"}])
+            )
+        )
+        await asyncio.wait_for(binding.blocking.wait(), 2)
+        outcome["result"] = await asyncio.wait_for(task, 2)
+        outcome["answering"] = service._answering
+        await worker.queue_frame(InterruptionFrame())
+
+    texts = await _drive_texts(service, steps)
+
+    assert outcome["result"] == "cut"
+    assert outcome["answering"] is True  # the customer's run still speaks
+    assert texts == []
+
+
+@pytest.mark.anyio
+async def test_no_report_starts_while_a_customer_turn_is_being_started():
+    responder = _FakeResponder("line")
+    service = OpenJarvisLLMService(_BlockingBinding(), responder=responder)
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+    outcome = {}
+
+    async def slow_stop():
+        entered.set()
+        await gate.wait()
+
+    service._stop_event_turn = slow_stop
+
+    async def steps(worker):
+        await worker.queue_frame(
+            LLMContextFrame(
+                LLMContext(messages=[{"role": "user", "content": "thêm hai cà phê"}])
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 2)
+        outcome["phrased"] = await service.run_phrased_report("EVENT")
+        outcome["event"] = await service.run_event_turn("EVENT")
+        gate.set()
+        await worker.queue_frame(InterruptionFrame())
+
+    await _drive_texts(service, steps)
+
+    assert outcome == {"phrased": "cut", "event": False}
     assert responder.events == []

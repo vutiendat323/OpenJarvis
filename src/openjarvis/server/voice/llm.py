@@ -365,6 +365,9 @@ class OpenJarvisLLMService(LLMService):
         self._speaker_tracker = speaker_tracker
         self._uncertain_allowed_tools = uncertain_allowed_tools
         self._bot_speaking = False
+        # A customer turn is between its frame and its run: stopping an event
+        # turn is awaited there, and nothing else may start meanwhile.
+        self._starting_run = False
         self._last_context: Any | None = None
         # Customer runs, owned by tasks that a barge-in never cancels: it only
         # fences their speech (spec 2026-10-17 parallel runs §7.1). Keyed by
@@ -381,8 +384,8 @@ class OpenJarvisLLMService(LLMService):
 
     @property
     def _answering(self) -> bool:
-        """True while some unfinished run still speaks to the customer."""
-        return any(
+        """True while some unfinished run still speaks, or one is being started."""
+        return self._starting_run or any(
             not task.done()
             and self._turn_state.is_active(self._run_turns.get(run_id, -1))
             for run_id, task in self._runs.items()
@@ -540,11 +543,17 @@ class OpenJarvisLLMService(LLMService):
                 preamble = None  # nothing is said to words that may not be theirs
                 prompt = f"{UNCERTAIN_SPEAKER_NOTE}\n\n{prompt}"
                 authority = uncertain_speaker_scope(self._uncertain_allowed_tools)
-        # Free the runtime an event turn holds before asking for it.
-        await self._stop_event_turn()
-        # Pipecat cancels this task on the next barge-in; the run is not
-        # awaited here, so it lives on in its own task.
-        self._start_run(latest, prompt, context, authority, preamble)
+        # Marked before the await: a report starting while the event turn
+        # unwinds would otherwise run over this customer turn.
+        self._starting_run = True
+        try:
+            # Free the runtime an event turn holds before asking for it.
+            await self._stop_event_turn()
+            # Pipecat cancels this task on the next barge-in; the run is not
+            # awaited here, so it lives on in its own task.
+            self._start_run(latest, prompt, context, authority, preamble)
+        finally:
+            self._starting_run = False
 
     def _start_run(
         self,
@@ -976,11 +985,16 @@ class OpenJarvisLLMService(LLMService):
         text = normalize_speech_text(text or "")
         if not text:
             return "failed"
+        if self._answering:
+            # A customer run began while the line was written: beginning a turn
+            # now would fence that run.
+            return "cut"
         turn_id = self._turn_state.begin_turn()
         await self.push_frame(LLMFullResponseStartFrame())
         await self._speak_responder(text, AgentContext(), turn_id)
         await self.push_frame(LLMFullResponseEndFrame())
-        return "spoken"
+        # A barge-in that fenced this turn while it was spoken: not reported.
+        return "spoken" if self._turn_state.is_active(turn_id) else "cut"
 
     def _cancel_event_turn(self) -> asyncio.Task[Any] | None:
         task = self._event_task

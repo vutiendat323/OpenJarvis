@@ -45,6 +45,41 @@ def report_text(entry: LedgerEntry) -> str:
     return " ".join(parts)
 
 
+def run_report_text(run: LedgerEntry, tools: list[LedgerEntry]) -> str:
+    """The event a fast model phrases for one finished background run.
+
+    The run's answer was written before the customer spoke again, so it goes
+    here as material to phrase, never as a sentence to read out.
+    """
+    parts = [
+        "A request the customer made earlier has finished in the background; "
+        "they may have said something else since.",
+        f"Request: {run.request or 'not recorded'}.",
+        f"Status: {run.status}.",
+    ]
+    if run.customer_message:
+        parts.append(
+            "The answer written before the customer spoke again: "
+            f"{run.customer_message}"
+        )
+    for tool in tools:
+        line = f"Tool: {tool.tool}. Status: {tool.status}."
+        detail = tool.error if tool.status != "succeeded" else ""
+        if tool.customer_message:
+            line += f" Verified confirmation: {tool.customer_message}"
+        if tool.event_context:
+            line += f" Facts: {tool.event_context}"
+        if detail:
+            line += f" Detail: {detail}"
+        parts.append(line)
+    parts.append(
+        "The conversation since may have changed what the customer wants: tell "
+        "them only what still matters now, briefly and in their language. This "
+        "is a notification, not a new request. Do not repeat any action."
+    )
+    return " ".join(parts)
+
+
 class BackgroundReporter:
     def __init__(
         self,
@@ -67,6 +102,9 @@ class BackgroundReporter:
         self._event_task: asyncio.Task[Any] | None = None
         self._reporting = False
         self._context = copy_context()
+        # The order outcomes finished in, for reporting runs oldest-finished
+        # first; the ledger lists them in the order they started.
+        self._finish_order: dict[str, int] = {}
 
     def start(self) -> None:
         """Subscribe on the event loop; outcomes arrive on worker threads."""
@@ -86,7 +124,7 @@ class BackgroundReporter:
             task.cancel()
 
     def _finished(self, entry: LedgerEntry) -> None:
-        del entry
+        self._finish_order.setdefault(entry.key, len(self._finish_order))
         loop = self._loop
         if loop is None or loop.is_closed():
             return
@@ -106,8 +144,14 @@ class BackgroundReporter:
             return
         self._reporting = True
         try:
-            while pending := self._ledger.unreported_finished(self._conversation_id):
-                entry = pending[0]
+            while unit := self._next_unit():
+                run_id, entry, tools = unit
+                if run_id is not None:
+                    # One report for the whole run; not awaited, like below.
+                    self._event_task = asyncio.ensure_future(
+                        self._report_run(run_id, entry, tools)
+                    )
+                    return
                 if entry.status == "succeeded" and entry.customer_message:
                     if entry.interrupted:
                         # Written before the customer cut in: never read out
@@ -129,6 +173,44 @@ class BackgroundReporter:
                 return
         finally:
             self._reporting = False
+
+    def _next_unit(
+        self,
+    ) -> tuple[str | None, LedgerEntry, list[LedgerEntry]] | None:
+        """The next thing to report: a whole finished run, or one lone entry.
+
+        A run's tool entries are reported with its run entry, and not at all
+        while the run still works. An entry whose run is not recorded (or was
+        already reported) keeps the per-entry path.
+        """
+        units: list[tuple[str | None, LedgerEntry, list[LedgerEntry]]] = []
+        for entry in self._ledger.unreported_finished(self._conversation_id):
+            run, tools = self._ledger.run_group(self._conversation_id, entry.run_id)
+            if run is None or run.reported:
+                units.append((None, entry, []))
+            elif entry.kind == "run" and run.status != "running":
+                units.append((entry.run_id, run, tools))
+        if not units:
+            return None
+        # Stable: outcomes whose finish was not observed keep ledger order.
+        return min(
+            units,
+            key=lambda unit: self._finish_order.get(unit[1].key, float("inf")),
+        )
+
+    async def _report_run(
+        self, run_id: str, run: LedgerEntry, tools: list[LedgerEntry]
+    ) -> None:
+        text = run_report_text(run, tools)
+        outcome = "failed"
+        if self._run_phrased_report is not None:
+            outcome = await self._run_phrased_report(text)
+        if outcome == "spoken":
+            self._ledger.mark_run_reported(self._conversation_id, run_id, via="phrased")
+        elif outcome == "failed" and await self._run_event_turn(text):
+            self._ledger.mark_run_reported(
+                self._conversation_id, run_id, via="event_turn"
+            )
 
     async def _report_phrased(self, entry: LedgerEntry) -> None:
         outcome = "failed"
