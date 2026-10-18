@@ -83,6 +83,7 @@ def test_kiosk_mcp_preset_limits_agent_tool_surface() -> None:
         "display_bill",
         "display_payment_qr",
         "display_clear",
+        "await_earlier_requests",
     }
     assert hidden == {
         "http_request",
@@ -104,6 +105,7 @@ def test_kiosk_mcp_preset_limits_agent_tool_surface() -> None:
         "display_menu",
         "display_cart",
         "display_clear",
+        "await_earlier_requests",
     }
 
 

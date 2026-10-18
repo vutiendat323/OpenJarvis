@@ -350,8 +350,10 @@ already handling them, so never perform them again. The latest request is in
 
 - A request that undoes or changes what an earlier one adds (for example “không
   lấy sinh tố nữa”) first calls `await_earlier_requests`, then acts on the
-  real cart. If it returns `earlier_requests_still_running`, say the earlier
-  request is still running and change nothing. If it returns
+  real cart. If it returns `earlier_requests_finished`, read
+  `background_actions` for what the earlier requests did, then act on that real
+  result. If it returns `earlier_requests_still_running`, say the earlier
+  request is still running and ask before changing anything. If it returns
   `no_earlier_requests`, act on the current cart.
 - When the quantity or item is unclear and the cart or earlier requests hold
   several candidates, ask which item before changing anything.

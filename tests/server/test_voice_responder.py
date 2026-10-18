@@ -1035,8 +1035,9 @@ def test_responder_prompt_never_asks_what_they_want_while_work_is_in_progress():
     lowered = _shipped("voice-responder.md")
 
     assert "requests in progress" in lowered
-    assert "i hear you" in lowered
+    assert "say that you can hear them" in lowered
     assert "name what you are working on" in lowered
+    assert "i hear you" not in lowered
     assert 'never "bạn cần gì?"' in lowered
 
 
@@ -1050,8 +1051,6 @@ def test_reporter_prompt_does_not_repeat_an_answered_question():
 
 
 def test_preset_runs_two_agents_and_enables_await_earlier_requests():
-    import tomllib
-
     preset = tomllib.loads(
         Path("configs/openjarvis/examples/ordering-kiosk-mcp.toml").read_text("utf-8")
     )
