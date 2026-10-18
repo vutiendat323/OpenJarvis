@@ -389,6 +389,16 @@ class TestBackwardCompatMigration:
         assert cfg.tools.storage.default_backend == "faiss"
 
 
+class TestAgentConcurrency:
+    def test_agent_max_concurrent_runs_defaults_to_one_and_loads_from_toml(
+        self, tmp_path: Path
+    ) -> None:
+        assert AgentConfig().max_concurrent_runs == 1
+        toml_file = tmp_path / "config.toml"
+        toml_file.write_text("[agent]\nmax_concurrent_runs = 2\n")
+        assert load_config(toml_file).agent.max_concurrent_runs == 2
+
+
 class TestGenerateDefaultTomlNew:
     def test_nested_engine_sections(self) -> None:
         hw = HardwareInfo()

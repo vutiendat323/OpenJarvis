@@ -110,8 +110,14 @@ class AgentToolGate:
 class AgentWorkerLease:
     """Retain caller ownership until every task-local sync worker settles."""
 
-    def __init__(self, tool_gate: AgentToolGate | None = None) -> None:
+    def __init__(
+        self,
+        tool_gate: AgentToolGate | None = None,
+        *,
+        conversation_id: str = "",
+    ) -> None:
         self.tool_gate = tool_gate or AgentToolGate()
+        self.conversation_id = conversation_id
         self._pending: set[asyncio.Task[Any]] = set()
         self._settled_callbacks: list[Callable[[], None]] = []
         # Registration happens on the ``to_thread`` worker, signaling on the

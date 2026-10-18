@@ -393,6 +393,9 @@ def create_app(
             data_source_configuration=data_sources,
             trace_store=app.state.trace_store,
             bus=bus,
+            max_concurrent_runs=int(
+                getattr(getattr(config, "agent", None), "max_concurrent_runs", 1) or 1
+            ),
         )
         if agent is not None
         else None

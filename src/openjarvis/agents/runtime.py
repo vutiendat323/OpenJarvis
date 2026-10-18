@@ -20,6 +20,7 @@ from openjarvis.agents._stubs import (
     AgentWorkerLease,
     BaseAgent,
 )
+from openjarvis.core.conversation import current_conversation_id
 from openjarvis.core.types import ToolResult
 from openjarvis.tools.mcp_adapter import MCPToolAdapter
 from openjarvis.traces.collector import TraceCollector
@@ -111,10 +112,11 @@ class NativeAgentRuntime:
         data_source_configuration: DataSourceConfigurationSnapshot | None = None,
         trace_store: Any = None,
         bus: Any = None,
+        max_concurrent_runs: int = 1,
     ) -> None:
         self._agent = agent
         self._trace_collector = TraceCollector(agent, store=trace_store, bus=bus)
-        self._lock = asyncio.Lock()
+        self._slots = asyncio.Semaphore(max(1, int(max_concurrent_runs)))
         self._background_event_lock = threading.Lock()
         self._tool_gate = AgentToolGate()
         self._retained_leases: set[AgentWorkerLease] = set()
@@ -192,7 +194,9 @@ class NativeAgentRuntime:
         *,
         persistence_key: str | None = None,
     ) -> AsyncIterator[AgentStreamEvent]:
-        worker_lease = AgentWorkerLease(self._tool_gate)
+        worker_lease = AgentWorkerLease(
+            self._tool_gate, conversation_id=current_conversation_id()
+        )
         staging = AgentPersistenceStaging()
         worker_token = _RUN_WORKER_LEASE.set(worker_lease)
         staging_token = _RUN_PERSISTENCE.set(staging)
@@ -201,7 +205,7 @@ class NativeAgentRuntime:
 
         async def admit():
             nonlocal acquired
-            await self._lock.acquire()
+            await self._slots.acquire()
             acquired = True
             # Uncooperative sync requests remain alive, so limit abandonment
             # rather than allowing repeated VAD to exhaust the thread pool.
@@ -212,7 +216,7 @@ class NativeAgentRuntime:
             nonlocal acquired
             if acquired:
                 acquired = False
-                self._lock.release()
+                self._slots.release()
 
         try:
             stream = self._trace_collector.run_stream(

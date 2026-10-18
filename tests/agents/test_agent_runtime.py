@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from openjarvis.agents._stubs import (
+    _RUN_WORKER_LEASE,
     AgentContext,
     AgentPersistenceStaging,
     AgentResult,
@@ -249,6 +250,103 @@ async def test_runtime_serializes_two_bindings_for_one_agent() -> None:
     )
 
     assert maximum == 1
+
+
+class _GatedAgent(BaseAgent):
+    """Blocks every run whose input is in ``blocked`` until ``release`` is set."""
+
+    agent_id = "gated"
+
+    def __init__(self, engine, model, **kwargs) -> None:
+        super().__init__(engine, model, **kwargs)
+        self.blocked: set[str] = set()
+        self.release = threading.Event()
+
+    def run(self, input, context=None, **kwargs):
+        if input in self.blocked:
+            assert self.release.wait(timeout=2)
+        return AgentResult(content=input)
+
+
+async def _first_event(binding, text: str):
+    events = [event async for event in binding.run_stream(text, AgentContext())]
+    return events[0] if events else None
+
+
+@pytest.mark.asyncio
+async def test_two_slots_let_a_second_stream_start_while_the_first_runs() -> None:
+    agent = _GatedAgent(RecordingEngine(), "default")
+    agent.blocked = {"first"}
+    binding = NativeAgentRuntime(agent, max_concurrent_runs=2).bind(model="m")
+
+    first = asyncio.create_task(_first_event(binding, "first"))
+    await asyncio.sleep(0.05)
+    try:
+        second = await asyncio.wait_for(_first_event(binding, "second"), timeout=1)
+        assert second is not None
+        assert not first.done()
+    finally:
+        agent.release.set()
+    assert await first is not None
+
+
+@pytest.mark.asyncio
+async def test_a_third_stream_waits_for_a_slot() -> None:
+    agent = _GatedAgent(RecordingEngine(), "default")
+    agent.blocked = {"first", "second"}
+    binding = NativeAgentRuntime(agent, max_concurrent_runs=2).bind(model="m")
+
+    first = asyncio.create_task(_first_event(binding, "first"))
+    second = asyncio.create_task(_first_event(binding, "second"))
+    await asyncio.sleep(0.05)
+    third = asyncio.create_task(_first_event(binding, "third"))
+    try:
+        await asyncio.sleep(0.2)
+        assert not third.done()
+    finally:
+        agent.release.set()
+    assert await asyncio.wait_for(third, timeout=2) is not None
+    assert await first is not None
+    assert await second is not None
+
+
+@pytest.mark.asyncio
+async def test_default_still_runs_one_stream_at_a_time() -> None:
+    agent = _GatedAgent(RecordingEngine(), "default")
+    agent.blocked = {"first"}
+    binding = NativeAgentRuntime(agent).bind(model="m")
+
+    first = asyncio.create_task(_first_event(binding, "first"))
+    await asyncio.sleep(0.05)
+    second = asyncio.create_task(_first_event(binding, "second"))
+    try:
+        await asyncio.sleep(0.2)
+        assert not second.done()
+    finally:
+        agent.release.set()
+    assert await asyncio.wait_for(second, timeout=2) is not None
+    assert await first is not None
+
+
+@pytest.mark.asyncio
+async def test_the_lease_knows_its_conversation() -> None:
+    seen: list[str] = []
+
+    class LeaseReadingAgent(BaseAgent):
+        agent_id = "lease-reading"
+
+        def run(self, input, context=None, **kwargs):
+            return AgentResult(content=input)
+
+        async def run_stream(self, input, context=None, **kwargs):
+            seen.append(_RUN_WORKER_LEASE.get().conversation_id)
+            yield AgentRunCompleted(AgentResult(content=input))
+
+    runtime = NativeAgentRuntime(LeaseReadingAgent(RecordingEngine(), "default"))
+    binding = runtime.bind(model="m")
+    with conversation_scope("c"):
+        await _first_event(binding, "hello")
+    assert seen == ["c"]
 
 
 @pytest.mark.asyncio

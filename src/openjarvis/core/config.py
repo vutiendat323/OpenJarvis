@@ -996,6 +996,7 @@ class AgentConfig:
 
     default_agent: str = "simple"
     max_turns: int = 10
+    max_concurrent_runs: int = 1  # Agent runs admitted at once per runtime
     tools: str = ""  # comma-separated tool names
     parallel_tools: bool = True  # False runs a turn's tool calls one at a time
     intent_normalization: bool = False  # goals supplied by tool contracts
