@@ -29,6 +29,7 @@ from openjarvis.core.conversation import (
     current_turn_nonce,
 )
 from openjarvis.core.events import EventBus
+from openjarvis.core.runs import RUN_TRACKER, StableOutcome, voice_run_scope
 from openjarvis.core.types import ToolCall, ToolResult
 from openjarvis.skills.executor import SkillExecutor
 from openjarvis.skills.loader import load_skill
@@ -706,3 +707,154 @@ def test_a_queued_committed_write_keeps_waiting_after_cancellation():
         result = queued.result(2)
         held.result(2)
     assert result.success and second.calls == 1
+
+
+# --- same-session queue, freeze, write notes (spec 2026-10-18 §5) ----------
+
+
+def _in_run(lease, conversation, run, fn):
+    def scoped():
+        with conversation_scope(conversation), voice_run_scope(run):
+            return fn()
+
+    return _as(lease, scoped)
+
+
+def test_a_write_of_the_same_session_waits_past_the_five_second_bound(monkeypatch):
+    monkeypatch.setattr(tool_stubs, "WRITE_WAIT_SECONDS", 0.05)
+    gate = AgentToolGate()
+    old = AgentWorkerLease(gate, conversation_id="s")
+    new = AgentWorkerLease(gate, conversation_id="s")
+    first, second = _Tool("first", sleep=0.3), _Tool("second", timeout=2.0)
+    executor = ToolExecutor([first, second])
+
+    with ThreadPoolExecutor(2) as pool:
+        held = pool.submit(
+            _as, old, lambda: executor.execute(ToolCall("1", "first", "{}"))
+        )
+        _until(lambda: first.calls == 1)
+        result = pool.submit(
+            _as, new, lambda: executor.execute(ToolCall("2", "second", "{}"))
+        ).result(3)
+        held.result(2)
+
+    assert result.success and second.calls == 1
+    assert not result.metadata.get("pending_operation")
+
+
+def test_a_write_behind_another_session_still_gives_up_after_the_bound(monkeypatch):
+    monkeypatch.setattr(tool_stubs, "WRITE_WAIT_SECONDS", 0.05)
+    gate = AgentToolGate()
+    old = AgentWorkerLease(gate, conversation_id="s")
+    new = AgentWorkerLease(gate, conversation_id="t")
+    first, second = _Tool("first", sleep=0.3), _Tool("second", timeout=2.0)
+    executor = ToolExecutor([first, second])
+
+    with ThreadPoolExecutor(2) as pool:
+        held = pool.submit(
+            _as, old, lambda: executor.execute(ToolCall("1", "first", "{}"))
+        )
+        _until(lambda: first.calls == 1)
+        result = pool.submit(
+            _as, new, lambda: executor.execute(ToolCall("2", "second", "{}"))
+        ).result(3)
+        held.result(2)
+
+    assert result.metadata.get("pending_operation") is True
+    assert second.calls == 0
+
+
+def test_a_frozen_conversation_holds_other_runs_writes():
+    conversation = "frozen-conv"
+    gate = AgentToolGate()
+    lease_a = AgentWorkerLease(gate, conversation_id=conversation)
+    lease_b = AgentWorkerLease(gate, conversation_id=conversation)
+    tool = _Tool("write", timeout=3.0)
+    executor = ToolExecutor([tool])
+    assert RUN_TRACKER.freeze(conversation, "A")
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            blocked = pool.submit(
+                _in_run,
+                lease_b,
+                conversation,
+                "B",
+                lambda: executor.execute(ToolCall("1", "write", "{}")),
+            )
+            time.sleep(0.15)
+            assert tool.calls == 0 and not blocked.done()
+
+            own = _in_run(
+                lease_a,
+                conversation,
+                "A",
+                lambda: executor.execute(ToolCall("2", "write", "{}")),
+            )
+            assert own.success and tool.calls == 1
+
+            RUN_TRACKER.unfreeze(conversation, "A")
+            result = blocked.result(2)
+        assert result.success and tool.calls == 2
+    finally:
+        RUN_TRACKER.close(conversation)
+
+
+def test_a_write_behind_a_freeze_that_outlasts_its_timeout_is_pending():
+    conversation = "frozen-timeout-conv"
+    lease = AgentWorkerLease(AgentToolGate(), conversation_id=conversation)
+    tool = _Tool("write", timeout=0.1)
+    executor = ToolExecutor([tool])
+    assert RUN_TRACKER.freeze(conversation, "A")
+    try:
+        result = _in_run(
+            lease,
+            conversation,
+            "B",
+            lambda: executor.execute(ToolCall("1", "write", "{}")),
+        )
+    finally:
+        RUN_TRACKER.close(conversation)
+    assert result.metadata == {"pending_operation": True, "dispatched": False}
+    assert tool.calls == 0
+
+
+def test_a_write_is_noted_for_waiting_checkouts():
+    conversation = "noted-conv"
+    lease = AgentWorkerLease(AgentToolGate(), conversation_id=conversation)
+    tool = _Tool("write", timeout=2.0)
+    executor = ToolExecutor([tool])
+    run_a = RUN_TRACKER.begin(conversation, "checkout")
+    RUN_TRACKER.begin(conversation, "still running")  # keeps A waiting
+    # "B-unseen" is not in A's snapshot, so its write is a change A must see.
+    try:
+        with ThreadPoolExecutor(1) as pool:
+            waiting = pool.submit(RUN_TRACKER.wait_stable, conversation, run_a, 3.0)
+            time.sleep(0.1)
+            result = _in_run(
+                lease,
+                conversation,
+                "B-unseen",
+                lambda: executor.execute(ToolCall("1", "write", "{}")),
+            )
+            assert result.success
+            assert waiting.result(3) is StableOutcome.CHANGED
+    finally:
+        RUN_TRACKER.close(conversation)
+
+
+def test_a_read_is_neither_frozen_nor_noted():
+    conversation = "read-conv"
+    lease = AgentWorkerLease(AgentToolGate(), conversation_id=conversation)
+    tool = _Tool("read", read_only=True)
+    executor = ToolExecutor([tool])
+    assert RUN_TRACKER.freeze(conversation, "A")
+    try:
+        result = _in_run(
+            lease,
+            conversation,
+            "B",
+            lambda: executor.execute(ToolCall("1", "read", "{}")),
+        )
+    finally:
+        RUN_TRACKER.close(conversation)
+    assert result.success and tool.calls == 1

@@ -65,6 +65,7 @@ class AgentToolGate:
         *,
         wait_seconds: float = 0.0,
         cancelled: Callable[[], bool] | None = None,
+        same_conversation_wait_seconds: float | None = None,
     ):
         with self._cond:
             acquired = self._owner is owner or (
@@ -73,7 +74,19 @@ class AgentToolGate:
             if not acquired and wait_seconds > 0:
                 ticket = object()
                 self._waiting.append(ticket)
-                deadline = time.monotonic() + wait_seconds
+                # A write queued behind the same session's own run waits for
+                # its tool timeout, not the short bound that guards writes
+                # behind another session (spec 2026-10-18 §5).
+                bound = wait_seconds
+                holder = getattr(self._owner, "conversation_id", "")
+                mine = getattr(owner, "conversation_id", "")
+                if (
+                    same_conversation_wait_seconds is not None
+                    and holder
+                    and (holder == mine)
+                ):
+                    bound = same_conversation_wait_seconds
+                deadline = time.monotonic() + bound
                 try:
                     while True:
                         if cancelled is not None and cancelled():

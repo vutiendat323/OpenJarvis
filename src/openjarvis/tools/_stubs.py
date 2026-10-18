@@ -19,7 +19,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
+from openjarvis.core.conversation import current_conversation_id
 from openjarvis.core.events import EventBus, EventType
+from openjarvis.core.runs import RUN_TRACKER, current_voice_run
 from openjarvis.core.types import ToolCall, ToolResult
 from openjarvis.tools import evidence as _evidence
 
@@ -153,12 +155,30 @@ class ToolExecutor:
         # Reads cannot disturb another run's write, so they never queue.
         read_only = tool is not None and tool.spec.metadata.get("read_only") is True
         unregister = None
+        cid = current_conversation_id()
+        run = current_voice_run()
+        write = lease is not None and not read_only
+        tracked = bool(cid and run) and write
+        timeout = 0.0
+        if write:
+            timeout = (tool.spec.timeout_seconds if tool else 0.0) or (
+                self._default_timeout
+            )
+        if tracked:
+            # Another run froze the cart for its checkout: a write of this
+            # run waits for the thaw (spec 2026-10-18 §5).
+            if not RUN_TRACKER.wait_unfrozen(cid, run, timeout):
+                return self._pending_operation(tool_call)
         if lease is None or read_only:
             scope = nullcontext(True)
         elif in_tool or dispatch_is_committed():
             # A dispatched tool's own step finishes even after barge-in (D2),
             # and so does a call the model completed (spec 2026-10-17 §5.4).
-            scope = lease.tool_gate.enter(lease, wait_seconds=WRITE_WAIT_SECONDS)
+            scope = lease.tool_gate.enter(
+                lease,
+                wait_seconds=WRITE_WAIT_SECONDS,
+                same_conversation_wait_seconds=timeout,
+            )
         else:
             # A queued write of a run the customer cut leaves the queue at once.
             unregister = lease.register_cancellation(lease.tool_gate.wake)
@@ -166,33 +186,41 @@ class ToolExecutor:
                 lease,
                 wait_seconds=WRITE_WAIT_SECONDS,
                 cancelled=lambda: lease.is_cancelled,
+                same_conversation_wait_seconds=timeout,
             )
         try:
             with scope as acquired:
                 if unregister is not None:
                     unregister()
                 if not acquired:
-                    return ToolResult(
-                        tool_name=tool_call.name,
-                        success=False,
-                        content=(
-                            "A previous turn's tool operation is still running. "
-                            "No new tool was dispatched. Its outcome is pending, "
-                            "not failed or cancelled. Explain this to the user; "
-                            "do not retry or claim completion."
-                        ),
-                        metadata={"pending_operation": True, "dispatched": False},
-                    )
+                    return self._pending_operation(tool_call)
                 if not in_tool:
                     check_agent_cancelled()
                     if lease is not None and tool is not None and not read_only:
                         unsettled = self._earlier_action_unsettled(tool_call)
                         if unsettled is not None:
                             return unsettled
+                if tracked:
+                    # Only a write that is about to run counts as a change.
+                    RUN_TRACKER.note_write(cid, run)
                 return self._execute(tool_call)
         finally:
             if unregister is not None:
                 unregister()
+
+    @staticmethod
+    def _pending_operation(tool_call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_name=tool_call.name,
+            success=False,
+            content=(
+                "A previous turn's tool operation is still running. "
+                "No new tool was dispatched. Its outcome is pending, "
+                "not failed or cancelled. Explain this to the user; "
+                "do not retry or claim completion."
+            ),
+            metadata={"pending_operation": True, "dispatched": False},
+        )
 
     @staticmethod
     def _earlier_action_unsettled(tool_call: ToolCall) -> ToolResult | None:
@@ -203,10 +231,7 @@ class ToolExecutor:
         was told and answered.
         """
         from openjarvis.agents.action_ledger import ACTION_LEDGER
-        from openjarvis.core.conversation import (
-            current_conversation_id,
-            current_turn_nonce,
-        )
+        from openjarvis.core.conversation import current_turn_nonce
 
         conversation_id = current_conversation_id()
         if not conversation_id or not ACTION_LEDGER.unseen_failures(
