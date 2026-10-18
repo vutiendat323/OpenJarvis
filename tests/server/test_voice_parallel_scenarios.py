@@ -731,6 +731,136 @@ async def test_pay_while_smoothies_are_added_orders_them(conversation, monkeypat
         rig.cleanup()
 
 
+CAKE = "Thêm cho mình một bánh mì."
+CHANGED_REPLY = "Giỏ vừa thay đổi, bạn muốn thanh toán luôn không?"
+
+
+def _stale_checkout_script(seen, *, change):
+    """Smoothies (A), then pay (B) with the cart A has not changed yet, then
+    ``change`` (C) while B waits for a stable cart."""
+
+    async def script(messages):
+        ask = _asked(messages)
+        results = _tool_results(messages)
+        if ask == SMOOTHIES:
+            if not results:
+                return _call(
+                    "display_cart", {"action": "add", "item": _item("sinh-to")}
+                )
+            return _say("Đã thêm sinh tố.")
+        if ask == PAY:
+            if not results:
+                context = _runtime_context(messages)
+                return _call(
+                    "skill_checkout",
+                    {
+                        "turn_nonce": context["turn_nonce"],
+                        "cart_revision": context["draft_cart"]["revision"],
+                    },
+                )
+            seen["checkout_result"] = results[0]
+            return _say(CHANGED_REPLY)
+        return await change(messages, ask, results)
+
+    return script
+
+
+async def _drive_stale_checkout(rig, cart, sent, change_words, seen):
+    async def steps(worker):
+        await worker.queue_frame(_ctx(_user(SMOOTHIES)))
+        await _wait_set(cart.holds["sinh-to"].started)
+        await worker.queue_frame(_ctx(_user(SMOOTHIES), _bot(), _user(PAY)))
+        await _eventually(lambda: rig.engine.asked(PAY) >= 1)
+        await asyncio.sleep(0.3)  # B now waits for a stable cart
+        await worker.queue_frame(
+            _ctx(_user(SMOOTHIES), _bot(), _user(PAY), _bot(), _user(change_words))
+        )
+        # Both slots are held (A's held write, B's waiting checkout): C waits.
+        await asyncio.sleep(0.3)
+        seen["change_waited_for_a_slot"] = rig.engine.asked(change_words) == 0
+        seen["posted_early"] = [s for s in sent if s[0] == "POST"]
+        cart.holds["sinh-to"].release.set()
+        await _settled(rig)
+
+    await rig.drive(steps)
+
+
+@pytest.mark.anyio
+async def test_an_add_asked_while_checkout_waits_drops_the_stale_checkout(
+    conversation, monkeypatch
+):
+    """C1 / ruling 16: A ends before C can start; B must not order without C."""
+    cart = _Cart([])
+    cart.hold_adds_of("sinh-to")
+    skill, sent = _checkout(monkeypatch, cart)
+    cart.seed(conversation)
+    seen = {}
+
+    async def add_cake(messages, ask, results):
+        assert ask == CAKE, ask
+        if not results:
+            return _call("display_cart", {"action": "add", "item": _item("cake")})
+        return _say("Đã thêm bánh mì.")
+
+    script = _stale_checkout_script(seen, change=add_cake)
+    rig = _Rig(conversation, script, [cart, skill])
+    cart.log = rig.log
+    try:
+        await _drive_stale_checkout(rig, cart, sent, CAKE, seen)
+        assert seen["change_waited_for_a_slot"] is True
+        assert seen["posted_early"] == []
+        # No order with the stale cart, and none at all: the customer is asked.
+        assert [s for s in sent if s[0] == "POST"] == []
+        assert "cart_changed_during_checkout" in seen["checkout_result"]
+        assert cart.state(conversation)[0] == ["coffee", "sinh-to", "cake"]
+        assert rig.engine.asked(CAKE) == 2
+    finally:
+        rig.cleanup()
+
+
+@pytest.mark.anyio
+async def test_no_smoothies_asked_while_checkout_waits_drops_the_stale_checkout(
+    conversation, monkeypatch
+):
+    """C1 / I4: the correction does not wait for the waiting checkout."""
+    cart = _Cart([])
+    cart.hold_adds_of("sinh-to")
+    skill, sent = _checkout(monkeypatch, cart)
+    cart.seed(conversation)
+    seen = {}
+
+    async def remove_smoothies(messages, ask, results):
+        assert ask == NO_SMOOTHIES, ask
+        if not results:
+            seen["await_started"] = time.monotonic()
+            return _call("await_earlier_requests", {})
+        if len(results) == 1:
+            seen["await_took"] = time.monotonic() - seen["await_started"]
+            assert "earlier_requests_finished" in results[0], results[0]
+            lines = _runtime_context(messages)["draft_cart"]["lines"]
+            ids = [line["line_id"] for line in lines if line["variant_id"] == "sinh-to"]
+            assert ids, "the smoothies were not in the cart after the wait"
+            return _call("display_cart", {"action": "remove", "line_ids": ids})
+        return _say("Đã bỏ sinh tố.")
+
+    rig = _Rig(
+        conversation,
+        _stale_checkout_script(seen, change=remove_smoothies),
+        [cart, skill, AwaitEarlierRequestsTool()],
+    )
+    cart.log = rig.log
+    try:
+        await _drive_stale_checkout(rig, cart, sent, NO_SMOOTHIES, seen)
+        assert seen["change_waited_for_a_slot"] is True
+        assert seen["await_took"] < 2.0  # not the 15 s mutual wait
+        assert [s for s in sent if s[0] == "POST"] == []
+        assert "cart_changed_during_checkout" in seen["checkout_result"]
+        assert cart.state(conversation)[0] == ["coffee"]
+        assert [w[0] for w in cart.writes] == ["add", "remove"]
+    finally:
+        rig.cleanup()
+
+
 @pytest.mark.anyio
 async def test_alo_is_answered_before_the_first_run_finishes(conversation):
     log: list[str] = []

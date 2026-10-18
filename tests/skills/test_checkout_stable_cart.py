@@ -242,6 +242,62 @@ def test_a_new_runs_cart_write_drops_the_waiting_checkout(monkeypatch, conversat
         RUN_TRACKER.end(conversation, run)
 
 
+def test_a_change_still_thinking_when_the_snapshot_ends_drops_the_checkout(
+    monkeypatch, conversation
+):
+    """C1: request C began during the wait and writes only after A has ended."""
+    fx = _Fixture(monkeypatch, conversation)
+    revision = fx.seed()
+    run_a = RUN_TRACKER.begin(conversation, "add tea")
+    run_b = RUN_TRACKER.begin(conversation, "pay")
+    lease_b, lease_c = fx.lease(), fx.lease()
+
+    with ThreadPoolExecutor(2) as pool:
+        waiting = pool.submit(fx.checkout, lease_b, run_b, revision)
+        time.sleep(0.15)
+        run_c = RUN_TRACKER.begin(conversation, "add cake")  # model still thinking
+        time.sleep(0.05)
+        RUN_TRACKER.end(conversation, run_a)  # the snapshot is over
+        time.sleep(0.2)
+        assert not waiting.done(), "the checkout went ahead without C's change"
+        late = fx.add_as(lease_c, run_c, "cake")
+        result = waiting.result(5)
+    RUN_TRACKER.end(conversation, run_c)
+
+    assert late.success, late.content
+    assert not result.success
+    assert result.metadata["cart_changed"] is True
+    assert result.metadata["dispatched"] is False
+    assert fx.posts() == []
+    with conversation_scope(conversation):
+        lines = fx.cart.current_snapshot()["lines"]
+    assert [line["variant_id"] for line in lines] == ["coffee", "cake"]
+
+
+def test_a_question_asked_during_the_wait_only_delays_the_checkout(
+    monkeypatch, conversation
+):
+    """Ruling 16 cost: a late run that writes nothing delays, never drops."""
+    fx = _Fixture(monkeypatch, conversation)
+    revision = fx.seed()
+    run_a = RUN_TRACKER.begin(conversation, "add tea")
+    run_b = RUN_TRACKER.begin(conversation, "pay")
+    lease_b = fx.lease()
+
+    with ThreadPoolExecutor(2) as pool:
+        waiting = pool.submit(fx.checkout, lease_b, run_b, revision)
+        time.sleep(0.1)
+        run_q = RUN_TRACKER.begin(conversation, "how long does it take?")
+        RUN_TRACKER.end(conversation, run_a)
+        time.sleep(0.2)
+        assert not waiting.done()
+        RUN_TRACKER.end(conversation, run_q)
+        result = waiting.result(5)
+
+    assert result.success, result.content
+    assert fx.order_posts() == ["total=35000"]
+
+
 def test_a_cart_write_cannot_slip_in_between_freeze_and_dispatch(
     monkeypatch, conversation
 ):

@@ -279,9 +279,14 @@ The kiosk cannot cancel an order it has created; an unpaid order expires by
 itself. When the customer asks to cancel or stop after an order was created,
 say that the order exists and expires if it is not paid; never say it was
 cancelled or stopped, and never say that no order exists. A checkout whose
-`background_actions` entry is `running` cannot be stopped: say that it is
-finishing and that an order it creates expires if it is not paid, without
-guessing whether the order exists yet.
+`background_actions` entry is `running` may still be waiting for the
+customer's other requests before it orders anything. A cart change the
+customer asks for meanwhile (add, remove, change, “không lấy … nữa”) is still
+carried out: it drops a checkout that is still waiting, which then ends with
+`cart_changed_during_checkout` and creates no order. Only a checkout that has
+started ordering cannot be stopped: when the customer asks to cancel or stop a
+`running` checkout, say that it is finishing and that an order it creates
+expires if it is not paid, without guessing whether the order exists yet.
 
 An explicit request for a new identical order authorizes a new purchase, even
 when an earlier order is still pending. Use the referenced order's verified

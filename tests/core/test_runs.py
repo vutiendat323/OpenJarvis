@@ -82,9 +82,70 @@ def test_a_new_run_that_only_reads_does_not_change_a_waiting_checkout():
     t = RunTracker()
     a = t.begin(C, "a")
     b = t.begin(C, "b")
-    _later(0.05, t.begin, C, "reader")
+
+    def read_then_end():
+        reader = t.begin(C, "reader")
+        time.sleep(0.1)
+        t.end(C, reader)
+
+    _later(0.05, read_then_end)
     _later(0.1, t.end, C, a)
     assert t.wait_stable(C, b, 1.0) is StableOutcome.STABLE
+
+
+def test_wait_stable_also_waits_for_a_run_begun_during_the_wait():
+    """Ruling 16: a request still thinking when the snapshot ends holds the wait."""
+    t = RunTracker()
+    a = t.begin(C, "a")
+    b = t.begin(C, "b")
+    late = {}
+
+    def begin_late():
+        late["c"] = t.begin(C, "c")
+
+    _later(0.05, begin_late)
+    _later(0.1, t.end, C, a)  # the snapshot is over; "c" is still thinking
+    started = time.monotonic()
+    assert t.wait_stable(C, b, 0.4) is StableOutcome.TIMEOUT
+    assert time.monotonic() - started >= 0.39
+    t.end(C, late["c"])
+
+
+def test_a_late_run_that_ends_without_writing_lets_the_wait_end_stable():
+    t = RunTracker()
+    a = t.begin(C, "a")
+    b = t.begin(C, "b")
+    late = {}
+
+    def begin_late():
+        late["c"] = t.begin(C, "c")
+
+    _later(0.05, begin_late)
+    _later(0.1, t.end, C, a)
+    _later(0.25, lambda: t.end(C, late["c"]))
+    started = time.monotonic()
+    assert t.wait_stable(C, b, 2.0) is StableOutcome.STABLE
+    assert time.monotonic() - started >= 0.24
+
+
+def test_a_late_run_that_writes_after_the_snapshot_ended_is_changed():
+    """The C1 shape: A ends first, then the late request C writes."""
+    t = RunTracker()
+    a = t.begin(C, "a")
+    b = t.begin(C, "b")
+    late = {}
+
+    def begin_late():
+        late["c"] = t.begin(C, "c")
+
+    def write_late():
+        t.note_write(C, late["c"])
+
+    _later(0.05, begin_late)
+    _later(0.1, t.end, C, a)
+    _later(0.2, write_late)
+    assert t.wait_stable(C, b, 2.0) is StableOutcome.CHANGED
+    t.end(C, late["c"])
 
 
 def test_two_waiting_checkouts_ignore_each_other():
@@ -107,14 +168,105 @@ def test_two_waiting_checkouts_ignore_each_other():
     assert out == {"a": StableOutcome.STABLE, "b": StableOutcome.STABLE}
 
 
-def test_wait_others_waits_only_for_runs_in_flight_at_the_call():
+def test_wait_others_waits_only_for_runs_begun_before_the_caller():
     t = RunTracker()
     a = t.begin(C, "a")
     b = t.begin(C, "b")
     _later(0.05, t.begin, C, "late")
     _later(0.1, t.end, C, a)
+    started = time.monotonic()
     assert t.wait_others(C, b, 1.0) is True
-    assert t.wait_others(C, b, 0.1) is False  # "late" never ends
+    assert time.monotonic() - started >= 0.09
+    # "late" never ends, but it began after the caller: not waited for.
+    assert t.wait_others(C, b, 0.1) is True
+
+
+def test_two_corrections_in_a_row_do_not_wait_for_each_other():
+    """I4: the later correction waits for the earlier one, never the reverse."""
+    t = RunTracker()
+    first = t.begin(C, "remove the smoothies")
+    second = t.begin(C, "and the coffee too")
+    out = {}
+
+    def wait(name, rid, timeout):
+        out[name] = (t.wait_others(C, rid, timeout), time.monotonic())
+
+    started = time.monotonic()
+    earlier = threading.Thread(target=wait, args=("first", first, 2.0))
+    later = threading.Thread(target=wait, args=("second", second, 2.0))
+    earlier.start()
+    later.start()
+    earlier.join()
+    assert out["first"][0] is True and out["first"][1] - started < 0.2
+    t.end(C, first)
+    later.join()
+    assert out["second"][0] is True and out["second"][1] - started < 0.5
+
+
+def test_a_correction_does_not_wait_for_a_waiting_checkout():
+    """I4: the checkout waits for the correction; the correction must not wait."""
+    t = RunTracker()
+    checkout = t.begin(C, "pay")
+    correction = t.begin(C, "no smoothies")
+    out = {}
+
+    def wait_checkout():
+        out["checkout"] = t.wait_stable(C, checkout, 2.0)
+
+    waiter = threading.Thread(target=wait_checkout)
+    waiter.start()
+    time.sleep(0.05)
+    started = time.monotonic()
+    assert t.wait_others(C, correction, 2.0) is True
+    assert time.monotonic() - started < 0.2
+    t.note_write(C, correction)
+    t.end(C, correction)
+    waiter.join()
+    # The correction began before the checkout waited: it is in the snapshot.
+    assert out["checkout"] is StableOutcome.STABLE
+
+
+def test_a_correction_begun_during_a_checkout_wait_drops_it_without_waiting():
+    t = RunTracker()
+    a = t.begin(C, "add smoothies")
+    checkout = t.begin(C, "pay")
+    out = {}
+
+    def wait_checkout():
+        out["checkout"] = t.wait_stable(C, checkout, 2.0)
+
+    waiter = threading.Thread(target=wait_checkout)
+    waiter.start()
+    time.sleep(0.05)
+    correction = t.begin(C, "no smoothies")
+    t.end(C, a)
+    started = time.monotonic()
+    assert t.wait_others(C, correction, 2.0) is True
+    assert time.monotonic() - started < 0.2
+    t.note_write(C, correction)
+    waiter.join()
+    assert out["checkout"] is StableOutcome.CHANGED
+    t.end(C, correction)
+
+
+def test_a_waiting_checkout_wakes_a_peer_as_soon_as_it_waits():
+    """Minor 2: entering the wait notifies, so a peer does not sleep to timeout."""
+    t = RunTracker()
+    b1 = t.begin(C, "pay")
+    b2 = t.begin(C, "pay again")
+    out = {}
+
+    def wait():
+        out["b1"] = (t.wait_stable(C, b1, 3.0), time.monotonic())
+
+    waiter = threading.Thread(target=wait)
+    waiter.start()
+    time.sleep(0.1)
+    started = time.monotonic()
+    assert t.wait_stable(C, b2, 3.0) is StableOutcome.STABLE
+    waiter.join()
+    assert out["b1"][0] is StableOutcome.STABLE
+    assert out["b1"][1] - started < 0.5
 
 
 def test_freeze_blocks_other_runs_but_not_its_owner():
@@ -156,7 +308,8 @@ def test_close_wakes_every_waiter():
 
     ths = [
         threading.Thread(target=run, args=("stable", lambda: t.wait_stable(C, b, 5.0))),
-        threading.Thread(target=run, args=("others", lambda: t.wait_others(C, a, 5.0))),
+        # d began after a: it waits for a (b is a waiting checkout).
+        threading.Thread(target=run, args=("others", lambda: t.wait_others(C, d, 5.0))),
         threading.Thread(
             target=run, args=("unfrozen", lambda: t.wait_unfrozen(C, a, 5.0))
         ),
@@ -195,3 +348,29 @@ def test_empty_ids_are_no_ops():
     t.note_write("", "")
     t.unfreeze("", "")
     assert time.monotonic() - start < 0.2
+
+
+def test_calls_after_close_find_it_closed_and_leave_no_state():
+    """Minor 1: a late call of a closed session never reopens it."""
+    t = RunTracker()
+    a = t.begin(C, "a")
+    t.close(C)
+    start = time.monotonic()
+    assert t.wait_stable(C, a, 1.0) is StableOutcome.CLOSED
+    assert t.wait_others(C, a, 1.0) is False
+    assert t.wait_unfrozen(C, a, 1.0) is False
+    assert t.freeze(C, a) is False
+    late = t.begin(C, "late")
+    t.note_write(C, late)
+    assert t.in_flight(C) == [] and t.in_flight_ids(C) == set()
+    assert time.monotonic() - start < 0.2
+    assert C not in t._convs
+
+
+def test_closed_ids_are_remembered_up_to_a_bound():
+    t = RunTracker()
+    t.MAX_CLOSED = 3
+    for number in range(5):
+        t.close(f"c{number}")
+    assert list(t._closed) == ["c2", "c3", "c4"]
+    assert t.wait_stable("c4", "r", 0.1) is StableOutcome.CLOSED

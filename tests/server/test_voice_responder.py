@@ -991,6 +991,12 @@ def test_shipped_kiosk_prompt_states_that_created_orders_cannot_be_cancelled():
     assert "an unpaid order expires by itself" in lowered
     assert "never say it was cancelled or stopped" in lowered
     assert "cannot be stopped" in lowered
+    # Ruling 16: only a checkout that started ordering; a waiting one is
+    # dropped by the change, which is still carried out.
+    assert "only a checkout that has started ordering cannot be stopped" in lowered
+    assert "is still carried out: it drops a checkout that is still waiting" in (
+        lowered
+    )
 
 
 def test_preset_points_the_responder_at_the_reporter_prompt(monkeypatch):

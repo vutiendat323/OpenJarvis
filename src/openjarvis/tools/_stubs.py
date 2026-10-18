@@ -183,8 +183,10 @@ class ToolExecutor:
         deadline = started + STABLE_CART_WAIT_SECONDS
         revision_now = getattr(tool, "current_cart_revision", None)
         revision_before = revision_now() if callable(revision_now) else None
-        in_flight = RUN_TRACKER.in_flight_ids(cid, exclude=run)
         outcome = RUN_TRACKER.wait_stable(cid, run, STABLE_CART_WAIT_SECONDS)
+        # Only the runs in flight when the wait began may move the revision
+        # the model bound (ruling 7); a later run's write ended the wait above.
+        waited_for = RUN_TRACKER.waited_for(cid, run)
         if outcome is StableOutcome.CHANGED:
             return ToolResult(
                 tool_name=tool_call.name,
@@ -203,7 +205,7 @@ class ToolExecutor:
                 ):
                     return self._cart_not_settled(tool_call)
             tool_call = self._follow_cart_revision(
-                tool, tool_call, revision_before, in_flight
+                tool, tool_call, revision_before, waited_for
             )
             return self._execute_gated(tool_call)
         finally:
@@ -220,17 +222,17 @@ class ToolExecutor:
 
     @staticmethod
     def _follow_cart_revision(
-        tool: BaseTool, tool_call: ToolCall, before: Any, in_flight: set[str]
+        tool: BaseTool, tool_call: ToolCall, before: Any, waited_for: frozenset[str]
     ) -> ToolCall:
         """Carry the checkout's revision across changes made while it waited.
 
         The model bound ``cart_revision`` to the cart it saw when checkout
-        began. Runs already in flight then, and finished before the cart
-        settled, are meant to be in the order (spec 7.7). The revision moves
-        forward only when it was current when the wait began and every bump
-        since was made by one of those runs. A touch edit, a run that began
-        later or an unknown author leaves the stale revision for the revision
-        claim to refuse, so no order is created.
+        began. Runs already in flight then (not other waiting checkouts), and
+        finished before the cart settled, are meant to be in the order (spec
+        7.7). The revision moves forward only when it was current when the
+        wait began and every bump since was made by one of those runs. A touch
+        edit, a run that began later or an unknown author leaves the stale
+        revision for the revision claim to refuse, so no order is created.
         """
         changes_since = getattr(tool, "cart_revision_changes", None)
         if type(before) is not int or not callable(changes_since):
@@ -242,7 +244,7 @@ class ToolExecutor:
         if (
             now == before
             or not authors
-            or not all(author and author in in_flight for author in authors)
+            or not all(author and author in waited_for for author in authors)
         ):
             return tool_call
         try:

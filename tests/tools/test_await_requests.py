@@ -82,3 +82,43 @@ def test_is_read_only_so_it_never_takes_the_write_gate():
     assert result.success is True
     assert result.content == "no_earlier_requests"
     lease.tool_gate.enter.assert_not_called()
+
+
+def _await_as(run_id):
+    with conversation_scope(C), voice_run_scope(run_id):
+        return AwaitEarlierRequestsTool().execute()
+
+
+def test_two_corrections_in_a_row_do_not_hold_each_other():
+    """I4: the earlier correction never waits for the later one."""
+    first = RUN_TRACKER.begin(C, "remove the smoothies")
+    second = RUN_TRACKER.begin(C, "and the coffee")
+    try:
+        start = time.monotonic()
+        assert _await_as(first).content == "earlier_requests_finished"
+        assert time.monotonic() - start < 0.5
+        _end_later(0.1, first)
+        assert _await_as(second).content == "earlier_requests_finished"
+        assert time.monotonic() - start < 1.0
+    finally:
+        RUN_TRACKER.end(C, first)
+        RUN_TRACKER.end(C, second)
+
+
+def test_a_correction_does_not_wait_for_a_checkout_waiting_for_the_cart():
+    """I4: the waiting checkout waits for the correction, not the reverse."""
+    checkout = RUN_TRACKER.begin(C, "pay")
+    correction = RUN_TRACKER.begin(C, "no smoothies")
+    waiter = threading.Thread(
+        target=RUN_TRACKER.wait_stable, args=(C, checkout, 2.0), daemon=True
+    )
+    try:
+        waiter.start()
+        time.sleep(0.05)
+        start = time.monotonic()
+        assert _await_as(correction).content == "earlier_requests_finished"
+        assert time.monotonic() - start < 0.5
+    finally:
+        RUN_TRACKER.end(C, correction)
+        waiter.join(3)
+        RUN_TRACKER.end(C, checkout)
