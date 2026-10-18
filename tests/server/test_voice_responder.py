@@ -1001,3 +1001,60 @@ def test_preset_points_the_responder_at_the_reporter_prompt(monkeypatch):
 
     monkeypatch.setenv("OPENJARVIS_CONFIG", str(preset))
     assert "expires" in load_responder_settings().report_prompt
+
+
+# --- shipped merchant wording for parallel runs (spec 2026-10-17 barge-in) --
+
+
+def _shipped(name: str) -> str:
+    text = Path(f"configs/openjarvis/prompts/{name}").read_text("utf-8")
+    return " ".join(text.lower().split())
+
+
+def test_kiosk_prompt_handles_unsettled_and_changed_checkouts():
+    lowered = _shipped("ordering-kiosk.md")
+
+    assert "`cart_not_settled`" in lowered
+    assert "still being updated" in lowered
+    assert "ask whether to wait" in lowered
+    assert "never say an order was made" in lowered
+    assert "`cart_changed_during_checkout`" in lowered
+    assert "then ask whether to pay" in lowered
+
+
+def test_kiosk_prompt_waits_before_correcting_in_progress_work():
+    lowered = _shipped("ordering-kiosk.md")
+
+    assert "`<requests_in_progress>`" in lowered
+    assert "`await_earlier_requests`" in lowered
+    assert "không lấy sinh tố nữa" in lowered
+    assert "which item" in lowered
+
+
+def test_responder_prompt_never_asks_what_they_want_while_work_is_in_progress():
+    lowered = _shipped("voice-responder.md")
+
+    assert "requests in progress" in lowered
+    assert "i hear you" in lowered
+    assert "name what you are working on" in lowered
+    assert 'never "bạn cần gì?"' in lowered
+
+
+def test_reporter_prompt_does_not_repeat_an_answered_question():
+    lowered = _shipped("voice-reporter.md")
+
+    assert "whole request" in lowered
+    assert "already answered" in lowered
+    assert "do not ask it again" in lowered
+    assert "state what was done" in lowered
+
+
+def test_preset_runs_two_agents_and_enables_await_earlier_requests():
+    import tomllib
+
+    preset = tomllib.loads(
+        Path("configs/openjarvis/examples/ordering-kiosk-mcp.toml").read_text("utf-8")
+    )
+
+    assert preset["agent"]["max_concurrent_runs"] == 2
+    assert "await_earlier_requests" in preset["tools"]["enabled"].split(",")

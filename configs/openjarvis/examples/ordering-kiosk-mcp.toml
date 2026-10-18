@@ -38,6 +38,9 @@ max_tokens = 4096
 default_agent = "orchestrator"
 system_prompt_path = "configs/openjarvis/prompts/ordering-kiosk.md"
 max_turns = 8
+# At most two Agent runs per voice session, so a new request starts while an
+# earlier one is still running (spec 2026-10-17 barge-in parallel Agent runs).
+max_concurrent_runs = 2
 context_from_memory = true
 intent_normalization = true
 # Each tool call carries `_progress`, a short clause the model writes from the
@@ -77,7 +80,7 @@ parallel_tools = true
 # Playwright stays connected for presentation, outside the ordering Agent.
 # Luna handles menu choices directly; typesafe_decide stays internal.
 # `repl` stays absent (ruling R9: in-process object-graph escape).
-enabled = "http_request,skill_manage,typesafe_decide,display_menu,display_cart,display_bill,display_payment_qr,display_existing_order,display_clear"
+enabled = "http_request,skill_manage,typesafe_decide,display_menu,display_cart,display_bill,display_payment_qr,display_existing_order,display_clear,await_earlier_requests"
 # Prepared procedures retain these primitives in their internal executor.
 # The Agent sees menu/cart/clear and active merchant skills.
 model_hidden = "http_request,skill_manage,typesafe_decide,display_bill,display_payment_qr,display_existing_order"
