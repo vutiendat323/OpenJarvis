@@ -363,6 +363,37 @@ def test_preamble_flag_is_a_thread_safe_event():
     assert _preamble_spoken(None) is False
 
 
+@pytest.mark.anyio
+async def test_responder_input_names_requests_in_progress():
+    engine = _ToolEngine(StreamChunk(content="Dạ."))
+
+    await VoiceResponder(engine, "fast").respond(
+        "alo", "Assistant: Chào", in_progress=["thêm hai cà phê", "", "xem giỏ"]
+    )
+
+    assert engine.messages[-1].content == (
+        "Conversation so far:\nAssistant: Chào\n"
+        "Requests in progress: thêm hai cà phê; xem giỏ\n"
+        "Customer (latest): alo"
+    )
+
+    await VoiceResponder(engine, "fast").respond("alo", in_progress=[""])
+
+    assert engine.messages[-1].content == "Customer (latest): alo"
+
+
+def test_core_default_prompt_mentions_requests_in_progress_without_business_words():
+    from openjarvis.server.voice.responder import DEFAULT_PROMPT
+
+    assert (
+        "If requests are in progress and the latest words are only a hear check, "
+        "a greeting or small talk, say you hear them and name what you are "
+        "working on; do not ask what they would like."
+    ) in " ".join(DEFAULT_PROMPT.split())
+    for word in ("menu", "cart", "order", "payment", "kiosk", "price", "dish"):
+        assert word not in DEFAULT_PROMPT.lower()
+
+
 def test_core_default_prompt_carries_no_business_wording():
     from openjarvis.server.voice.responder import DEFAULT_PROMPT
 

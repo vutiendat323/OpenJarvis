@@ -32,7 +32,11 @@ from openjarvis.agents._stubs import (
 )
 from openjarvis.core.conversation import conversation_scope
 from openjarvis.core.runs import RUN_TRACKER, current_voice_run
-from openjarvis.server.voice.llm import OpenJarvisLLMService
+from openjarvis.server.voice.llm import (
+    UNCERTAIN_SPEAKER_NOTE,
+    OpenJarvisLLMService,
+    inflight_prompt,
+)
 from openjarvis.server.voice.responder import ResponderReply
 
 STEP = 2.0
@@ -62,6 +66,7 @@ class _GatedBinding:
     def __init__(self, slots: int | None = None):
         self._slots = asyncio.Semaphore(slots) if slots else None
         self.prompts: list[str] = []
+        self.keys: list[str] = []
         self.contexts: dict[str, object] = {}
         self.started: dict[str, asyncio.Event] = {}
         self.release: dict[str, asyncio.Event] = {}
@@ -75,7 +80,11 @@ class _GatedBinding:
 
     async def run_stream(self, prompt, context):
         self.prompts.append(prompt)
-        self.contexts[prompt] = context
+        # A run that is told what is in flight gets a longer prompt: it is
+        # known by the customer's words it carries, as the tools see it.
+        key = context.metadata.get(CUSTOMER_REQUEST) or prompt
+        self.keys.append(key)
+        self.contexts[key] = context
         try:
             async with self._slots or nullcontext():
                 # A sync tool reaches its thread through to_thread, as the
@@ -86,13 +95,13 @@ class _GatedBinding:
                         RUN_TRACKER.in_flight_ids(self.conversation),
                     )
                 )
-                self._event(self.started, prompt).set()
-                await self._event(self.release, prompt).wait()
-                yield AgentTextDelta(_reply(prompt))
-                yield AgentRunCompleted(AgentResult(content=_reply(prompt), turns=1))
-                self.finished.append(prompt)
+                self._event(self.started, key).set()
+                await self._event(self.release, key).wait()
+                yield AgentTextDelta(_reply(key))
+                yield AgentRunCompleted(AgentResult(content=_reply(key), turns=1))
+                self.finished.append(key)
         except asyncio.CancelledError:
-            self.cancelled.append(prompt)
+            self.cancelled.append(key)
             raise
 
     async def wait_started(self, message):
@@ -105,6 +114,9 @@ class _GatedBinding:
     async def wait_finished(self, message):
         await _eventually(lambda: message["content"] in self.finished)
 
+    def prompt_of(self, message):
+        return self.prompts[self.keys.index(message["content"])]
+
 
 class _Responder:
     """Answers a hear check itself; delegates everything else without a filler."""
@@ -113,6 +125,7 @@ class _Responder:
 
     def __init__(self, *, hold: bool = False, kind: str = "answer"):
         self.calls: list[str] = []
+        self.in_progress: list[list[str]] = []
         self.deciding = asyncio.Event()
         self.decide = asyncio.Event()
         self.decided = asyncio.Event()
@@ -121,9 +134,12 @@ class _Responder:
         if not hold:
             self.decide.set()
 
-    async def respond(self, utterance, conversation="", on_delegate=None):
+    async def respond(
+        self, utterance, conversation="", on_delegate=None, in_progress=()
+    ):
         del conversation
         self.calls.append(utterance)
+        self.in_progress.append(list(in_progress))
         self.deciding.set()
         await self.decide.wait()
         self.decided.set()
@@ -401,7 +417,8 @@ async def test_no_carried_prompt_is_built():
 
     await _drive(service, steps)
 
-    assert binding.prompts == [U1["content"], U2["content"]]
+    assert binding.keys == [U1["content"], U2["content"]]
+    assert binding.prompts[0] == U1["content"]
     assert all("<earlier_unfinished_request>" not in p for p in binding.prompts)
 
 
@@ -417,7 +434,7 @@ async def test_a_request_waiting_for_a_slot_survives_a_barge_in():
         await worker.queue_frame(_ctx(U1, A1, U2))
         await binding.wait_started(U2)
         await worker.queue_frame(_ctx(U1, A1, U2, A2, U3))
-        await _eventually(lambda: U3["content"] in binding.prompts)
+        await _eventually(lambda: U3["content"] in binding.keys)
         await asyncio.sleep(0.05)
         seen["third_waited"] = U3["content"] not in binding.started
         await _interrupt(worker)
@@ -454,3 +471,109 @@ async def test_a_tool_inside_a_voice_run_sees_its_run_id():
 
     [(run_id, in_flight)] = binding.voice_runs
     assert run_id and in_flight == {run_id}
+
+
+def test_inflight_prompt_names_requests_and_the_do_not_repeat_rule():
+    prompt = inflight_prompt(["thêm hai cà phê sữa", "bỏ một ly"], "xem giỏ")
+
+    assert prompt == (
+        "<requests_in_progress>\n"
+        "thêm hai cà phê sữa\n"
+        "bỏ một ly\n"
+        "</requests_in_progress>\n"
+        "<latest_request>xem giỏ</latest_request>\n"
+        "The requests in progress are already being handled in the background; "
+        "do not perform them again. If the latest request asks about them, say "
+        "they are still in progress unless background_actions shows their "
+        "outcome. If it changes or removes what one of them adds, call "
+        "await_earlier_requests first and then act on the real result; if it is "
+        "unclear which item the customer means, ask before changing anything."
+    )
+
+
+def test_inflight_prompt_is_the_latest_alone_when_nothing_is_in_flight():
+    assert inflight_prompt([], "xem giỏ") == "xem giỏ"
+    # A request with no words (an unconfirmed speaker's turn) names nothing.
+    assert inflight_prompt([""], "xem giỏ") == "xem giỏ"
+
+
+@pytest.mark.anyio
+async def test_a_second_run_is_told_the_first_runs_request():
+    conv = "voice-parallel-inflight-prompt"
+    binding = _GatedBinding()
+    binding.conversation = conv
+    service = OpenJarvisLLMService(binding)
+
+    async def steps(worker, sink):
+        await worker.queue_frame(_ctx(U1))
+        await binding.wait_started(U1)
+        await worker.queue_frame(_ctx(U1, A1, U2))
+        await binding.wait_started(U2)
+        binding.let_go(U1)
+        binding.let_go(U2)
+        await binding.wait_finished(U1)
+        await binding.wait_finished(U2)
+
+    with conversation_scope(conv):
+        await _drive(service, steps)
+
+    first, second = binding.prompts
+    assert first == U1["content"]
+    assert second == inflight_prompt([U1["content"]], U2["content"])
+    assert U1["content"] in second and U2["content"] in second
+
+
+class _Verdicts:
+    """A speaker tracker that rules each turn in turn."""
+
+    def __init__(self, *verdicts):
+        self._verdicts = list(verdicts)
+
+    def take_turn_verdict(self):
+        return self._verdicts.pop(0)
+
+
+@pytest.mark.anyio
+async def test_a_rejected_turns_words_are_never_shown_as_in_progress():
+    from openjarvis.server.voice.speaker import Verdict
+
+    conv = "voice-parallel-rejected-words"
+    stranger = {"role": "user", "content": "thanh toán luôn đi"}
+    binding = _GatedBinding()
+    binding.conversation = conv
+    responder = _Responder(kind="delegate")
+    service = OpenJarvisLLMService(
+        binding,
+        responder=responder,
+        speaker_tracker=_Verdicts(Verdict.ACCEPT, Verdict.REJECT, Verdict.ACCEPT),
+    )
+    seen = {}
+
+    async def steps(worker, sink):
+        await worker.queue_frame(_ctx(U1))
+        await binding.wait_started(U1)
+        await worker.queue_frame(_ctx(U1, A1, stranger))
+        await _eventually(lambda: len(binding.prompts) == 2)
+        seen["tracked"] = RUN_TRACKER.in_flight(conv)
+        await worker.queue_frame(_ctx(U1, A1, stranger, A2, U3))
+        await binding.wait_started(U3)
+        for key in list(binding.keys):
+            binding._event(binding.release, key).set()
+        await _eventually(lambda: len(binding.finished) == 3)
+
+    with conversation_scope(conv):
+        await _drive(service, steps)
+
+    first, rejected, third = binding.prompts
+    # The unconfirmed turn is told what is in flight, but its words are no
+    # one's request: no run records them, none names them, none is keyed by them.
+    assert UNCERTAIN_SPEAKER_NOTE in rejected and stranger["content"] in rejected
+    assert U1["content"] in rejected
+    assert seen["tracked"] == [U1["content"], ""]
+    assert CUSTOMER_REQUEST not in binding.contexts[binding.keys[1]].metadata
+    assert third == inflight_prompt([U1["content"]], U3["content"])
+    assert stranger["content"] not in third
+    # The Responder is asked for the customer's turns only, and never told the
+    # stranger's words are in progress.
+    assert responder.calls == [U1["content"], U3["content"]]
+    assert responder.in_progress == [[], [U1["content"]]]

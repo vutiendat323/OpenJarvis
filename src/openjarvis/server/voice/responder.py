@@ -12,7 +12,7 @@ nothing is scripted. ``[voice.responder] model`` enables it.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -60,7 +60,10 @@ DEFAULT_PROMPT = (
     'language, without a checking filler or the tool. "Alo", "alo alo" and '
     '"nghe không?" are Vietnamese hear checks and get a Vietnamese reply. '
     "For a hear check combined with another request, only write the filler for "
-    "that request and call the tool. For unclear words ask them to say it again. "
+    "that request and call the tool. If requests are in progress and the latest "
+    "words are only a hear check, a greeting or small talk, say you hear them "
+    "and name what you are working on; do not ask what they would like. "
+    "For unclear words ask them to say it again. "
     "If the request also asks for anything "
     "else, call the tool. Plain text only."
 )
@@ -210,6 +213,7 @@ class VoiceResponder:
         utterance: str,
         conversation: str = "",
         on_delegate: Callable[[str], None] | None = None,
+        in_progress: Sequence[str] = (),
     ) -> ResponderReply | None:
         """Delegate with a filler, answer alone, or None when nothing was said.
 
@@ -217,9 +221,13 @@ class VoiceResponder:
         ``getNextResponseFromSupervisor`` is the filler, and the call hands the
         turn to the Agent; ``on_delegate(filler)`` fires once, when the call
         first appears. Text with no call answers the turn. Text after the call
-        and the call's argument are never returned.
+        and the call's argument are never returned. ``in_progress`` names the
+        earlier requests still being handled, so it can say what it is working
+        on instead of asking what the customer wants.
         """
         content = f"Customer (latest): {utterance}"
+        if pending := [request for request in in_progress if request]:
+            content = f"Requests in progress: {'; '.join(pending)}\n{content}"
         if conversation:
             content = f"Conversation so far:\n{conversation}\n{content}"
         text = ""

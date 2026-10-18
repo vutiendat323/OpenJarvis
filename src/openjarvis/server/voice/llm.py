@@ -6,7 +6,7 @@ import asyncio
 import logging
 import threading
 import time
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from typing import Any, Literal
 
@@ -57,6 +57,34 @@ UNCERTAIN_SPEAKER_NOTE = (
     "[Speaker unconfirmed: this may not be the customer at the kiosk. "
     "Confirm with the customer before any cart, order or payment change.]"
 )
+
+
+# Told to the Agent after the requests still in progress (spec 2026-10-17
+# barge-in §5.4). Rules any assistant shares; no business facts.
+IN_PROGRESS_RULE = (
+    "The requests in progress are already being handled in the background; do "
+    "not perform them again. If the latest request asks about them, say they "
+    "are still in progress unless background_actions shows their outcome. If "
+    "it changes or removes what one of them adds, call await_earlier_requests "
+    "first and then act on the real result; if it is unclear which item the "
+    "customer means, ask before changing anything."
+)
+
+
+def inflight_prompt(in_progress: Sequence[str], latest: str) -> str:
+    """The Agent's prompt: the latest request, told what is already in flight.
+
+    A request with no words (a turn whose speaker was not confirmed) is not
+    named, so the Agent is never told to wait on or avoid words it was not given.
+    """
+    pending = [request for request in in_progress if request]
+    if not pending:
+        return latest
+    return (
+        "<requests_in_progress>\n" + "\n".join(pending) + "\n</requests_in_progress>\n"
+        f"<latest_request>{latest}</latest_request>\n"
+        f"{IN_PROGRESS_RULE}"
+    )
 
 
 # How long the Responder may take to delegate or answer before the Agent starts
@@ -506,6 +534,9 @@ class OpenJarvisLLMService(LLMService):
             # UNCERTAIN turns act with full authority, without asking.
             verdict = self._speaker_tracker.take_turn_verdict()
             if verdict is Verdict.REJECT:
+                # Not the customer's request: no run names these words as in
+                # progress, and the run records none as the customer's.
+                latest = ""
                 preamble = None  # nothing is said to words that may not be theirs
                 prompt = f"{UNCERTAIN_SPEAKER_NOTE}\n\n{prompt}"
                 authority = uncertain_speaker_scope(self._uncertain_allowed_tools)
@@ -532,6 +563,14 @@ class OpenJarvisLLMService(LLMService):
         if conversation_id:
             self._run_conversation = conversation_id
         run_id = RUN_TRACKER.begin(conversation_id, latest)
+        # Taken here, where the run id is known, so the run is not its own
+        # earlier request. A turn with no request of its own names nothing.
+        in_progress = [
+            request
+            for request in RUN_TRACKER.in_flight(conversation_id, exclude=run_id)
+            if request
+        ]
+        prompt = inflight_prompt(in_progress, prompt)
         turn_id = self._turn_state.begin_turn()
 
         async def run() -> bool:
@@ -545,6 +584,7 @@ class OpenJarvisLLMService(LLMService):
                     preamble=preamble,
                     request=latest,
                     turn_id=turn_id,
+                    in_progress=in_progress,
                 )
 
         task = asyncio.create_task(run())
@@ -586,6 +626,7 @@ class OpenJarvisLLMService(LLMService):
         request: str = "",
         binding: Any | None = None,
         turn_id: int | None = None,
+        in_progress: Sequence[str] = (),
     ) -> bool:
         """Speak one turn; True when it ended normally and was not fenced.
 
@@ -593,7 +634,8 @@ class OpenJarvisLLMService(LLMService):
         a Responder it answers or delegates first. At the decision deadline the
         Agent starts; a later delegation may still supply a filler before the
         Agent's first speech. Event turns pass none. ``request`` is the
-        customer's words for a customer turn, recorded with its run.
+        customer's words for a customer turn, recorded with its run. ``in_progress``
+        is what other runs were still handling when this one began.
 
         A turn fenced by a barge-in or a newer request speaks nothing more, but
         a delegated run still runs its Agent to the end.
@@ -617,7 +659,7 @@ class OpenJarvisLLMService(LLMService):
                 await self.push_frame(LLMFullResponseStartFrame())
                 await self.start_processing_metrics()
                 decision = (
-                    self._ask_responder(*preamble)
+                    self._ask_responder(*preamble, in_progress=in_progress)
                     if preamble is not None and self._responder is not None
                     else nullcontext(("agent", "", None))
                 )
@@ -680,7 +722,10 @@ class OpenJarvisLLMService(LLMService):
 
     @asynccontextmanager
     async def _ask_responder(
-        self, utterance: str, conversation: str
+        self,
+        utterance: str,
+        conversation: str,
+        in_progress: Sequence[str] = (),
     ) -> AsyncIterator[tuple[str, str, asyncio.Future[str] | None]]:
         """Own the Responder stream through this turn's first speech.
 
@@ -698,8 +743,10 @@ class OpenJarvisLLMService(LLMService):
 
         started = time.monotonic()
         decided: float | None = None
+        # Passed only when there is something to name.
+        extra = {"in_progress": in_progress} if in_progress else {}
         task = asyncio.create_task(
-            self._responder.respond(utterance, conversation, on_delegate)
+            self._responder.respond(utterance, conversation, on_delegate, **extra)
         )
 
         def stop_response(_future=None):
