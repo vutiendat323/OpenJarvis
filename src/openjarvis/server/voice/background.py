@@ -49,7 +49,9 @@ def run_report_text(run: LedgerEntry, tools: list[LedgerEntry]) -> str:
     """The event a fast model phrases for one finished background run.
 
     The run's answer was written before the customer spoke again, so it goes
-    here as material to phrase, never as a sentence to read out.
+    here as material to phrase, never as a sentence to read out. A tool the
+    customer was already told about (a foreground run folded it in) is left
+    out, so nothing is said twice (I1).
     """
     parts = [
         "A request the customer made earlier has finished in the background; "
@@ -63,6 +65,8 @@ def run_report_text(run: LedgerEntry, tools: list[LedgerEntry]) -> str:
             f"{run.customer_message}"
         )
     for tool in tools:
+        if tool.reported:
+            continue
         line = f"Tool: {tool.tool}. Status: {tool.status}."
         detail = tool.error if tool.status != "succeeded" else ""
         if tool.customer_message:

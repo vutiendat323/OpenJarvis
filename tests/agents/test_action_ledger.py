@@ -536,7 +536,57 @@ def test_mark_run_reported_with_keys_marks_only_those_entries():
     assert [e.key for e in ledger.unreported_finished(CONV)] == ["r1:b"]
 
 
-# --- final review I2 ------------------------------------------------------
+# --- final review I1/I2 ------------------------------------------------------
+
+
+def test_a_folded_run_is_reported_whole_once_it_finishes():
+    """I1: B told A's finished add while A:run still ran; A's end is told too."""
+    ledger = ActionLedger()
+    ledger.start_run(CONV, "A", "thêm sinh tố")
+    _started(ledger, call_id="add", run_id="A")
+    ledger.finish(CONV, call_id="add", run_id="A", result=_ok("Đã thêm sinh tố."))
+    ledger.start_run(CONV, "B", "bạn thêm chưa?")
+    ledger.background_for(CONV, "B")
+    ledger.mark_run_completed(CONV, "B")  # B told the customer "đã thêm"
+
+    ledger.finish_run(CONV, "A", answer="Đã thêm các món sinh tố.", status="succeeded")
+
+    assert ledger.unreported_finished(CONV) == []
+    assert all(e.reported for e in ledger.entries(CONV) if e.run_id == "A")
+
+
+def test_a_folded_run_keeps_a_later_write_for_its_own_report():
+    ledger = ActionLedger()
+    ledger.start_run(CONV, "A", "thêm hai món")
+    _started(ledger, call_id="first", run_id="A")
+    ledger.finish(CONV, call_id="first", run_id="A", result=_ok())
+    ledger.background_for(CONV, "B")
+    ledger.mark_run_completed(CONV, "B")
+    _started(ledger, call_id="second", run_id="A")  # after the fold
+    ledger.finish(CONV, call_id="second", run_id="A", result=_ok("Đã thêm trà."))
+    ledger.finish_run(CONV, "A", answer="Xong.", status="succeeded")
+
+    assert [e.key for e in ledger.unreported_finished(CONV)] == ["A:second"]
+
+
+def test_a_run_not_folded_is_left_for_the_reporter():
+    ledger = ActionLedger()
+    ledger.start_run(CONV, "A", "thêm trà")
+    ledger.finish_run(CONV, "A", answer="Xong.", status="succeeded")
+    assert [e.key for e in ledger.unreported_finished(CONV)] == ["A:run"]
+
+
+def test_clear_forgets_folded_runs():
+    ledger = ActionLedger()
+    ledger.start_run(CONV, "A", "thêm trà")
+    _started(ledger, call_id="add", run_id="A")
+    ledger.finish(CONV, call_id="add", run_id="A", result=_ok())
+    ledger.background_for(CONV, "B")
+    ledger.mark_run_completed(CONV, "B")
+    ledger.clear(CONV)
+    ledger.start_run(CONV, "A", "thêm trà")
+    ledger.finish_run(CONV, "A", answer="Xong.", status="succeeded")
+    assert [e.key for e in ledger.unreported_finished(CONV)] == ["A:run"]
 
 
 def test_an_entry_seen_by_two_parallel_runs_is_told_by_either():

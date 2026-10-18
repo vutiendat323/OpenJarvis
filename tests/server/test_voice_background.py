@@ -933,11 +933,11 @@ async def test_a_finished_run_is_phrased_from_its_answer_and_tools_not_read_out(
     ledger, fakes = ActionLedger(), _Fakes()
     _run_with_write(ledger)
     reporter, phrased = _phrasing_reporter(ledger, fakes, "spoken")
+    run, tools = ledger.run_group(CONV, "r1")  # as reported: nothing told yet
 
     await reporter.on_idle()
     await _settle()
 
-    run, tools = ledger.run_group(CONV, "r1")
     assert fakes.spoken == [] and fakes.events == []
     assert phrased == [run_report_text(run, tools)]
     assert ANSWER in phrased[0] and CONFIRMATION in phrased[0]
@@ -986,11 +986,11 @@ async def test_a_failed_phrasing_falls_back_to_one_event_turn_for_the_run():
     ledger, fakes = ActionLedger(), _Fakes()
     _run_with_write(ledger)
     reporter, phrased = _phrasing_reporter(ledger, fakes, "failed")
+    run, tools = ledger.run_group(CONV, "r1")  # as reported: nothing told yet
 
     await reporter.on_idle()
     await _settle()
 
-    run, tools = ledger.run_group(CONV, "r1")
     assert len(phrased) == 1
     assert fakes.spoken == []
     assert fakes.events == [run_report_text(run, tools)]
@@ -1200,3 +1200,42 @@ async def test_no_report_starts_while_a_customer_turn_is_being_started():
 
     assert outcome == {"phrased": "cut", "event": False}
     assert responder.events == []
+
+
+# --- final review I1: a folded run is never reported again ------------------
+
+
+@pytest.mark.anyio
+async def test_a_run_folded_by_a_foreground_run_is_not_reported_again():
+    """I1: B told A's add while A:run ran; A ending must not repeat it."""
+    ledger, fakes = ActionLedger(), _Fakes()
+    _run_with_write(ledger, finish=False)
+    ledger.background_for(CONV, "B")
+    ledger.mark_run_completed(CONV, "B")  # B folded "đã thêm" into its reply
+    ledger.finish_run(CONV, "r1", answer=ANSWER, status="succeeded")
+    reporter, phrased = _phrasing_reporter(ledger, fakes, "spoken")
+
+    await reporter.on_idle()
+    await _settle()
+
+    assert phrased == [] and fakes.spoken == [] and fakes.events == []
+    assert ledger.unreported_finished(CONV) == []
+
+
+@pytest.mark.anyio
+async def test_a_run_report_leaves_out_a_tool_already_told():
+    """I1: run_report_text names only what the customer has not heard."""
+    ledger, fakes = ActionLedger(), _Fakes()
+    _run_with_write(ledger, finish=False)
+    ledger.mark_reported(CONV, "r1:r1-add", via="model")
+    _finish(ledger, "r1-more", message="Đã thêm trà.", run_id="r1")
+    ledger.finish_run(CONV, "r1", answer=ANSWER, status="succeeded")
+    reporter, phrased = _phrasing_reporter(ledger, fakes, "spoken")
+
+    await reporter.on_idle()
+    await _settle()
+
+    assert len(phrased) == 1
+    assert CONFIRMATION not in phrased[0]
+    assert "Đã thêm trà." in phrased[0] and ANSWER in phrased[0]
+    assert ledger.unreported_finished(CONV) == []

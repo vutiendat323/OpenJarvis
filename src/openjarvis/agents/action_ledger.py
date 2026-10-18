@@ -78,6 +78,9 @@ class ActionLedger:
         self._carrying: set[str] = set()
         # Runs the customer interrupted, per conversation.
         self._interrupted_runs: dict[str, set[str]] = {}
+        # Runs a completed run folded into its reply while their run entry was
+        # still running: told whole once they finish (spec 7.6, I1).
+        self._folded_runs: dict[str, set[str]] = {}
 
     @staticmethod
     def _key(run_id: str, call_id: str) -> str:
@@ -133,6 +136,7 @@ class ActionLedger:
                 self._listeners.pop(evicted, None)
                 self._carrying.discard(evicted)
                 self._interrupted_runs.pop(evicted, None)
+                self._folded_runs.pop(evicted, None)
 
     def finish(
         self, conversation_id: str, *, call_id: str, run_id: str, result: ToolResult
@@ -206,6 +210,12 @@ class ActionLedger:
                 return
             entry.status = status
             entry.customer_message = answer.strip() if isinstance(answer, str) else ""
+            folded = self._folded_runs.get(conversation_id)
+            if folded is not None and run_id in folded:
+                # A foreground run already told this run's outcome: the whole
+                # run counts as reported, its final answer included.
+                folded.discard(run_id)
+                self._report_locked(entry, "folded")
             snapshot = replace(entry)
             listeners = list(self._listeners.get(conversation_id, ()))
         logger.warning("background_run_finished status=%s run=%s", status, run_id)
@@ -280,7 +290,9 @@ class ActionLedger:
 
         A run any of whose entries is folded in here is reported whole: its
         other finished entries, the run entry included, are marked too. One
-        still running is left, so its own outcome is still reported later.
+        still running is left, so its own outcome is still reported later. A
+        folded run whose run entry still runs is told whole when it finishes:
+        its answer was folded in already.
         """
         with self._lock:
             entries = list(self._conversations.get(conversation_id, {}).values())
@@ -292,12 +304,14 @@ class ActionLedger:
                     self._report_locked(entry, "model")
                     folded_runs.add(entry.run_id)
             for entry in entries:
-                if (
-                    entry.run_id in folded_runs
-                    and entry.status != "running"
-                    and not entry.reported
-                ):
+                if entry.run_id not in folded_runs or entry.reported:
+                    continue
+                if entry.status != "running":
                     self._report_locked(entry, "model")
+                elif entry.kind == "run" and entry.run_id != run_id:
+                    self._folded_runs.setdefault(conversation_id, set()).add(
+                        entry.run_id
+                    )
 
     def mark_run_reported(
         self,
@@ -398,6 +412,7 @@ class ActionLedger:
             self._listeners.pop(conversation_id, None)
             self._carrying.discard(conversation_id)
             self._interrupted_runs.pop(conversation_id, None)
+            self._folded_runs.pop(conversation_id, None)
 
 
 ACTION_LEDGER = ActionLedger()
