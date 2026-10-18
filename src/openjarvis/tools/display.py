@@ -486,6 +486,7 @@ class DisplayCartTool(_DisplayTool):
     """Own and show the current conversation's local draft cart."""
 
     tool_id = "display_cart"
+    MAX_ADD_CLAIMS = 256
 
     def __init__(self) -> None:
         super().__init__()
@@ -504,7 +505,11 @@ class DisplayCartTool(_DisplayTool):
         self._checkout_claims: dict[str, int] = {}
         self._checkout_pending: set[str] = set()
         self._checkout_contracts: set[bytes] | None = None
-        self._add_claims: dict[str, tuple[str, set[tuple[Any, ...]]]] = {}
+        # Item signatures each agent turn already added, by (conversation,
+        # turn nonce): parallel runs of one conversation keep their own (I3).
+        self._add_claims: OrderedDict[tuple[str, str], set[tuple[Any, ...]]] = (
+            OrderedDict()
+        )
         self._cart_lock = RLock()
 
     @property
@@ -775,9 +780,11 @@ class DisplayCartTool(_DisplayTool):
                         success=False,
                     )
                 nonce = current_turn_nonce()
-                prior_nonce, seen = self._add_claims.get(conversation_id, ("", set()))
-                if prior_nonce != nonce or not nonce:
-                    seen = set()
+                seen = (
+                    self._add_claims.get((conversation_id, nonce), set())
+                    if nonce
+                    else set()
+                )
                 for item in items:
                     assert item is not None
                     signature = (
@@ -983,12 +990,19 @@ class DisplayCartTool(_DisplayTool):
             self._table_names[conversation_id] = table_name
             self._pickup_minutes[conversation_id] = pickup_minutes
             if action == "add" and nonce:
-                self._add_claims[conversation_id] = (
-                    nonce,
-                    seen | set(add_signatures),
-                )
+                claim = (conversation_id, nonce)
+                self._add_claims[claim] = seen | set(add_signatures)
+                self._add_claims.move_to_end(claim)
+                while len(self._add_claims) > self.MAX_ADD_CLAIMS:
+                    self._add_claims.popitem(last=False)
             elif action not in {"add", "view"}:
-                self._add_claims.pop(conversation_id, None)
+                # The turn's own change lets it add an item again; another
+                # run's change does not reset this turn's claims.
+                turn_nonce = current_turn_nonce()
+                if turn_nonce:
+                    self._add_claims.pop((conversation_id, turn_nonce), None)
+                else:
+                    self._forget_add_claims(conversation_id)
             revision = self._cart_revisions.get(conversation_id, 0)
             if (
                 lines != stored_lines
@@ -1010,7 +1024,7 @@ class DisplayCartTool(_DisplayTool):
                 self._tables.pop(stale_id, None)
                 self._table_names.pop(stale_id, None)
                 self._pickup_minutes.pop(stale_id, None)
-                self._add_claims.pop(stale_id, None)
+                self._forget_add_claims(stale_id)
 
             cart = {
                 "lines": lines,
@@ -1039,6 +1053,10 @@ class DisplayCartTool(_DisplayTool):
                 success=True,
                 metadata=metadata,
             )
+
+    def _forget_add_claims(self, conversation_id: str) -> None:
+        for claim in [c for c in self._add_claims if c[0] == conversation_id]:
+            del self._add_claims[claim]
 
     def _bump_revision(self, conversation_id: str) -> int:
         """Issue the next revision and record which run made it."""

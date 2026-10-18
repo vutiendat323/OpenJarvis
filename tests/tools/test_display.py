@@ -1591,6 +1591,89 @@ def test_identical_cart_add_is_applied_once_within_one_agent_turn():
             assert json.loads(later.content)["cart"]["total"] == 80_000
 
 
+def _cart_item(variant):
+    return {
+        "variant_id": variant,
+        "name": variant,
+        "size": "",
+        "note": "",
+        "unit_price": 1_000,
+        "quantity": 1,
+    }
+
+
+def _turn_in_its_own_context():
+    """An agent turn entered in a copied context, as each parallel run is."""
+    import contextvars
+
+    ctx = contextvars.copy_context()
+    scope = ctx.run(agent_turn_scope)
+    ctx.run(scope.__enter__)
+    return ctx
+
+
+def test_another_runs_write_does_not_reset_a_turns_add_dedup():
+    """I3: run B's add between run A's add and A's repeat must not re-add."""
+    cart, _ = _wired(DisplayCartTool)
+    with conversation_scope("interleaved-add"):
+        run_a, run_b = _turn_in_its_own_context(), _turn_in_its_own_context()
+        smoothie, coffee = _cart_item("smoothie"), _cart_item("coffee")
+        run_a.run(cart.execute, action="add", item=smoothie, open_cart=False)
+        run_b.run(cart.execute, action="add", item=coffee, open_cart=False)
+        run_a.run(cart.execute, action="add", item=smoothie, open_cart=False)
+        lines = cart.current_snapshot()["lines"]
+    assert [(line["variant_id"], line["quantity"]) for line in lines] == [
+        ("smoothie", 1),
+        ("coffee", 1),
+    ]
+
+
+def test_another_runs_remove_does_not_reset_a_turns_add_dedup():
+    cart, _ = _wired(DisplayCartTool)
+    with conversation_scope("interleaved-remove"):
+        run_a, run_b = _turn_in_its_own_context(), _turn_in_its_own_context()
+        smoothie = _cart_item("smoothie")
+        run_a.run(cart.execute, action="add", item=smoothie, open_cart=False)
+        run_b.run(cart.execute, action="add", item=_cart_item("tea"), open_cart=False)
+        tea = next(
+            line["line_id"]
+            for line in cart.current_snapshot()["lines"]
+            if line["variant_id"] == "tea"
+        )
+        run_b.run(cart.execute, action="remove", line_ids=[tea], open_cart=False)
+        run_a.run(cart.execute, action="add", item=smoothie, open_cart=False)
+        lines = cart.current_snapshot()["lines"]
+    assert [(line["variant_id"], line["quantity"]) for line in lines] == [
+        ("smoothie", 1)
+    ]
+
+
+def test_a_turns_own_remove_still_lets_it_add_the_item_again():
+    cart, _ = _wired(DisplayCartTool)
+    with conversation_scope("own-remove"):
+        with agent_turn_scope():
+            smoothie = _cart_item("smoothie")
+            cart.execute(action="add", item=smoothie, open_cart=False)
+            [line] = cart.current_snapshot()["lines"]
+            cart.execute(action="remove", line_ids=[line["line_id"]], open_cart=False)
+            cart.execute(action="add", item=smoothie, open_cart=False)
+            lines = cart.current_snapshot()["lines"]
+    assert [(line["variant_id"], line["quantity"]) for line in lines] == [
+        ("smoothie", 1)
+    ]
+
+
+def test_add_claims_are_bounded():
+    from openjarvis.tools.display import DisplayCartTool as Cart
+
+    cart, _ = _wired(DisplayCartTool)
+    with conversation_scope("bounded-claims"):
+        for _ in range(Cart.MAX_ADD_CLAIMS + 5):
+            with agent_turn_scope():
+                cart.execute(action="add", item=_cart_item("tea"), open_cart=False)
+    assert len(cart._add_claims) == Cart.MAX_ADD_CLAIMS
+
+
 def test_agent_cart_add_requires_exact_verified_item_id_and_price():
     from openjarvis.tools import display as display_module
 
