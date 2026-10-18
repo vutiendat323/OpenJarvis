@@ -1,7 +1,7 @@
 # Parallel Agent runs: scenario replay and verification (2026-10-18)
 
 Plan: `docs/superpowers/plans/2026-10-18-barge-in-parallel-agent-runs.md`. Spec: `docs/superpowers/specs/2026-10-17-barge-in-parallel-agent-runs-design.md`.
-Branch `feat/live-voice-mode`, commits `758e8df9`..`92c58906` plus the Task 12 commit.
+Branch `feat/live-voice-mode`, commits `758e8df9`..`92c58906`, the Task 12 commits (`de77a031`, `b961b6e3`) and the final-review fix wave `e619a541`..`9c349743` (see "Final review fix wave" below).
 
 Status: nothing is pushed and nothing is deployed. The stack was not started or restarted. What the running stack has loaded is not established by this report.
 
@@ -20,30 +20,37 @@ The scenarios were written from the 18:14-18:16 session in `.stack-logs/backend.
 | `test_smoothies_then_no_smoothies_waits_and_ends_without_them` | the second run calls `await_earlier_requests` (blocked while the add is held), then reads the real cart and removes; cart ends empty; writes are add then remove |
 | `test_pay_while_smoothies_are_added_orders_them` | the checkout posts nothing while the add is held, then orders `total=70000` (coffee + smoothie) once; one payment POST; the finished checkout ends the run |
 | `test_alo_is_answered_before_the_first_run_finishes` | the Responder's text frame precedes the first run's write (spec §6 shape); wall-clock targets are checked live |
+| `test_an_add_asked_while_checkout_waits_drops_the_stale_checkout` | final review C1: smoothies run A (held), "pay" B waits for a stable cart, a new add C waits for a slot (both slots held); A ends first, C then adds. No order POST at all (B ends `cart_changed_during_checkout`), the cart holds coffee, smoothie and C's item. Before the fix B ordered `total=70000` without C's item |
+| `test_no_smoothies_asked_while_checkout_waits_drops_the_stale_checkout` | final review C1/I4: same, with "Thôi mình không lấy sinh tố nữa": `await_earlier_requests` returns in well under 2 s (no mutual 15 s wait with the waiting checkout), the smoothie is removed, no order POST, cart is coffee only |
+| `test_a_run_that_waited_for_a_slot_sees_the_named_request_was_told` | final review I5, one-slot runtime: "Bạn thêm chưa?" waits for the slot while the smoothies run ends and is told (a ledger listener stands in for the reporter); its `background_actions` list the smoothies run as `succeeded`, `already_told`, and it does not answer "still adding" |
 | `test_two_fenced_draining_runs_release_their_slots_for_a_third` | extra replay from review: with the real two-slot runtime, a third request waits while two runs hold the slots, then proceeds after both are fenced and drain. Drain, not cancel, is proved by each request's model round completing after its hold (a cancelled run never reaches it), all three completing, the first two ledger run entries being `succeeded` and unreported, and both slots free at the end |
 
-Sensitivity check (before fix round 1): with the rig's runtime set to one slot (temporary edit, reverted), 6 of the 8 tests fail, so they depend on the two-slot runtime.
+Sensitivity check (before fix round 1): with the rig's runtime set to one slot (temporary edit, reverted), 6 of the 8 tests fail, so they depend on the two-slot runtime. The two C1 replays were run against the pre-fix `runs.py`/`_stubs.py` (stashed): both fail with an order POST `total=70000`.
 
 ## Suite counts (each in its own process, `-m "not live and not cloud and not hub"`)
 
+After the final-review fix wave, at `9c349743` (the Task 12 counts they replace are in this file's history):
+
 | Suite | Result |
 |---|---|
-| tests/core/test_runs.py | 13 passed |
+| tests/core/test_runs.py | 26 passed (stable over 3 runs) |
 | tests/agents/test_agent_runtime.py | 29 passed |
-| tests/core/test_config.py | 65 passed |
 | tests/agents/test_write_queue.py | 39 passed |
 | tests/agents/test_background_scenarios.py | 4 passed |
-| tests/skills/test_checkout_stable_cart.py | 11 passed (10 plus the Ruling 15 test, added in fix round 1) |
+| tests/skills/test_checkout_stable_cart.py | 16 passed (stable over 3 runs) |
 | tests/skills/test_checkout_barge_in.py | 6 passed |
 | tests/skills/test_checkout_mutation_scope.py | 4 passed |
 | tests/skills/test_tool_adapter_v2.py | 27 passed |
-| tests/tools/test_await_requests.py | 4 passed |
-| tests/agents/test_action_ledger.py | 31 passed |
+| tests/tools/test_await_requests.py | 6 passed (stable over 3 runs) |
+| tests/tools/test_display.py | 98 passed |
+| tests/tools/test_display_payment_evidence.py | 18 passed |
+| tests/tools/test_display_refusal_not_started.py | 2 passed |
+| tests/agents/test_action_ledger.py | 36 passed |
 | tests/agents/test_orchestrator_background.py | 19 passed |
 | tests/agents/test_orchestrator.py | 71 passed |
-| tests/server/test_voice_parallel_runs.py | 15 passed |
+| tests/server/test_voice_parallel_runs.py | 16 passed |
 | tests/server/test_voice_llm.py | 26 passed |
-| tests/server/test_voice_background.py | 42 passed |
+| tests/server/test_voice_background.py | 44 passed |
 | tests/server/test_voice_lifecycle.py | 29 passed |
 | tests/server/test_voice_carry_over.py | 4 passed |
 | tests/server/test_voice_responder.py | 58 passed |
@@ -51,12 +58,14 @@ Sensitivity check (before fix round 1): with the rig's runtime set to one slot (
 | tests/server/test_voice_routes.py | 10 passed |
 | tests/server/test_print_completion.py | 2 passed |
 | tests/core/test_preset_configs.py | 19 passed, 2 failed (pre-existing) |
-| tests/skills/ (whole directory) | 521 passed, 5 deselected |
-| tests/server/test_voice_parallel_scenarios.py (new) | 8 passed (stable over 3 runs) |
+| tests/skills/ (whole directory) | 527 passed, 5 deselected |
+| tests/server/test_voice_parallel_scenarios.py | 11 passed (stable over 3 runs) |
+
+`tests/core/test_config.py` was not rerun in the fix wave (nothing it covers changed).
 
 The 2 failures are `test_kiosk_mcp_preset_limits_agent_tool_surface` (display_existing_order drift, Ruling 14) and `test_kiosk_mcp_active_skills_are_prepared_composites`; both fail on the tree before this plan.
 
-Lint: `uv run ruff check` and `ruff format --check` are clean on the new test file, on the edited `test_voice_report_latency.py` and on all 30 Python files changed since `70149586`. `ruff check src/ tests/` reports 3 E501 errors in files this plan did not touch (`src/openjarvis/server/cloud_router.py:94`, `tests/server/test_speaker_audio.py:142`, `tests/server/test_speaker_vision.py:275`).
+Lint: `uv run ruff check` and `ruff format --check` are clean on all 33 Python files changed since `70149586`. `ruff check src/ tests/` reports 3 E501 errors in files this plan did not touch (`src/openjarvis/server/cloud_router.py:94`, `tests/server/test_speaker_audio.py:142`, `tests/server/test_speaker_vision.py:275`).
 
 ## Live latency (spec §6, step 3)
 
@@ -87,8 +96,35 @@ From the Task 8 commit `36c6054c` (a barge-in no longer cancels the run, nothing
 13. The plan's quoted "I hear you" in `voice-responder.md` became policy wording ("say that you can hear them"): the user's no-fixed-customer-sentence rule wins.
 14. See the flipped `test_preset_configs.py` set above.
 15. Add the two-waiter test with the production argument shape (`update_order_type=True`, `order_type`), where B1's `begin_checkout` bumps the revision itself.
+16. (Final review C1, I4; amends Task 1.) `wait_stable` waits for every in-flight run that is not itself waiting, runs begun during the wait included, so the checkout is STABLE only when no such run is in flight; a write by a run not in the original snapshot stays CHANGED. `wait_others` (`await_earlier_requests`) waits only for runs begun before the caller and not waiting. The prompt's "cannot be stopped" covers only a checkout that has started ordering. Rulings 5/7 stay consistent: the follow-through accepts only bumps by the runs the checkout waited for (`RunTracker.waited_for`, the snapshot at the wait's start). Cost: a checkout waits up to 15 s longer behind a read-only run.
+17. (Final review C2.) A per-conversation checkout epoch in `RunTracker`; a checkout whose epoch moved between its wait's start and its freeze is refused with `dispatched: False` (`checkout_superseded`), for both the revision and the `cart_lines` paths. Built as: the epoch moves when a checkout's freeze ends (unfreeze, or the owner's `end()`), not when it is taken, and the check runs once the freeze is held. This refuses every case "bump on take" refuses and also a checkout that began waiting while another already held the freeze (bump on take would miss that one: the epoch was already moved when it was captured). Cost: a legitimate second checkout that waited behind a refused first one is refused too and must be asked again.
 
 Deferred minors and carried-over items are listed in `.superpowers/sdd/2026-10-18-barge-in-parallel-agent-runs/progress.md`. The Task 4 priority item (two waiting checkouts with `update_order_type=True` and an `order_type`) is now covered by `test_two_waiting_checkouts_that_set_the_order_type_create_one_order` in `tests/skills/test_checkout_stable_cart.py` (Ruling 15): exactly one order POST with the full total, the other checkout refused with no order started, and the type saved.
+
+## Final review fix wave (2026-10-18)
+
+The whole-branch review found C1, C2, I1-I5 and minors; one fixer handled them, each with a test that failed first (RED against the code before the fix, by stashing the source change) and passes after.
+
+| Finding | Fix (commit) | Tests |
+|---|---|---|
+| C1: a change asked during the checkout wait was ignored once the snapshot runs ended; the prompt said a waiting checkout "cannot be stopped" | Ruling 16 in `RunTracker.wait_stable`; prompt reworded (`e619a541`) | `test_runs.py` (`..._run_begun_during_the_wait`, `..._writes_after_the_snapshot_ended_is_changed`, ...), `test_checkout_stable_cart.py::test_a_change_still_thinking_when_the_snapshot_ends_drops_the_checkout`, the two voice replays above, `test_voice_responder.py` wording |
+| C2: two waiting `cart_lines` checkouts created two orders | Ruling 17 epoch, `checkout_superseded`; prompt handling line (`64ad2191`) | `test_two_waiting_cart_lines_checkouts_create_one_order` (one order POST; before: two), `test_a_checkout_that_waits_while_another_is_ordering_is_refused`, `test_a_later_checkout_is_not_refused_by_an_earlier_finished_one`, epoch tests in `test_runs.py` |
+| I1: a folded background run was reported again when it ended | the ledger records a run folded while its run entry still runs and marks that entry told when it finishes; `run_report_text` leaves out told tools (`72e9c883`) | `test_action_ledger.py` (folded run told whole; a later write still reported alone), `test_voice_background.py` through the reporter |
+| I2: `seen_by_run` was overwritten by a parallel run | `LedgerEntry.seen_by` is a set (`e1bb0399`) | `test_an_entry_seen_by_two_parallel_runs_is_told_by_either`, `test_d4_does_not_hold_a_run_that_saw_the_failure_before_another_run_did` |
+| I3: another run's write reset a turn's add dedup | claims keyed by (conversation, turn nonce), bounded at 256 (`af93d132`) | `test_display.py` (interleaved add, interleaved remove, own remove, bound) |
+| I4: `await_earlier_requests` waited for later runs and waiting checkouts | Ruling 16 `wait_others` (`e619a541`) | `test_runs.py`, `test_await_requests.py` (two corrections in a row; correction beside a waiting checkout), the no-smoothies replay |
+| I5: a run that waited for a slot answered "still in progress" after the customer was told | the tracker remembers the runs each run's prompt names; the ledger run entry records its voice run; `background_for` lists a named, told run as `already_told` (`15a61f6a`) | `test_runs.py`, `test_action_ledger.py`, the one-slot voice replay above |
+| Minor 1: `close()` popped state that later calls recreated | bounded tombstone (1024 ids); late calls return CLOSED/False (`e619a541`) | `test_calls_after_close_find_it_closed_and_leave_no_state`, `test_closed_ids_are_remembered_up_to_a_bound` |
+| Minor 2: no notify after `waiting.add` | notify on entering the wait (`e619a541`) | `test_a_waiting_checkout_wakes_a_peer_as_soon_as_it_waits` (also passed before: a peer's exit notified) |
+| Minor 7: dead `carry`/`settle`, `carrying` branch, `_GatedBinding.prompt_of` | removed (`d4845323`) | their tests removed |
+| Minor 8: unbounded `cleanup()` wait | 5 s bound and a warning (`9c349743`) | `test_cleanup_does_not_wait_forever_for_a_run_that_will_not_unwind` (before: hung until killed) |
+
+Tests changed in the fix wave (not new ones):
+- `test_checkout_stable_cart.py`: the three two-checkout revision tests (`test_two_waiting_checkouts_create_one_order`, `..._after_an_add_...`, `..._that_set_the_order_type_...`) now expect the second checkout to be refused as `checkout_superseded` (Ruling 17 runs before the revision claim that refused it as "already consumed"/"stale"); their one-order, full-total and posts checks are unchanged.
+- `test_runs.py`: `test_a_new_run_that_only_reads_...` ends the reader (a reader still running now holds the wait); `test_wait_others_waits_only_for_runs_in_flight_at_the_call` became `..._begun_before_the_caller` (a later run is no longer waited for); in `test_close_wakes_every_waiter` the `wait_others` caller is the latest run.
+- `test_voice_background.py`: two tests take the expected `run_report_text` before reporting (told tools are now left out).
+- `test_action_ledger.py`, `test_orchestrator_background.py`: `seen_by_run` asserts became `seen_by` sets; the three carry/settle tests were removed.
+- Runtime contract wording (`orchestrator.py`): `already_told` entries "are finished ... do not report them again unless the customer asks about them".
 
 ## Known limits of this replay
 
