@@ -19,7 +19,7 @@ from openjarvis.agents.action_ledger import ACTION_LEDGER
 from openjarvis.core.conversation import conversation_scope
 from openjarvis.core.types import ToolResult
 from openjarvis.server.voice.background import BackgroundReporter
-from openjarvis.server.voice.llm import OpenJarvisLLMService
+from openjarvis.server.voice.llm import OpenJarvisLLMService, inflight_prompt
 
 STEP, TURN = 2.0, 10.0
 
@@ -224,6 +224,11 @@ async def test_a_told_write_is_not_listed_again_while_its_run_keeps_working():
 
     assert spoken == [told]
     assert seen["listed"] == []
-    assert binding.prompts[1] == "xem giỏ"
+    # The prompt names the interrupted request as still in progress (the run
+    # was working), and carries nothing else: not the told write, no carried
+    # block.
+    assert binding.prompts[1] == inflight_prompt([U1["content"]], U3["content"])
+    assert told not in binding.prompts[1]
+    assert "<earlier_unfinished_request>" not in binding.prompts[1]
     # The interrupted request was still working when the next one ran.
     assert seen["cancelled"] == []
