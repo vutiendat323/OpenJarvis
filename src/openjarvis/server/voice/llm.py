@@ -691,7 +691,12 @@ class OpenJarvisLLMService(LLMService):
                         # The note must reach inference before it starts;
                         # the shared marker changes only when speech is queued.
                         context.conversation.messages.insert(
-                            1, Message(role=Role.SYSTEM, content=AGENT_NOTE)
+                            1,
+                            Message(
+                                role=Role.SYSTEM,
+                                content=AGENT_NOTE,
+                                metadata={"volatile": True},
+                            ),
                         )
                         context.metadata[PREAMBLE_SPOKEN] = threading.Event()
                     if speaking and text:

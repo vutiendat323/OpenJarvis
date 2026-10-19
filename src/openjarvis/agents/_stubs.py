@@ -607,17 +607,22 @@ class BaseAgent(ABC):
             tool_evidence_context = evidence.model_context()
         except ImportError:
             tool_evidence_context = ""
-        if tool_evidence_context:
-            evidence_section = (
-                f"Recent tool evidence from this conversation:\n{tool_evidence_context}"
+        evidence_message = (
+            Message(
+                role=Role.SYSTEM,
+                content=(
+                    "Recent tool evidence from this conversation:\n"
+                    f"{tool_evidence_context}"
+                ),
+                metadata={"volatile": True},
             )
-            effective_system_prompt = (
-                f"{effective_system_prompt}\n\n{evidence_section}"
-                if effective_system_prompt
-                else evidence_section
-            )
+            if tool_evidence_context
+            else None
+        )
         if effective_system_prompt:
             messages.append(Message(role=Role.SYSTEM, content=effective_system_prompt))
+        if evidence_message is not None:
+            messages.append(evidence_message)
         if context_messages:
             messages.extend(context_messages)
         messages.append(Message(role=Role.USER, content=input))

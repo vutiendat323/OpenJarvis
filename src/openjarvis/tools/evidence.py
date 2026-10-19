@@ -144,7 +144,7 @@ def model_context(*, max_chars: int = 24_000) -> str:
 
     from openjarvis.tools.result_projection import project_tool_content
 
-    parts: list[str] = []
+    blocks: list[str] = []
     remaining = max_chars
     for entry in reversed(_conversation_evidence()):
         heading = (
@@ -157,12 +157,14 @@ def model_context(*, max_chars: int = 24_000) -> str:
             max_chars=min(16_000, remaining - len(heading)),
         )
         block = heading + projected
-        separator = "\n\n" if parts else ""
+        separator = "\n\n" if blocks else ""
         if len(separator) + len(block) > remaining:
             break
-        parts.append(separator + block)
+        blocks.append(block)
         remaining -= len(separator) + len(block)
-    return "".join(parts)
+    # Newest evidence is kept first, then listed oldest first: new evidence is
+    # appended at the end, so the start of the prompt keeps matching its cache.
+    return "\n\n".join(reversed(blocks))
 
 
 def latest_json_string(

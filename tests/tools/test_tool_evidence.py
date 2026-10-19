@@ -453,3 +453,29 @@ def test_a_scopeless_claim_is_always_granted():
     assert first.allowed is True
     assert second.allowed is True
     assert "" not in evidence._MUTATIONS
+
+
+def test_model_context_lists_the_oldest_kept_evidence_first():
+    """New evidence is appended at the end, so a cached prefix keeps matching."""
+    with conversation_scope("a"):
+        for name in ("first", "second", "third"):
+            evidence.record(
+                "http_request", f"body-{name}", 200, f"https://x.test/{name}"
+            )
+
+        context = evidence.model_context()
+
+        assert context.index("body-first") < context.index("body-second")
+        assert context.index("body-second") < context.index("body-third")
+
+
+def test_model_context_drops_the_oldest_evidence_when_over_budget():
+    with conversation_scope("a"):
+        for name in ("old", "mid", "new"):
+            evidence.record("http_request", name * 100, 200, f"https://x.test/{name}")
+
+        context = evidence.model_context(max_chars=760)
+
+        assert "newnew" in context and "midmid" in context
+        assert "oldold" not in context
+        assert context.index("midmid") < context.index("newnew")

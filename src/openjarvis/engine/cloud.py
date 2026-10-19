@@ -673,12 +673,24 @@ class CloudEngine(InferenceEngine):
         """Convert canonical messages into stateless Responses API input."""
         instructions: list[str] = []
         input_items: List[Dict[str, Any]] = []
+        started = False
         for message in messages:
             if message.role.value == "system":
-                if message.content:
+                if not message.content:
+                    continue
+                # `instructions` leads the prompt-cache prefix, so only text
+                # that stays the same from round to round belongs there. A
+                # volatile message, or one that arrives after the conversation
+                # began, keeps its place in the input instead.
+                if started or message.metadata.get("volatile"):
+                    input_items.append(
+                        {"role": "developer", "content": message.content}
+                    )
+                else:
                     instructions.append(message.content)
                 continue
 
+            started = True
             response_items = message.metadata.get("response_items")
             if message.role.value == "assistant" and response_items:
                 input_items.extend(response_items)

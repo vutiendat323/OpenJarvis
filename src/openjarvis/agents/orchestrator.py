@@ -721,6 +721,7 @@ class OrchestratorAgent(ToolUsingAgent):
                         Message(
                             role=Role.SYSTEM,
                             content=intent_state.final_correction(content),
+                            metadata={"volatile": True},
                         )
                     )
                     continue
@@ -1089,6 +1090,7 @@ class OrchestratorAgent(ToolUsingAgent):
                             Message(
                                 role=Role.SYSTEM,
                                 content=intent_state.final_correction(content),
+                                metadata={"volatile": True},
                             )
                         )
                         continue
@@ -1234,6 +1236,7 @@ class OrchestratorAgent(ToolUsingAgent):
                 + json.dumps(runtime_context, ensure_ascii=False, separators=(",", ":"))
                 + "</runtime_context>"
             ),
+            metadata={"volatile": True},
         )
         user_index = next(
             (

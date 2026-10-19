@@ -371,3 +371,23 @@ class TestToolUsingAgent:
 
         assert result.success is True
         confirm.assert_called_once()
+
+
+class TestEvidenceIsVolatile:
+    def test_tool_evidence_is_its_own_volatile_system_message(self):
+        from openjarvis.core.conversation import conversation_scope
+        from openjarvis.tools import evidence
+
+        evidence.reset()
+        agent = _ConcreteAgent(MagicMock(), "m")
+        with conversation_scope("evidence-split"):
+            evidence.record("http_request", '{"menu":1}', 200, "https://x.test/menu")
+            messages = agent._build_messages("hello", system_prompt="Be helpful.")
+        evidence.reset()
+
+        assert messages[0].role == Role.SYSTEM
+        assert "Be helpful." in messages[0].text
+        assert "Recent tool evidence" not in messages[0].text
+        assert messages[1].role == Role.SYSTEM
+        assert messages[1].metadata.get("volatile") is True
+        assert '{"menu":1}' in messages[1].text
