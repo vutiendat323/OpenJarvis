@@ -269,6 +269,34 @@ async def test_slow_recall_does_not_block_voice_loop_or_replace_history():
 
 
 @pytest.mark.anyio
+async def test_recall_follows_the_voice_prompt_instead_of_changing_it():
+    """Recall changes with each question; the voice prompt must not, or the
+    stable prompt changes on every run and the prompt cache never matches."""
+    from types import SimpleNamespace
+
+    from openjarvis.server.voice.llm import VOICE_SYSTEM_PROMPT
+    from openjarvis.tools.storage.context import ContextConfig
+
+    def retrieve(query, top_k=3):
+        return [
+            SimpleNamespace(content="FAQ wifi", score=1.0, source="faq", metadata={})
+        ]
+
+    service = OpenJarvisLLMService(
+        _Binding([]), recall=(SimpleNamespace(retrieve=retrieve), ContextConfig())
+    )
+    _, context = await service.prepare_agent_input(
+        _PipecatContext([{"role": "user", "content": "có wifi không?"}])
+    )
+
+    voice, recalled = context.conversation.messages[:2]
+    assert voice.text == VOICE_SYSTEM_PROMPT
+    assert "FAQ wifi" in recalled.text
+    assert recalled.metadata.get("memory_context") is True
+    await service._recall_task
+
+
+@pytest.mark.anyio
 async def test_native_sqlite_lock_does_not_block_voice_deadline(tmp_path):
     import subprocess
     import sys
@@ -308,7 +336,9 @@ async def test_native_sqlite_lock_does_not_block_voice_deadline(tmp_path):
         prompt, context = await task
         assert time.perf_counter() - started < 0.3
         assert prompt == "hotline"
-        assert "unavailable" in context.conversation.messages[0].text
+        voice, note = context.conversation.messages[:2]
+        assert "unavailable" not in voice.text
+        assert "unavailable" in note.text and note.metadata.get("volatile") is True
     finally:
         holder.communicate(timeout=3)
         if service._recall_task is not None:

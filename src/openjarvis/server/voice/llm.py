@@ -467,23 +467,21 @@ class OpenJarvisLLMService(LLMService):
             from openjarvis.tools.storage.context import inject_context
 
             backend, config = self._recall
+            # Recall goes in its own message after the voice prompt, never
+            # into it: it changes with each question, and the voice prompt is
+            # part of the stable prompt the prompt cache has to match.
             self._recall_task = asyncio.create_task(
-                asyncio.to_thread(
-                    inject_context,
-                    prompt,
-                    result.conversation.messages,
-                    backend,
-                    config=config,
-                )
+                asyncio.to_thread(inject_context, prompt, [], backend, config=config)
             )
             # A timed-out lookup may fail after the caller has moved on.
             self._recall_task.add_done_callback(
                 lambda task: task.exception() if not task.cancelled() else None
             )
             try:
-                result.conversation.messages = await asyncio.wait_for(
+                recalled = await asyncio.wait_for(
                     asyncio.shield(self._recall_task), timeout=0.1
                 )
+                result.conversation.messages[1:1] = recalled
                 outcome = "ok"
             except asyncio.TimeoutError:
                 outcome = "timeout"
@@ -491,10 +489,18 @@ class OpenJarvisLLMService(LLMService):
                 outcome = "error"
                 logger.warning("voice memory recall failed", exc_info=True)
         if outcome != "ok":
-            result.conversation.messages[0].content += (
-                "\nReference retrieval is unavailable for this turn. "
-                "Do not invent store-specific facts; use verified live state "
-                "or explain that the requested information cannot be verified."
+            result.conversation.messages.insert(
+                1,
+                Message(
+                    role=Role.SYSTEM,
+                    content=(
+                        "Reference retrieval is unavailable for this turn. "
+                        "Do not invent store-specific facts; use verified live "
+                        "state or explain that the requested information cannot "
+                        "be verified."
+                    ),
+                    metadata={"volatile": True},
+                ),
             )
         logger.info(
             "voice_recall outcome=%s elapsed_ms=%.2f",
