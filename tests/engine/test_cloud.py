@@ -264,7 +264,11 @@ class TestCloudEngineGenerate:
                         ),
                     ],
                     usage=SimpleNamespace(
-                        input_tokens=10, output_tokens=5, total_tokens=15
+                        input_tokens=10,
+                        output_tokens=5,
+                        total_tokens=15,
+                        input_tokens_details=SimpleNamespace(cached_tokens=8),
+                        output_tokens_details=SimpleNamespace(reasoning_tokens=4),
                     ),
                     status="completed",
                 ),
@@ -312,6 +316,8 @@ class TestCloudEngineGenerate:
             "prompt_tokens": 10,
             "completion_tokens": 5,
             "total_tokens": 15,
+            "cached_tokens": 8,
+            "reasoning_tokens": 4,
         }
 
     @pytest.mark.asyncio

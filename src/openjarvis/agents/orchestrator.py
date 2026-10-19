@@ -76,14 +76,19 @@ def _log_round(
     neither the finish reason nor whether the round produced any visible text.
     WARNING, like the kiosk tick: `jarvis serve` drops openjarvis INFO lines.
     """
+    usage = usage or {}
     logger.warning(
-        "agent_round path=%s turn=%d model=%s finish=%s completion_tokens=%s "
+        "agent_round path=%s turn=%d model=%s finish=%s prompt_tokens=%s "
+        "cached_tokens=%s completion_tokens=%s reasoning_tokens=%s "
         "visible_chars=%d reasoning_chars=%s tool_calls=%s continuation=%d",
         path,
         turn,
         model,
         finish_reason or "-",
-        (usage or {}).get("completion_tokens"),
+        usage.get("prompt_tokens"),
+        usage.get("cached_tokens"),
+        usage.get("completion_tokens"),
+        usage.get("reasoning_tokens"),
         visible_chars,
         "-" if reasoning_chars is None else reasoning_chars,
         ",".join(tool_names) or "-",

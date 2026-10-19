@@ -64,6 +64,33 @@ async def test_round_log_reports_shape_without_customer_text(caplog):
 
 
 @pytest.mark.asyncio
+async def test_round_log_reports_prompt_cache_and_reasoning_tokens(caplog):
+    caplog.set_level(SERVE_LEVEL, logger=LOGGER)
+    usage = {
+        "prompt_tokens": 7000,
+        "completion_tokens": 355,
+        "total_tokens": 7355,
+        "cached_tokens": 6400,
+        "reasoning_tokens": 340,
+    }
+    engine = StreamingEngine(
+        [
+            [
+                StreamChunk(content="Xin chào."),
+                StreamChunk(finish_reason="stop", usage=usage),
+            ]
+        ]
+    )
+    await _run(OrchestratorAgent(engine, "gpt-6-luna"))
+
+    [line] = _lines(caplog, "agent_round")
+    assert "prompt_tokens=7000" in line
+    assert "cached_tokens=6400" in line
+    assert "reasoning_tokens=340" in line
+    assert "completion_tokens=355" in line
+
+
+@pytest.mark.asyncio
 async def test_reasoning_only_round_and_rejection_are_logged(caplog):
     caplog.set_level(SERVE_LEVEL, logger=LOGGER)
     target = ExistingTool("finish", metadata={"intent_contract": {"name": "FINALIZE"}})

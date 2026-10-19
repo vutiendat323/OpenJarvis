@@ -2065,6 +2065,8 @@ class CloudEngine(InferenceEngine):
                         if item.get("type") == "function_call"
                     ]
                     usage = getattr(response, "usage", None)
+                    input_details = getattr(usage, "input_tokens_details", None)
+                    output_details = getattr(usage, "output_tokens_details", None)
                     yield StreamChunk(
                         tool_calls=tool_calls or None,
                         finish_reason="tool_calls" if tool_calls else "stop",
@@ -2073,6 +2075,10 @@ class CloudEngine(InferenceEngine):
                             "prompt_tokens": getattr(usage, "input_tokens", 0),
                             "completion_tokens": getattr(usage, "output_tokens", 0),
                             "total_tokens": getattr(usage, "total_tokens", 0),
+                            "cached_tokens": getattr(input_details, "cached_tokens", 0),
+                            "reasoning_tokens": getattr(
+                                output_details, "reasoning_tokens", 0
+                            ),
                         },
                     )
                 elif event.type in {"response.failed", "response.incomplete"}:
