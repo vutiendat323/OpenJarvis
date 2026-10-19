@@ -32,6 +32,7 @@ from openjarvis.agents._stubs import (
     CUSTOMER_REQUEST,
     PREAMBLE_SPOKEN,
     RUN_SPEAKING,
+    TOOL_TRANSCRIPT,
     AgentContext,
     AgentTextDelta,
     AgentToolFinished,
@@ -295,6 +296,47 @@ def agent_input(
     return prompt, AgentContext(conversation=Conversation(messages=history))
 
 
+def transcript_messages(transcript: Sequence[Message]) -> list[dict[str, Any]]:
+    """Tool calls and outputs as Pipecat context messages, paired.
+
+    A call with no output is dropped: the Responses API rejects a function
+    call that has no output.
+    """
+    answered = {m.tool_call_id for m in transcript if m.role == Role.TOOL}
+    messages: list[dict[str, Any]] = []
+    for message in transcript:
+        if message.role == Role.ASSISTANT:
+            calls = [c for c in message.tool_calls or [] if c.id in answered]
+            if calls:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": message.content or "",
+                        "tool_calls": [
+                            {
+                                "id": call.id,
+                                "type": "function",
+                                "function": {
+                                    "name": call.name,
+                                    "arguments": call.arguments,
+                                },
+                            }
+                            for call in calls
+                        ],
+                    }
+                )
+        elif message.role == Role.TOOL:
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": message.tool_call_id,
+                    "name": message.name,
+                    "content": message.content,
+                }
+            )
+    return messages
+
+
 def voice_activity_frame(
     phase: Literal["processing", "listening", "inference", "tool"],
     *,
@@ -459,6 +501,9 @@ class OpenJarvisLLMService(LLMService):
     async def prepare_agent_input(self, context: Any) -> tuple[str, AgentContext]:
         """Recall off the audio loop, with one in-flight lookup per session."""
         prompt, result = agent_input(context)
+        # A customer turn keeps its tool calls in the conversation for later
+        # turns (see _keep_tool_transcript); event turns do not.
+        result.metadata[TOOL_TRANSCRIPT] = []
         if self._recall is None or not prompt:
             return prompt, result
         started = time.perf_counter()
@@ -733,9 +778,26 @@ class OpenJarvisLLMService(LLMService):
                     logger.warning("fenced voice run failed", exc_info=True)
             finally:
                 await self.stop_processing_metrics()
+        # Before the response end, where the spoken answer joins the context:
+        # the tool calls come first, as they happened.
+        self._keep_tool_transcript(context)
         if completed:
             await self.push_frame(LLMFullResponseEndFrame())
         return completed
+
+    def _keep_tool_transcript(self, context: AgentContext) -> None:
+        """Append this run's tool calls and outputs to the shared conversation.
+
+        The OpenAI Responses API keeps function calls and their outputs in the
+        conversation, appended; later runs then see what was called and what it
+        returned, and the cached prefix keeps growing instead of changing.
+        A fenced run's tools ran too, so they are kept as well.
+        """
+        transcript = context.metadata.get(TOOL_TRANSCRIPT)
+        if not transcript or self._last_context is None:
+            return
+        self._last_context.add_messages(transcript_messages(transcript))
+        transcript.clear()
 
     async def _speak_responder(
         self, text: str, context: AgentContext, turn_id: int

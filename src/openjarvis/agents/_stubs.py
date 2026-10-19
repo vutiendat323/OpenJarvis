@@ -378,6 +378,12 @@ CUSTOMER_REQUEST = "customer_request"
 # may speak. A run that was fenced (silenced) did not tell the customer.
 RUN_SPEAKING = "run_speaking"
 
+# ``AgentContext.metadata`` key: a list the run extends with its tool calls and
+# their outputs, as messages. The caller keeps them in the conversation, so the
+# next run sees them in history (as the OpenAI Responses API expects) and the
+# separate tool-evidence block is not added.
+TOOL_TRANSCRIPT = "tool_transcript"
+
 
 @dataclass(slots=True)
 class AgentResult:
@@ -606,12 +612,14 @@ class BaseAgent(ABC):
                     break
             else:
                 effective_system_prompt = current_date_context
-        try:
-            from openjarvis.tools import evidence
+        tool_evidence_context = ""
+        if context is None or TOOL_TRANSCRIPT not in context.metadata:
+            try:
+                from openjarvis.tools import evidence
 
-            tool_evidence_context = evidence.model_context()
-        except ImportError:
-            tool_evidence_context = ""
+                tool_evidence_context = evidence.model_context()
+            except ImportError:
+                pass
         evidence_message = (
             Message(
                 role=Role.SYSTEM,

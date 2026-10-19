@@ -28,6 +28,7 @@ from openjarvis.agents._stubs import (
     CUSTOMER_REQUEST,
     PREAMBLE_SPOKEN,
     RUN_SPEAKING,
+    TOOL_TRANSCRIPT,
     AgentContext,
     AgentResult,
     AgentRunCompleted,
@@ -94,6 +95,13 @@ def _log_round(
         ",".join(tool_names) or "-",
         continuation,
     )
+
+
+def _record_transcript(context: AgentContext | None, *messages: Message) -> None:
+    """Hand tool calls and outputs to the caller that keeps the conversation."""
+    transcript = context.metadata.get(TOOL_TRANSCRIPT) if context is not None else None
+    if isinstance(transcript, list):
+        transcript.extend(messages)
 
 
 def _log_context_sizes(messages: list[Message], runtime: dict[str, Any]) -> None:
@@ -666,6 +674,14 @@ class OrchestratorAgent(ToolUsingAgent):
                         ),
                     )
                 )
+                # Without the round's reasoning items: later runs need what was
+                # called and returned, not this round's encrypted reasoning.
+                _record_transcript(
+                    context,
+                    Message(
+                        role=Role.ASSISTANT, content=round_text, tool_calls=tool_calls
+                    ),
+                )
                 # The model completed these calls: they start now, before any
                 # hand-off below, so a barge-in during the hand-offs stops
                 # speech but not tools (spec 2026-10-17 barge-in §5.2).
@@ -696,9 +712,11 @@ class OrchestratorAgent(ToolUsingAgent):
                 previous_tool_results = len(all_tool_results)
                 for tool_call in tool_calls:
                     yield AgentToolStarted(tool_call.name)
+                previous_messages = len(messages)
                 self._append_function_tool_results(
                     messages, all_tool_results, await asyncio.shield(dispatch)
                 )
+                _record_transcript(context, *messages[previous_messages:])
                 new_tool_results = all_tool_results[previous_tool_results:]
                 for tool_result in new_tool_results:
                     yield AgentToolFinished(

@@ -933,3 +933,57 @@ async def test_vieneu_hands_each_rendered_chunk_to_on_audio():
     frames = [frame async for frame in service.run_tts("xin chào", "ctx-1")]
     assert len(frames) == 2
     assert seen == [(960, 48_000, 1), (960, 48_000, 1)]
+
+
+def test_tool_transcript_becomes_paired_pipecat_messages():
+    from openjarvis.core.types import Message, Role, ToolCall
+    from openjarvis.server.voice.llm import transcript_messages
+
+    answered = ToolCall(id="c1", name="menu", arguments='{"q":"bánh"}')
+    unanswered = ToolCall(id="c2", name="checkout", arguments="{}")
+    transcript = [
+        Message(role=Role.ASSISTANT, content="", tool_calls=[answered, unanswered]),
+        Message(role=Role.TOOL, content="ok", tool_call_id="c1", name="menu"),
+    ]
+
+    assert transcript_messages(transcript) == [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "menu", "arguments": '{"q":"bánh"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "menu", "content": "ok"},
+    ]
+
+
+@pytest.mark.anyio
+async def test_customer_turn_keeps_its_tool_calls_for_the_next_turn():
+    from pipecat.processors.aggregators.llm_context import LLMContext
+
+    from openjarvis.agents._stubs import TOOL_TRANSCRIPT
+    from openjarvis.core.types import Message, Role, ToolCall
+
+    service = OpenJarvisLLMService(_Binding([]))
+    pipecat = LLMContext(messages=[{"role": "user", "content": "xem menu"}])
+    service._last_context = pipecat
+    _, context = await service.prepare_agent_input(pipecat)
+    assert context.metadata[TOOL_TRANSCRIPT] == []
+
+    call = ToolCall(id="c1", name="menu", arguments="{}")
+    context.metadata[TOOL_TRANSCRIPT] += [
+        Message(role=Role.ASSISTANT, content="", tool_calls=[call]),
+        Message(role=Role.TOOL, content="shown", tool_call_id="c1", name="menu"),
+    ]
+    service._keep_tool_transcript(context)
+
+    roles = [m["role"] for m in pipecat.get_messages()]
+    assert roles == ["user", "assistant", "tool"]
+    pipecat.add_message({"role": "user", "content": "thêm bánh"})
+    _, later = agent_input(pipecat)
+    assert any(m.role == Role.TOOL for m in later.conversation.messages)
