@@ -39,9 +39,11 @@ def test_volatile_system_message_stays_out_of_the_instructions():
     )
 
     assert instructions == "Kiosk rules.\n\nVoice rules."
+    # After the conversation: text that changes each question must not sit
+    # between the fixed prompt and the history, or no run reuses the history.
     assert items == [
-        {"role": "developer", "content": "Evidence: menu"},
         {"role": "user", "content": "Hi"},
+        {"role": "developer", "content": "Evidence: menu"},
     ]
 
 
@@ -131,8 +133,8 @@ async def test_stable_prompt_ends_in_an_explicit_cache_breakpoint():
         ],
     }
     assert sent["input"][1:] == [
-        {"role": "developer", "content": "Evidence"},
         {"role": "user", "content": "Hi"},
+        {"role": "developer", "content": "Evidence"},
     ]
 
 
@@ -262,3 +264,21 @@ async def test_final_answer_schema_is_sent_as_strict_text_format():
         }
     }
     assert "final_answer_schema" not in sent
+
+
+def test_history_prefix_is_the_same_whatever_the_leading_volatile_text():
+    def items(note: str):
+        _, built = _build(
+            [
+                _system("Kiosk rules."),
+                _system(note, volatile=True),
+                _user("Mở menu"),
+                Message(role=Role.ASSISTANT, content="Menu đây."),
+                _user("Thêm bánh"),
+            ]
+        )
+        return built
+
+    first, second = items("FAQ giờ mở cửa"), items("FAQ wifi")
+    assert first[:3] == second[:3]
+    assert first[-1]["content"] == "FAQ giờ mở cửa"

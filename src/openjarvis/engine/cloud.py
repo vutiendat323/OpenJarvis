@@ -732,6 +732,10 @@ class CloudEngine(InferenceEngine):
         """The stable instruction parts, in order, and the input items."""
         instructions: list[str] = []
         input_items: List[Dict[str, Any]] = []
+        # Volatile text from before the conversation (recall, notes) goes after
+        # it: between the fixed prompt and the history it would change the
+        # prefix of every run, and no run would reuse the cached history.
+        trailing: List[Dict[str, Any]] = []
         started = False
         for message in messages:
             if message.role.value == "system":
@@ -739,12 +743,13 @@ class CloudEngine(InferenceEngine):
                     continue
                 # `instructions` leads the prompt-cache prefix, so only text
                 # that stays the same from round to round belongs there. A
-                # volatile message, or one that arrives after the conversation
-                # began, keeps its place in the input instead.
-                if started or message.metadata.get("volatile"):
-                    input_items.append(
-                        {"role": "developer", "content": message.content}
-                    )
+                # system message that arrives after the conversation began
+                # keeps its place in the input.
+                item = {"role": "developer", "content": message.content}
+                if started:
+                    input_items.append(item)
+                elif message.metadata.get("volatile"):
+                    trailing.append(item)
                 else:
                     instructions.append(message.content)
                 continue
@@ -787,7 +792,7 @@ class CloudEngine(InferenceEngine):
                     "content": message.content or "",
                 }
             )
-        return instructions, input_items
+        return instructions, [*input_items, *trailing]
 
     @staticmethod
     def _openai_responses_tools(
