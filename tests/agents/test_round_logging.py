@@ -210,3 +210,21 @@ def test_sync_path_logs_rounds_rejection_and_max_turns(caplog):
     )
     assert len(_lines(caplog, "agent_max_turns")) == 1
     assert "path=sync" in _lines(caplog, "agent_max_turns")[0]
+
+
+@pytest.mark.asyncio
+async def test_context_sizes_are_logged_once_per_run_without_content(caplog):
+    caplog.set_level(SERVE_LEVEL, logger=LOGGER)
+
+    class _CartTool(_CalculatorStub):
+        def agent_context(self):
+            return {"draft_cart": {"lines": [{"name": "Cà phê bí mật"}]}}
+
+    engine = StreamingEngine(
+        [[*_tool_round("", CALC)], _stream_final_round("Kết quả là 4.")]
+    )
+    await _run(OrchestratorAgent(engine, "deepseek-v4-flash", tools=[_CartTool()]))
+
+    [line] = _lines(caplog, "agent_context_sizes")
+    assert "runtime=draft_cart:" in line and "evidence_chars=" in line
+    assert "bí mật" not in line

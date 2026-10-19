@@ -96,6 +96,31 @@ def _log_round(
     )
 
 
+def _log_context_sizes(messages: list[Message], runtime: dict[str, Any]) -> None:
+    """Once per run: how many chars each part of the dynamic context takes.
+
+    Sizes only, never content. The dynamic context is the uncached part of
+    the prompt, so its size is what each first round pays for.
+    """
+    evidence_chars = sum(
+        len(message.text)
+        for message in messages
+        if message.role == Role.SYSTEM
+        and message.metadata.get("volatile")
+        and message.text.startswith("Recent tool evidence")
+    )
+    sizes = {
+        key: len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+        for key, value in runtime.items()
+    }
+    logger.warning(
+        "agent_context_sizes runtime_chars=%d runtime=%s evidence_chars=%d",
+        sum(sizes.values()),
+        ",".join(f"{key}:{size}" for key, size in sizes.items()) or "-",
+        evidence_chars,
+    )
+
+
 def _log_final_rejected(turn: int, intent_state: Any, visible_chars: int) -> None:
     logger.warning(
         "agent_final_rejected turn=%d declared=%s reached=%s terminal=%s "
@@ -1222,6 +1247,8 @@ class OrchestratorAgent(ToolUsingAgent):
             )
             if background:
                 runtime_context["background_actions"] = background
+        if previous is None:
+            _log_context_sizes(messages, runtime_context)
         if not runtime_context:
             return
         runtime_context["turn_nonce"] = current_turn_nonce()
