@@ -249,9 +249,32 @@ class IntentState:
 
     def _accepts_state(self, declared: Any, state: Any) -> bool:
         valid_states = {"NEEDS_INPUT", "FAILED"}
-        if declared == "NONE":
+        # ANSWER states a confirmed result: an informational one, or a target
+        # whose tool already succeeded in this turn.
+        if declared == "NONE" or (self.reached and declared == self.declared):
             valid_states.add("ANSWER")
         return state in valid_states
+
+    def final_schema(self) -> dict[str, Any]:
+        """The final answer's JSON schema, for an API that enforces it.
+
+        ``_intent`` and ``state`` come before ``message``, so speech can check
+        them before any of the message is released. Which state each intent
+        may use is still decided by ``finish``.
+        """
+        return {
+            "type": "object",
+            "properties": {
+                "_intent": {"type": "string", "enum": ["NONE", *self.targets]},
+                "state": {
+                    "type": "string",
+                    "enum": ["ANSWER", "NEEDS_INPUT", "FAILED"],
+                },
+                "message": {"type": "string"},
+            },
+            "required": ["_intent", "state", "message"],
+            "additionalProperties": False,
+        }
 
     def accepts_final(self, declared: Any, state: Any) -> bool:
         """Whether a final answer with this intent and state passes ``finish``.

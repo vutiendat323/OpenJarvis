@@ -227,3 +227,38 @@ async def test_prefix_log_lists_each_stable_part(caplog):
     fields = dict(part.split("=", 1) for part in line.split()[1:])
     first, second = fields["stable_parts"].split(",")
     assert first.startswith("3:") and second.startswith("5:")
+
+
+@pytest.mark.asyncio
+async def test_final_answer_schema_is_sent_as_strict_text_format():
+    from types import SimpleNamespace
+    from unittest import mock
+
+    async def events():
+        yield SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(output=[], usage=None, status="completed"),
+        )
+
+    client = mock.MagicMock()
+    client.responses.create = mock.AsyncMock(return_value=events())
+    engine = CloudEngine()
+    engine._openai_async_client = client
+    schema = {"type": "object", "properties": {}, "required": []}
+    assert engine.supports_final_answer_schema("gpt-6-luna")
+    assert not engine.supports_final_answer_schema("openrouter/openai/gpt-6-luna")
+    async for _ in engine.stream_full(
+        [_user("Hi")], model="gpt-6-luna", final_answer_schema=schema
+    ):
+        pass
+
+    sent = client.responses.create.call_args.kwargs
+    assert sent["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "final_answer",
+            "strict": True,
+            "schema": schema,
+        }
+    }
+    assert "final_answer_schema" not in sent

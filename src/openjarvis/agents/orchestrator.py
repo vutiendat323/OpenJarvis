@@ -249,6 +249,13 @@ class OrchestratorAgent(ToolUsingAgent):
         messages.insert(0, Message(role=Role.SYSTEM, content=state.instruction()))
         return state
 
+    def _final_answer_schema(self, intent_state, model: str) -> dict[str, Any]:
+        """The final answer's schema when the engine can enforce it, else {}."""
+        supports = getattr(self._engine, "supports_final_answer_schema", None)
+        if intent_state is None or not callable(supports) or not supports(model):
+            return {}
+        return intent_state.final_schema()
+
     @staticmethod
     def _run_may_speak(context: AgentContext | None) -> bool:
         """False only for a fenced run: its answer never reached the customer."""
@@ -423,6 +430,7 @@ class OrchestratorAgent(ToolUsingAgent):
             openai_tools = intent_state.schemas(openai_tools)
         if self._progress_speech and openai_tools:
             openai_tools = _with_progress_argument(openai_tools)
+        final_answer_schema = self._final_answer_schema(intent_state, model)
         all_tool_results: list[ToolResult] = []
         total_prompt_tokens = 0
         total_completion_tokens = 0
@@ -453,6 +461,8 @@ class OrchestratorAgent(ToolUsingAgent):
             gen_kwargs: dict[str, Any] = {}
             if openai_tools:
                 gen_kwargs["tools"] = openai_tools
+            if final_answer_schema:
+                gen_kwargs["final_answer_schema"] = final_answer_schema
 
             visible_parts: list[str] = []
             continuations = 0

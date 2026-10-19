@@ -451,6 +451,10 @@ class CloudEngine(InferenceEngine):
     def supports_semantic_reasoning_stream(self, model: str) -> bool:
         return _is_deepseek_model(model) or _uses_openai_responses(model)
 
+    def supports_final_answer_schema(self, model: str) -> bool:
+        """Whether the final answer's format can be enforced by the API."""
+        return _uses_openai_responses(model) and not _is_openrouter_model(model)
+
     def reasoning_off_options(self, model: str) -> Dict[str, Any] | None:
         if _is_deepseek_model(model):
             return {"extra_body": {"thinking": {"type": "disabled"}}}
@@ -2079,6 +2083,7 @@ class CloudEngine(InferenceEngine):
         instructions = "\n\n".join(stable_parts)
         tools = kwargs.pop("tools", None)
         tool_choice = kwargs.pop("tool_choice", None)
+        final_answer_schema = kwargs.pop("final_answer_schema", None)
         kwargs.pop("reasoning_effort", None)
         create_kwargs: Dict[str, Any] = {
             "model": openrouter_model_id(model),
@@ -2098,6 +2103,18 @@ class CloudEngine(InferenceEngine):
             ]
         if tools:
             create_kwargs["tools"] = self._openai_responses_tools(tools)
+        if final_answer_schema:
+            # Structured Outputs: the API guarantees the final answer matches
+            # the schema, instead of the prompt asking for JSON and a rejected
+            # answer costing another round.
+            create_kwargs["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "final_answer",
+                    "strict": True,
+                    "schema": final_answer_schema,
+                }
+            }
         if tool_choice is not None:
             if isinstance(tool_choice, dict) and isinstance(
                 tool_choice.get("function"), dict
