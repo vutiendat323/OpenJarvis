@@ -1293,15 +1293,10 @@ class OrchestratorAgent(ToolUsingAgent):
             ),
             metadata={"volatile": True},
         )
-        user_index = next(
-            (
-                index
-                for index in range(len(messages) - 1, -1, -1)
-                if messages[index].role == Role.USER
-            ),
-            len(messages),
-        )
-        messages.insert(user_index, message)
+        # Last, after the newest user words and tool outputs: OpenAI writes the
+        # prompt cache at the end of those, so state that changes each round
+        # placed before them made every later run miss its history.
+        messages.append(message)
         return message
 
     def _execute_function_tool_calls(

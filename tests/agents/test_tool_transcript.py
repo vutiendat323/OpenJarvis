@@ -49,3 +49,28 @@ def test_tool_history_replaces_the_evidence_block():
 
     assert not any("Recent tool evidence" in m.text for m in with_history)
     assert any("Recent tool evidence" in m.text for m in without)
+
+
+@pytest.mark.asyncio
+async def test_runtime_context_goes_last_so_the_history_prefix_stays_cacheable():
+    """OpenAI writes the cache at the end of the latest user message or tool
+    output. Runtime state placed before them made every later run diverge
+    right after the fixed prompt; placed last, the history before it matches."""
+
+    class _CartTool(_CalculatorStub):
+        def agent_context(self):
+            return {"draft_cart": {"lines": []}}
+
+    class _Snapshots(StreamingEngine):
+        def stream_full(self, messages, **kwargs):
+            self.seen = [*getattr(self, "seen", []), list(messages)]
+            return super().stream_full(messages, **kwargs)
+
+    engine = _Snapshots([_tool_round("", CALC), _stream_final_round("Bằng 4.")])
+    agent = OrchestratorAgent(engine, "m", tools=[_CartTool()])
+    [event async for event in agent.run_stream("2+2?", AgentContext())]
+
+    first, second = engine.seen
+    assert "<runtime_context>" in first[-1].text and first[-2].role == Role.USER
+    assert "<runtime_context>" in second[-1].text and second[-2].role == Role.TOOL
+    assert sum("<runtime_context>" in m.text for m in second) == 1
