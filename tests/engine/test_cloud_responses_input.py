@@ -194,3 +194,36 @@ async def test_prefix_log_shows_which_part_of_the_cached_prefix_changed(caplog):
     assert other_rules["stable"] != first["stable"]
     assert other_rules["tools"] == first["tools"]
     assert not any("secret customer" in line for line in _prefix_lines(caplog))
+
+
+@pytest.mark.asyncio
+async def test_prefix_log_lists_each_stable_part(caplog):
+    import logging
+    from types import SimpleNamespace
+    from unittest import mock
+
+    caplog.set_level(logging.WARNING, logger="openjarvis.engine.cloud")
+
+    async def events():
+        yield SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(output=[], usage=None, status="completed"),
+        )
+
+    client = mock.MagicMock()
+    client.responses.create = mock.AsyncMock(return_value=events())
+    engine = CloudEngine()
+    engine._openai_async_client = client
+    messages = [
+        _system("abc"),
+        _system("Evidence", volatile=True),
+        _system("hello"),
+        _user("Hi"),
+    ]
+    async for _ in engine.stream_full(messages, model="gpt-6-luna"):
+        pass
+
+    [line] = _prefix_lines(caplog)
+    fields = dict(part.split("=", 1) for part in line.split()[1:])
+    first, second = fields["stable_parts"].split(",")
+    assert first.startswith("3:") and second.startswith("5:")

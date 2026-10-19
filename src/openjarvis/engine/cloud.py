@@ -256,21 +256,25 @@ def _short_hash(value: Any) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:10]
 
 
-def _log_prefix(model: str, stable: str, tools: Sequence[Dict[str, Any]]) -> None:
+def _log_prefix(
+    model: str, stable_parts: Sequence[str], tools: Sequence[Dict[str, Any]]
+) -> None:
     """Hashes of what leads the cached prefix, so a cache miss shows its cause.
 
     Hashes and sizes only, never the text. WARNING, like ``agent_round``:
     `jarvis serve` drops openjarvis INFO lines.
     """
+    stable = "\n\n".join(stable_parts)
     logger.warning(
         "responses_prefix model=%s tools=%s tool_names=%s tools_count=%d "
-        "stable=%s stable_chars=%d",
+        "stable=%s stable_chars=%d stable_parts=%s",
         model,
         _short_hash(list(tools)),
         _short_hash([tool.get("name", "") for tool in tools]),
         len(tools),
         _short_hash(stable),
         len(stable),
+        ",".join(f"{len(part)}:{_short_hash(part)}" for part in stable_parts) or "-",
     )
 
 
@@ -714,6 +718,14 @@ class CloudEngine(InferenceEngine):
         messages: Sequence[Message],
     ) -> tuple[str, List[Dict[str, Any]]]:
         """Convert canonical messages into stateless Responses API input."""
+        instructions, input_items = CloudEngine._openai_responses_parts(messages)
+        return "\n\n".join(instructions), input_items
+
+    @staticmethod
+    def _openai_responses_parts(
+        messages: Sequence[Message],
+    ) -> tuple[list[str], List[Dict[str, Any]]]:
+        """The stable instruction parts, in order, and the input items."""
         instructions: list[str] = []
         input_items: List[Dict[str, Any]] = []
         started = False
@@ -771,7 +783,7 @@ class CloudEngine(InferenceEngine):
                     "content": message.content or "",
                 }
             )
-        return "\n\n".join(instructions), input_items
+        return instructions, input_items
 
     @staticmethod
     def _openai_responses_tools(
@@ -2063,7 +2075,8 @@ class CloudEngine(InferenceEngine):
             raise EngineConnectionError(
                 "Responses client not available for selected provider"
             )
-        instructions, input_items = self._openai_responses_input(messages)
+        stable_parts, input_items = self._openai_responses_parts(messages)
+        instructions = "\n\n".join(stable_parts)
         tools = kwargs.pop("tools", None)
         tool_choice = kwargs.pop("tool_choice", None)
         kwargs.pop("reasoning_effort", None)
@@ -2096,7 +2109,7 @@ class CloudEngine(InferenceEngine):
             else:
                 create_kwargs["tool_choice"] = tool_choice
 
-        _log_prefix(model, instructions, create_kwargs.get("tools") or [])
+        _log_prefix(model, stable_parts, create_kwargs.get("tools") or [])
         events = await client.responses.create(**create_kwargs)
         completed = False
         try:
