@@ -142,3 +142,55 @@ async def test_openrouter_keeps_plain_instructions():
 
     assert sent["instructions"] == "Rules."
     assert sent["input"] == [{"role": "user", "content": "Hi"}]
+
+
+def _prefix_lines(caplog) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("responses_prefix")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prefix_log_shows_which_part_of_the_cached_prefix_changed(caplog):
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="openjarvis.engine.cloud")
+    tools_a = [{"type": "function", "function": {"name": "menu"}}]
+    tools_b = [{"type": "function", "function": {"name": "cart"}}]
+
+    async def send(tools, rules):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        async def events():
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(output=[], usage=None, status="completed"),
+            )
+
+        client = mock.MagicMock()
+        client.responses.create = mock.AsyncMock(return_value=events())
+        engine = CloudEngine()
+        engine._openai_async_client = client
+        messages = [_system(rules), _user("secret customer words")]
+        async for _ in engine.stream_full(messages, model="gpt-6-luna", tools=tools):
+            pass
+
+    await send(tools_a, "Kiosk rules.")
+    await send(tools_a, "Kiosk rules.")
+    await send(tools_b, "Kiosk rules.")
+    await send(tools_a, "Other rules.")
+
+    first, same, other_tools, other_rules = (
+        dict(part.split("=", 1) for part in line.split()[1:])
+        for line in _prefix_lines(caplog)
+    )
+    assert first == same
+    assert first["stable_chars"] == "12" and first["tools_count"] == "1"
+    assert other_tools["tools"] != first["tools"]
+    assert other_tools["stable"] == first["stable"]
+    assert other_rules["stable"] != first["stable"]
+    assert other_rules["tools"] == first["tools"]
+    assert not any("secret customer" in line for line in _prefix_lines(caplog))

@@ -6,6 +6,7 @@ OpenAI, Anthropic, Google, MiniMax, and DeepSeek API backends.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -248,6 +249,29 @@ def _is_openai_reasoning_model(model: str) -> bool:
     if m.startswith(("o1", "o3")):
         return True
     return m == "gpt-5-mini" or m.startswith("gpt-5-mini-") or m == "gpt-6-luna"
+
+
+def _short_hash(value: Any) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:10]
+
+
+def _log_prefix(model: str, stable: str, tools: Sequence[Dict[str, Any]]) -> None:
+    """Hashes of what leads the cached prefix, so a cache miss shows its cause.
+
+    Hashes and sizes only, never the text. WARNING, like ``agent_round``:
+    `jarvis serve` drops openjarvis INFO lines.
+    """
+    logger.warning(
+        "responses_prefix model=%s tools=%s tool_names=%s tools_count=%d "
+        "stable=%s stable_chars=%d",
+        model,
+        _short_hash(list(tools)),
+        _short_hash([tool.get("name", "") for tool in tools]),
+        len(tools),
+        _short_hash(stable),
+        len(stable),
+    )
 
 
 def _cached_instructions_item(text: str) -> Dict[str, Any]:
@@ -2072,6 +2096,7 @@ class CloudEngine(InferenceEngine):
             else:
                 create_kwargs["tool_choice"] = tool_choice
 
+        _log_prefix(model, instructions, create_kwargs.get("tools") or [])
         events = await client.responses.create(**create_kwargs)
         completed = False
         try:
