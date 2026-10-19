@@ -562,6 +562,7 @@ class BaseAgent(ABC):
                 effective_system_prompt = cfg.agent.default_system_prompt or None
             except Exception:
                 effective_system_prompt = None
+        recalled_message = None
         if effective_system_prompt:
             context_system_text = "\n\n".join(
                 message.text
@@ -571,8 +572,12 @@ class BaseAgent(ABC):
                 and message.text
             )
             if context_system_text:
-                effective_system_prompt = (
-                    f"{effective_system_prompt}\n\n{context_system_text}"
+                # Recall changes with each question, so it follows the stable
+                # prompt as its own message: the prompt cache keeps matching.
+                recalled_message = Message(
+                    role=Role.SYSTEM,
+                    content=context_system_text,
+                    metadata={"memory_context": True, "volatile": True},
                 )
                 context_messages = [
                     message
@@ -621,6 +626,8 @@ class BaseAgent(ABC):
         )
         if effective_system_prompt:
             messages.append(Message(role=Role.SYSTEM, content=effective_system_prompt))
+        if recalled_message is not None:
+            messages.append(recalled_message)
         if evidence_message is not None:
             messages.append(evidence_message)
         if context_messages:

@@ -217,7 +217,7 @@ class TestBuildMessages:
         assert messages[1].content == "prev"
         assert messages[2].content == "new"
 
-    def test_prompt_builder_merges_context_system_message(self):
+    def test_prompt_builder_keeps_recalled_context_after_the_prompt(self):
         engine = MagicMock()
         prompt_builder = MagicMock()
         prompt_builder.build.return_value = "You are OpenJarvis."
@@ -235,9 +235,13 @@ class TestBuildMessages:
         messages = agent._build_messages("new", ctx)
 
         system_messages = [m for m in messages if m.role == Role.SYSTEM]
-        assert len(system_messages) == 1
+        assert len(system_messages) == 2
         assert "You are OpenJarvis." in system_messages[0].content
-        assert "user likes jazz" in system_messages[0].content
+        assert "user likes jazz" not in system_messages[0].content
+        # Recall changes with each question: it follows the stable prompt as
+        # its own volatile message so the prompt cache can still match.
+        assert "user likes jazz" in system_messages[1].content
+        assert system_messages[1].metadata.get("volatile") is True
 
     def test_prompt_builder_preserves_caller_system_context(self):
         engine = MagicMock()

@@ -7,6 +7,8 @@ prefix: it would make every round a cache miss.
 
 from __future__ import annotations
 
+import pytest
+
 from openjarvis.core.types import Message, Role, ToolCall
 from openjarvis.engine.cloud import CloudEngine
 
@@ -86,3 +88,57 @@ def test_changing_text_does_not_change_the_instructions():
 
 def _user(text: str) -> Message:
     return Message(role=Role.USER, content=text)
+
+
+async def _send(model: str, messages: list[Message]) -> dict:
+    from types import SimpleNamespace
+    from unittest import mock
+
+    async def events():
+        yield SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(output=[], usage=None, status="completed"),
+        )
+
+    client = mock.MagicMock()
+    client.responses.create = mock.AsyncMock(return_value=events())
+    engine = CloudEngine()
+    if model.startswith("openrouter/"):
+        engine._openrouter_async_client = client
+    else:
+        engine._openai_async_client = client
+    async for _ in engine.stream_full(messages, model=model):
+        pass
+    return client.responses.create.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_stable_prompt_ends_in_an_explicit_cache_breakpoint():
+    sent = await _send(
+        "gpt-6-luna",
+        [_system("Kiosk rules."), _system("Evidence", volatile=True), _user("Hi")],
+    )
+
+    assert "instructions" not in sent
+    assert sent["input"][0] == {
+        "role": "developer",
+        "content": [
+            {
+                "type": "input_text",
+                "text": "Kiosk rules.",
+                "prompt_cache_breakpoint": {"mode": "explicit"},
+            }
+        ],
+    }
+    assert sent["input"][1:] == [
+        {"role": "developer", "content": "Evidence"},
+        {"role": "user", "content": "Hi"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_keeps_plain_instructions():
+    sent = await _send("openrouter/openai/gpt-6-luna", [_system("Rules."), _user("Hi")])
+
+    assert sent["instructions"] == "Rules."
+    assert sent["input"] == [{"role": "user", "content": "Hi"}]

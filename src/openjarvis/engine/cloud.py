@@ -250,6 +250,25 @@ def _is_openai_reasoning_model(model: str) -> bool:
     return m == "gpt-5-mini" or m.startswith("gpt-5-mini-") or m == "gpt-6-luna"
 
 
+def _cached_instructions_item(text: str) -> Dict[str, Any]:
+    """The stable prompt as a developer message that ends in a cache breakpoint.
+
+    OpenAI writes the prompt cache only at breakpoints. The implicit ones sit
+    after the conversation history, so a new run never matched the prefix the
+    last run wrote; top-level ``instructions`` cannot hold a breakpoint.
+    """
+    return {
+        "role": "developer",
+        "content": [
+            {
+                "type": "input_text",
+                "text": text,
+                "prompt_cache_breakpoint": {"mode": "explicit"},
+            }
+        ],
+    }
+
+
 def _uses_openai_responses(model: str) -> bool:
     """Return whether this OpenAI model requires the Responses API here."""
     name = openrouter_model_id(model).removeprefix("openai/").lower()
@@ -2033,8 +2052,13 @@ class CloudEngine(InferenceEngine):
             "store": False,
             "stream": True,
         }
-        if instructions:
+        if instructions and _is_openrouter_model(model):
             create_kwargs["instructions"] = instructions
+        elif instructions:
+            create_kwargs["input"] = [
+                _cached_instructions_item(instructions),
+                *input_items,
+            ]
         if tools:
             create_kwargs["tools"] = self._openai_responses_tools(tools)
         if tool_choice is not None:
