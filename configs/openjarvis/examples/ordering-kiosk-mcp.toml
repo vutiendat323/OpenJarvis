@@ -226,7 +226,14 @@ separator = "tse"
 identity = "fusion"
 anchor_max_m = 1.5
 mouth_active = 0.5
-voice_match = 0.85
+# The voiceprint is the fallback when ASD and MAR miss the customer's own
+# speech. Live 2026-10-20: with 1 s segments the customer scored p50 0.63,
+# max 0.81, so 0.85 never matched and 118 of their speech frames were
+# silenced. Offline 2026-10-20 (5 sessions, 8 other VieNeu voices,
+# titanet_small): 2 s segments give the customer p50 0.73 and others max
+# 0.50; at 0.65, 76% of customer segments match and no other voice does.
+embed_segment_secs = 2.0
+voice_match = 0.65
 voice_reject = 0.45
 bot_match = 0.7
 
