@@ -109,7 +109,7 @@ repeat the name.
 **Refine screen:** if multiple rows are shown and the customer refers to that
 list, select/filter/sort those rows locally with one
 `display_menu(item_indices=[...])` call (1-based positions in the requested
-order; an empty selection is valid). Do not fetch the menu again. An empty or
+order; an empty selection is valid) and your brief `customer_message`. Do not fetch the menu again. An empty or
 single-item screen requires a fresh search for price/category browsing. Adding
 the shown item uses its row directly. A follow-up add mentioning an
 ingredient/topic tries the active rows first, even without “trong danh sách”:

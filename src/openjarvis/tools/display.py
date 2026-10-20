@@ -264,7 +264,7 @@ class DisplayMenuTool(_DisplayTool):
         if params.get("from_displayed_menu") is True:
             ids = params.get("item_ids")
             if (
-                set(params) - {"from_displayed_menu", "item_ids"}
+                set(params) - {"from_displayed_menu", "item_ids", "customer_message"}
                 or not isinstance(ids, list)
                 or any(not isinstance(item_id, str) for item_id in ids)
                 or len(ids) != len(set(ids))
@@ -285,7 +285,8 @@ class DisplayMenuTool(_DisplayTool):
                         success=False,
                     )
                 selected = [dict(by_id[item_id]) for item_id in ids]
-            return self.execute(items=selected, result_complete=True)
+            reply = {key: params[key] for key in ("customer_message",) if key in params}
+            return self.execute(items=selected, result_complete=True, **reply)
         rows = params.get("items") or []
         result_complete = params.get("result_complete") is True
         from_http = bool(params.get("all_from_latest_http")) and not rows
@@ -422,7 +423,10 @@ class DisplayMenuMemoryTool(BaseTool):
                 "when present; otherwise use displayed_menu. With zero or one "
                 "item, use the menu skill for a fresh search or filter. Pass "
                 "1-based positions in display order; item facts come from "
-                "verified rows. An empty selection shows zero matches."
+                "verified rows. An empty selection shows zero matches. Pass "
+                "customer_message: your own brief spoken reply for when the "
+                "rows are shown; the screen lists them, so never read item "
+                "names, prices or counts aloud."
             ),
             parameters={
                 "type": "object",
@@ -432,6 +436,7 @@ class DisplayMenuMemoryTool(BaseTool):
                         "items": {"type": "integer", "minimum": 1},
                         "uniqueItems": True,
                     },
+                    "customer_message": {"type": "string", "minLength": 1},
                 },
                 "required": ["item_indices"],
                 "additionalProperties": False,
@@ -445,6 +450,7 @@ class DisplayMenuMemoryTool(BaseTool):
 
     def execute(self, **params: Any) -> ToolResult:
         indices = params.get("item_indices")
+        reply = {key: params[key] for key in ("customer_message",) if key in params}
         context = self._display.agent_context()
         from_screen_search = "customer_screen_search" in context
         rows = (
@@ -453,7 +459,7 @@ class DisplayMenuMemoryTool(BaseTool):
             else context.get("displayed_menu", [])
         )
         if (
-            set(params) != {"item_indices"}
+            set(params) - set(reply) != {"item_indices"}
             or not isinstance(indices, list)
             or any(
                 type(index) is not int or index < 1 or index > len(rows)
@@ -476,9 +482,10 @@ class DisplayMenuMemoryTool(BaseTool):
             return self._display.execute(
                 items=[rows[index - 1] for index in indices],
                 result_complete=True,
+                **reply,
             )
         ids = [rows[index - 1].get("id") for index in indices]
-        return self._display.execute(from_displayed_menu=True, item_ids=ids)
+        return self._display.execute(from_displayed_menu=True, item_ids=ids, **reply)
 
 
 @ToolRegistry.register("display_cart")

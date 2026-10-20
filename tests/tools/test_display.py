@@ -1481,6 +1481,26 @@ def test_agent_menu_tool_cannot_publish_invented_item_facts():
     assert len(recorder.events) == 2
 
 
+def test_agent_menu_refinement_with_a_reply_ends_the_turn_without_another_round():
+    display, recorder = _wired(DisplayMenuTool)
+    agent_tool = DisplayMenuMemoryTool(display)
+    rows = [
+        {"id": "latte", "name": "Latte", "price": 60_000},
+        {"id": "cake", "name": "Bánh chuối", "price": 35_000},
+    ]
+    with conversation_scope("refinement-reply"):
+        assert display.execute(items=rows, result_complete=True).success
+        silent = agent_tool.execute(item_indices=[1, 2])
+        answered = agent_tool.execute(item_indices=[2], customer_message="Đây nhé.")
+    assert "customer_message" in agent_tool.spec.parameters["properties"]
+    assert answered.success
+    assert answered.metadata["customer_message"] == "Đây nhé."
+    assert answered.metadata.get("continue_agent") is not True
+    # Without a reply the agent still answers the verified result itself.
+    assert silent.metadata["continue_agent"] is True
+    assert recorder.events[-1].data["items"] == [rows[1]]
+
+
 def test_agent_menu_tool_rejects_refinement_of_one_displayed_item():
     display, recorder = _wired(DisplayMenuTool)
     agent_tool = DisplayMenuMemoryTool(display)
