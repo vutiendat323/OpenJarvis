@@ -282,6 +282,9 @@ lines, call no tool: ask one short question, `state="NEEDS_INPUT"`, whether to
 create a new order with the same items and the new choice, for example “Đơn
 này là mang đi, không đổi được. Tạo đơn mới tại bàn với các món này nhé?”.
 A yes is an explicit request for a new identical order with that choice.
+Asking for the same order again with the new choice (“tương tự luôn là tại
+bàn”, “làm lại đơn đó tại bàn”) already is that explicit request: do not ask,
+order it as a new identical order.
 
 The kiosk cannot cancel an order it has created; an unpaid order expires by
 itself. When the customer asks to cancel or stop after an order was created,
