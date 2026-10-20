@@ -257,17 +257,27 @@ def _short_hash(value: Any) -> str:
 
 
 def _log_prefix(
-    model: str, stable_parts: Sequence[str], tools: Sequence[Dict[str, Any]]
+    model: str,
+    stable_parts: Sequence[str],
+    tools: Sequence[Dict[str, Any]],
+    input_items: Sequence[Dict[str, Any]] = (),
 ) -> None:
     """Hashes of what leads the cached prefix, so a cache miss shows its cause.
 
     Hashes and sizes only, never the text. WARNING, like ``agent_round``:
-    `jarvis serve` drops openjarvis INFO lines.
+    `jarvis serve` drops openjarvis INFO lines. ``items`` lists each input item
+    as kind:chars:hash; the first that differs from the earlier request's list
+    is where the cached prefix ends.
     """
     stable = "\n\n".join(stable_parts)
+    items = ",".join(
+        f"{item.get('type') or item.get('role')}:"
+        f"{len(json.dumps(item, ensure_ascii=False))}:{_short_hash(item)}"
+        for item in input_items
+    )
     logger.warning(
         "responses_prefix model=%s tools=%s tool_names=%s tools_count=%d "
-        "stable=%s stable_chars=%d stable_parts=%s",
+        "stable=%s stable_chars=%d stable_parts=%s items=%s",
         model,
         _short_hash(list(tools)),
         _short_hash([tool.get("name", "") for tool in tools]),
@@ -275,6 +285,7 @@ def _log_prefix(
         _short_hash(stable),
         len(stable),
         ",".join(f"{len(part)}:{_short_hash(part)}" for part in stable_parts) or "-",
+        items or "-",
     )
 
 
@@ -2131,7 +2142,7 @@ class CloudEngine(InferenceEngine):
             else:
                 create_kwargs["tool_choice"] = tool_choice
 
-        _log_prefix(model, stable_parts, create_kwargs.get("tools") or [])
+        _log_prefix(model, stable_parts, create_kwargs.get("tools") or [], input_items)
         events = await client.responses.create(**create_kwargs)
         completed = False
         try:

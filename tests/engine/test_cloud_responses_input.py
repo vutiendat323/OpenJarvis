@@ -282,3 +282,27 @@ def test_history_prefix_is_the_same_whatever_the_leading_volatile_text():
     first, second = items("FAQ giờ mở cửa"), items("FAQ wifi")
     assert first[:3] == second[:3]
     assert first[-1]["content"] == "FAQ giờ mở cửa"
+
+
+@pytest.mark.asyncio
+async def test_prefix_log_lists_each_input_item_without_its_text(caplog):
+    """Comparing two runs' lists shows the first item where the history differs."""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="openjarvis.engine.cloud")
+    calls = [ToolCall(id="c1", name="lookup", arguments="{}")]
+    await _send(
+        "gpt-6-luna",
+        [
+            _system("Rules."),
+            _user("Mở menu"),
+            Message(role=Role.ASSISTANT, content="", tool_calls=calls),
+            Message(role=Role.TOOL, content="ok", tool_call_id="c1", name="lookup"),
+        ],
+    )
+
+    [line] = _prefix_lines(caplog)
+    fields = dict(part.split("=", 1) for part in line.split()[1:])
+    kinds = [item.split(":")[0] for item in fields["items"].split(",")]
+    assert kinds == ["user", "function_call", "function_call_output"]
+    assert "Mở menu" not in line
