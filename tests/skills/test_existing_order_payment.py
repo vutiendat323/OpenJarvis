@@ -168,6 +168,27 @@ def test_reopening_older_qr_reads_current_order_and_preserves_new_draft():
     assert http.calls[0]["url"].endswith("/orders/coffee")
 
 
+def test_reopened_qr_with_a_reply_ends_the_turn_without_another_round():
+    _, session, _, _, tool = _procedure()
+    with conversation_scope("owner"):
+        result = tool.execute(order_id="coffee", customer_message="Quét mã nhé.")
+    assert result.success
+    assert session.last_payload["qr_code"] == "QR-FRESH"
+    assert result.metadata["customer_message"] == "Quét mã nhé."
+    assert result.metadata.get("continue_agent") is not True
+
+
+def test_paid_order_still_lets_the_agent_answer_despite_a_reply():
+    # The reply was written before the read; it may expect a QR.
+    _, session, _, _, tool = _procedure(
+        _order(status="paid", payment_status="completed")
+    )
+    with conversation_scope("owner"):
+        result = tool.execute(order_id="coffee", customer_message="Quét mã nhé.")
+    assert result.success and session.last_payload["view"] == "bill"
+    assert result.metadata["continue_agent"] is True
+
+
 @pytest.mark.parametrize(
     "owner, oid", [("other-owner", "coffee"), ("owner", "unknown")]
 )
@@ -460,3 +481,35 @@ def _reset_evidence():
     evidence.reset()
     yield
     evidence.reset()
+
+
+def test_preset_agent_reopens_an_older_qr_in_one_model_round():
+    from openjarvis.agents.orchestrator import OrchestratorAgent
+    from tests.agents.fake_engine import FakeEngine
+    from tests.agents.test_intent_normalization import invoke
+
+    _, session, cart, http, tool = _procedure()
+    internal = tool._executor._tool_executor
+    visible = [cart, tool, internal.get_tool("display_payment_qr")]
+    # Only one round is scripted: a second model call would fail the run.
+    engine = FakeEngine(
+        [
+            {
+                "tool_calls": [
+                    invoke(
+                        "skill_trendcoffee-order-payment",
+                        "NONE",
+                        order_id="coffee",
+                        customer_message="Quét mã để thanh toán nhé.",
+                    )
+                ]
+            }
+        ]
+    )
+    with conversation_scope("owner"):
+        result = OrchestratorAgent(
+            engine, "fake", tools=visible, intent_normalization=True, max_turns=2
+        ).run("Mở lại QR đơn cà phê sữa.")
+    assert result.turns == 1
+    assert result.content == "Quét mã để thanh toán nhé."
+    assert session.last_payload["qr_code"] == "QR-FRESH"

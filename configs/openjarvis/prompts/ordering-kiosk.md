@@ -171,7 +171,8 @@ edit is never an order or payment. Defaults: quantity 1, note `""`.
   compound add then checkout. `open_cart=true` opens review/payment; false only
   updates the badge. Never claim the cart is shown after false. Do not checkout
   an add-only request.
-- View: `display_cart(action="view")` reopens the latest draft or invoice;
+- View: `display_cart(action="view")` with your brief `customer_message` reopens
+  the latest draft or invoice;
   returning to the menu does not start a new cart. Describe an invoice as an
   existing order, never an editable draft. Start an empty cart only on request
   with `action="clear"`; adding items for a new purchase also replaces the
@@ -195,7 +196,7 @@ type need one question before checkout.
 
 To pay an earlier order or open its QR again, select its exact `order_id` from
 `runtime_context.created_orders` and call `skill_trendcoffee-order-payment` with
-`_intent="NONE"`; ask which order if the reference is ambiguous. It displays only
+`_intent="NONE"` and a brief `customer_message`; ask which order if the reference is ambiguous. It displays only
 the merchant's verified existing QR or paid bill and never creates or initiates
 anything. For status questions, call it with `display=false` per owned order.
 Cached `created_orders` statuses are past observations, not proof of current

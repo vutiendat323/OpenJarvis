@@ -1,7 +1,7 @@
 [skill]
 name = "trendcoffee-order-payment"
-description = "Read one existing order from runtime_context.created_orders. To pay an earlier order, pass its exact order_id; this reads its current state and shows its existing verified QR or paid bill without creating an order or initiating payment. Use _intent=NONE. Use display=false for status without selecting another order's screen; a currently displayed QR is removed if no longer payable. Never use checkout to pay an existing order."
-input_schema_json = '''{"type":"object","properties":{"order_id":{"type":"string","minLength":1},"display":{"type":"boolean"}},"required":["order_id"],"additionalProperties":false}'''
+description = "Read one existing order from runtime_context.created_orders. To pay an earlier order, pass its exact order_id; this reads its current state and shows its existing verified QR or paid bill without creating an order or initiating payment. Use _intent=NONE. Use display=false for status without selecting another order's screen; a currently displayed QR is removed if no longer payable. Never use checkout to pay an existing order. Pass customer_message: your own brief spoken reply for when its QR is shown; any other outcome is returned for you to answer."
+input_schema_json = '''{"type":"object","properties":{"order_id":{"type":"string","minLength":1},"display":{"type":"boolean"},"customer_message":{"type":"string","minLength":1}},"required":["order_id"],"additionalProperties":false}'''
 
 [skill.metadata.openjarvis]
 existing_order = true
@@ -37,6 +37,7 @@ arguments_template = '''{
   "created_at":{"$coalesce":["{fresh_order.result.createdAt}",""]},
   "payment_window_seconds":900,
   "display":"{display}",
+  "customer_message":{"$coalesce":["{customer_message}",""]},
   "lines":{"$map":"{fresh_order.result.orderItems}","as":"line","value":{
     "line_id":"{line.variant.slug}","name":"{line.variant.product.name}",
     "size":"{line.variant.size.name}","note":"{line.note}",

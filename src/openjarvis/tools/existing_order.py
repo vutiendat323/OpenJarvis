@@ -158,5 +158,14 @@ class DisplayExistingOrderTool(_DisplayTool):
             )
         if result.success:
             result.content = json.dumps(summary)
-            result.metadata["continue_agent"] = True
+            # The reply was written before the read, for the QR it asked for;
+            # a paid bill is answered by the agent from the verified result.
+            message = params.get("customer_message")
+            if summary["payable"] and isinstance(message, str) and message.strip():
+                result.metadata["customer_message"] = message.strip()
+                result.metadata["completed_display"] = True
+                result.metadata.pop("continue_agent", None)
+            else:
+                result.metadata.pop("customer_message", None)
+                result.metadata["continue_agent"] = True
         return result
