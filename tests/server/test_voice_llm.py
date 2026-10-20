@@ -962,6 +962,38 @@ def test_tool_transcript_becomes_paired_pipecat_messages():
     ]
 
 
+def test_tool_transcript_keeps_the_rounds_reasoning_items_of_answered_calls():
+    from openjarvis.core.types import Message, Role, ToolCall
+    from openjarvis.server.voice.llm import transcript_messages
+
+    reasoning = {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque"}
+    answered = {"type": "function_call", "call_id": "c1", "name": "menu"}
+    unanswered = {"type": "function_call", "call_id": "c2", "name": "checkout"}
+    transcript = [
+        Message(
+            role=Role.ASSISTANT,
+            content="",
+            tool_calls=[
+                ToolCall(id="c1", name="menu", arguments="{}"),
+                ToolCall(id="c2", name="checkout", arguments="{}"),
+            ],
+            metadata={"response_items": [reasoning, answered, unanswered]},
+        ),
+        Message(role=Role.TOOL, content="ok", tool_call_id="c1", name="menu"),
+    ]
+
+    messages = transcript_messages(transcript)
+
+    assert messages[0]["metadata"] == {"response_items": [reasoning, answered]}
+    # The Agent reads them back as the same assistant message.
+    context = LLMContext(messages=[*messages, {"role": "user", "content": "thêm bánh"}])
+    _, agent_context = agent_input(context)
+    restored = next(
+        m for m in agent_context.conversation.messages if m.role == Role.ASSISTANT
+    )
+    assert restored.metadata["response_items"] == [reasoning, answered]
+
+
 @pytest.mark.anyio
 async def test_customer_turn_keeps_its_tool_calls_for_the_next_turn():
     from pipecat.processors.aggregators.llm_context import LLMContext

@@ -308,23 +308,32 @@ def transcript_messages(transcript: Sequence[Message]) -> list[dict[str, Any]]:
         if message.role == Role.ASSISTANT:
             calls = [c for c in message.tool_calls or [] if c.id in answered]
             if calls:
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": message.content or "",
-                        "tool_calls": [
-                            {
-                                "id": call.id,
-                                "type": "function",
-                                "function": {
-                                    "name": call.name,
-                                    "arguments": call.arguments,
-                                },
-                            }
-                            for call in calls
-                        ],
-                    }
-                )
+                entry: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": call.arguments,
+                            },
+                        }
+                        for call in calls
+                    ],
+                }
+                # The round as the model returned it, reasoning included: the
+                # next run sends the same history, so the prompt cache matches.
+                items = [
+                    item
+                    for item in message.metadata.get("response_items") or []
+                    if item.get("type") != "function_call"
+                    or item.get("call_id") in answered
+                ]
+                if items:
+                    entry["metadata"] = {"response_items": items}
+                messages.append(entry)
         elif message.role == Role.TOOL:
             messages.append(
                 {

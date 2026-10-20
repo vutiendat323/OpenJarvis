@@ -674,12 +674,19 @@ class OrchestratorAgent(ToolUsingAgent):
                         ),
                     )
                 )
-                # Without the round's reasoning items: later runs need what was
-                # called and returned, not this round's encrypted reasoning.
+                # With the round's reasoning items: a later run sends this
+                # round as it was sent now. Without them the history differs
+                # from the one the prompt cache holds, and the cache matches
+                # only up to the first tool call.
                 _record_transcript(
                     context,
                     Message(
-                        role=Role.ASSISTANT, content=round_text, tool_calls=tool_calls
+                        role=Role.ASSISTANT,
+                        content=round_text,
+                        tool_calls=tool_calls,
+                        metadata=(
+                            {"response_items": response_items} if response_items else {}
+                        ),
                     ),
                 )
                 # The model completed these calls: they start now, before any
