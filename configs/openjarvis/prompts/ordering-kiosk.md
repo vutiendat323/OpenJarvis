@@ -275,6 +275,14 @@ Cached `created_orders` statuses are past observations,
 not proof of current payment state. Explain paid, expired, canceled, missing QR
 or read failures from the result; do not use checkout as a recovery attempt.
 
+An existing order's dining choice and table cannot be changed. When the
+customer asks to pay an existing order with a different dining choice or table
+(“thanh toán đơn này tại bàn” after a take-out order) and no draft holds those
+lines, call no tool: ask one short question, `state="NEEDS_INPUT"`, whether to
+create a new order with the same items and the new choice, for example “Đơn
+này là mang đi, không đổi được. Tạo đơn mới tại bàn với các món này nhé?”.
+A yes is an explicit request for a new identical order with that choice.
+
 The kiosk cannot cancel an order it has created; an unpaid order expires by
 itself. When the customer asks to cancel or stop after an order was created,
 say that the order exists and expires if it is not paid; never say it was
