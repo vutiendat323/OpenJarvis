@@ -37,8 +37,10 @@ DRAIN_TIMEOUT_SECS = 1.0
 # Finalizing at every VAD stop cut one sentence at each breath (live
 # 2026-10-06: pauses inside a sentence p50 0.3 s, p90 1.0 s; between sentences
 # at least 1.19 s), and Gemini transcribed the pieces without context. A turn
-# still needs 1.5 s of silence, so this costs little turn latency.
-FINALIZE_HOLD_SECS = 0.6
+# still needs 1.5 s of silence, so this costs little turn latency. 0.6 s still
+# split a sentence at a 0.8 s pause (offline 2026-10-20, 2026-10-07 read: "bạc
+# xỉu nóng" heard as "Matcha xịn nóng.", WER 9.0%); 0.9 s kept it whole, 7.2%.
+FINALIZE_HOLD_SECS = 0.9
 
 
 @dataclass(frozen=True)
