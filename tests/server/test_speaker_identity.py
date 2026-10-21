@@ -448,6 +448,17 @@ def test_target_overlap_is_uncertain_and_flags_visible_speech():
     assert gate.target_overlap and gate.target_speaking_visibly
 
 
+def test_two_slots_of_the_customer_are_one_voice_not_an_overlap():
+    # Live 2026-10-21: Sortformer gave the locked customer slots 0 and 1 at
+    # once. Counted as two voices, 28% of their speech was held as overlap,
+    # and separation silenced it (-25 dBFS -> -64 dBFS).
+    faces, now = _faces(asd=0.9)
+    gate = _locked_gate(faces, now)
+    gate.lock.target_slots.add(1)
+    assert _frame(gate, now, 0, 1, times=3) is A
+    assert not gate.target_overlap
+
+
 def test_overlap_without_the_target_is_rejected():
     faces, now = _faces(mouth=0.8)
     gate = _locked_gate(faces, now, voice=True)

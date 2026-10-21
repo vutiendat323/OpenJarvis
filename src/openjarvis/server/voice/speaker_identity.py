@@ -521,7 +521,10 @@ class FusionGate(AudioOnlyGate):
         labels = {s: lock.label(s, bot_echo=self.is_echo(s)) for s in active}
         voices = [s for s in active if labels[s] is not Label.BOT]
         self.row_voices = voices
-        overlap = self._overlap.update(len(voices))
+        # The customer's slots are one voice: Sortformer often runs two of
+        # them at once for the same speaker, which is not an overlap.
+        others = [s for s in voices if labels[s] is not Label.TARGET]
+        overlap = self._overlap.update(len(others) + (len(others) < len(voices)))
         visible, asd, mouth = self._target_evidence(t, stream_id)
         asd_ok = asd is not None and asd >= self._asd_accept
         mouth_ok = mouth is not None and mouth >= self._mouth_active
