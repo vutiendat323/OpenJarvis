@@ -827,6 +827,7 @@ async def test_overlap_is_held_and_replaced_by_the_customers_voice():
     await processor._release_stt(200.0)
 
     assert [int(p[0]) for p in pushed] == [1000, 1000, 16383, 16383, 1000]
+    assert processor.stt_fallback_mix == 0
     assert processor._verdict_values[2:4] == [Verdict.UNCERTAIN] * 2
     ((mix, enroll),) = separator.calls
     # The separator sees the clean lead-in as context, then the held overlap.
@@ -855,6 +856,7 @@ async def test_overlap_before_enrollment_goes_to_gemini_as_the_mix():
     await processor._release_stt(200.0)
 
     assert [int(p[0]) for p in pushed] == [2000, 2000] and separator.calls == []
+    assert processor.stt_fallback_mix == 2
 
 
 @pytest.mark.anyio
@@ -881,6 +883,20 @@ async def test_teardown_sends_held_overlap_without_separating():
     await processor._release_stt(math.inf, separate=False)
 
     assert [int(p[0]) for p in pushed] == [2000, 2000] and separator.calls == []
+    assert processor.stt_fallback_mix == 2
+
+
+@pytest.mark.anyio
+async def test_failed_separation_sends_the_mix_and_counts_it():
+    processor, separator, pushed = _separating_processor()
+    _enroll(processor)
+    separator.separate = lambda mix, enroll: 1 / 0
+    _line(processor, [(2000, Verdict.UNCERTAIN, True)] * 2)
+
+    await processor.drain()
+
+    assert [int(p[0]) for p in pushed] == [2000, 2000]
+    assert processor.stt_fallback_mix == 2
 
 
 class _AsdEvidenceGate(_FixedGate):
@@ -1121,6 +1137,22 @@ async def test_audio_with_no_verdict_after_the_lock_says_so():
 
     assert sent == [("unknown", "silenced_no_verdict_locked")]
     assert processor.stt_masked_no_verdict == 1
+    assert processor.stt_no_verdict_late == 1  # no row had reached it
+
+
+@pytest.mark.anyio
+async def test_a_missing_row_between_decided_rows_is_a_gap_not_a_late_verdict():
+    processor, _ = _fusion_processor(_fusion_gate(), stt_delay_secs=0.7)
+    sent = _decisions(processor)
+    processor._remember_verdict(100.0, Verdict.ACCEPT)
+    processor._remember_verdict(100.8, Verdict.ACCEPT)
+    _unverdicted(processor, 100.5)
+
+    await processor._release_stt(200.0)
+
+    assert sent == [("unknown", "silenced_no_verdict_locked")]
+    assert processor.stt_masked_no_verdict == 1
+    assert processor.stt_no_verdict_late == 0
 
 
 def test_audio_centred_on_a_row_boundary_still_finds_its_verdict():

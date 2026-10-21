@@ -348,6 +348,8 @@ class SpeakerAudioProcessor(FrameProcessor):
         self._pinned: int | None = None
         self._masked_values: list[bool] = []
         self.stt_masked_no_verdict = 0
+        self.stt_no_verdict_late = 0  # of those, rows had not reached the audio
+        self.stt_fallback_mix = 0  # overlap frames sent to STT as the mix
         self._fusion_row_errors = 0
         self._embeddings = (
             EmbeddingWorker(embedder, self._on_embedding)
@@ -608,6 +610,23 @@ class SpeakerAudioProcessor(FrameProcessor):
             return i
         return None
 
+    def _note_no_verdict(self, t: float) -> None:
+        """Late (the diarizer had not reached ``t`` at release) or gap (a hole
+        between decided rows); the first few get their times logged."""
+        starts = self._verdict_starts
+        late = not starts or t >= starts[-1]
+        self.stt_no_verdict_late += late
+        if self.stt_masked_no_verdict > 5:
+            return
+        newest = (
+            f"{starts[-1] + self._diarizer.frame_secs - t:+.3f} s" if starts else "none"
+        )
+        logger.info(
+            f"{self}: no verdict for STT audio at t={t:.3f} "
+            f"({'late' if late else 'gap'}; newest row ends {newest} from it; "
+            f"released {time.time() - t:.3f} s after it)"
+        )
+
     def _verdict_covers(self, start: float, end: float) -> bool:
         """Every sample of an early-released audio frame needs decided evidence."""
         if end <= start:
@@ -642,6 +661,7 @@ class SpeakerAudioProcessor(FrameProcessor):
         if i is None:
             if self._fusion is not None and self._fusion.locked:
                 self.stt_masked_no_verdict += 1
+                self._note_no_verdict(t)
                 return "unknown", "silenced_no_verdict_locked"
             return "unknown", "kept"
         verdict = self._verdict_values[i]
@@ -816,6 +836,8 @@ class SpeakerAudioProcessor(FrameProcessor):
                     continue
                 await self._flush_held(separate=separate)
                 verdict, reason = self._stt_decision(t)
+                if not reason.startswith("silenced") and self._overlap_at(t):
+                    self.stt_fallback_mix += 1
                 await self._push_stt(
                     frame,
                     bytes(len(frame.audio))
@@ -876,6 +898,8 @@ class SpeakerAudioProcessor(FrameProcessor):
                 audio = bytes(len(frame.audio))
             elif target is not None:
                 reason = "separated"
+            else:
+                self.stt_fallback_mix += 1
             await self._push_stt(frame, audio, verdict, reason)
             start = end
 
@@ -944,6 +968,8 @@ class SpeakerAudioProcessor(FrameProcessor):
                 f"embed_ms_p50={_percentile(embeds, 50)} "
                 f"embed_ms_p95={_percentile(embeds, 95)} "
                 f"stt_masked_no_verdict_frames={self.stt_masked_no_verdict} "
+                f"stt_no_verdict_late_frames={self.stt_no_verdict_late} "
+                f"stt_fallback_mix_frames={self.stt_fallback_mix} "
                 f"echo_rejects={self._fusion.echo_rejects} "
                 f"bargein_blocked={getattr(self._tracker, 'bargein_blocked', 0)} "
                 f"fusion_row_errors={self._fusion_row_errors}"

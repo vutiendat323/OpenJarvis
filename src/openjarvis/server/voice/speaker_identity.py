@@ -567,7 +567,7 @@ class FusionGate(AudioOnlyGate):
             return Verdict.UNCERTAIN
         if targets:
             self.row_is_target = True
-            return self._target_verdict(targets[0], visible, asd_ok, mouth_ok)
+            return self._target_verdict(targets, visible, asd_ok, mouth_ok)
         if overlap or all(labels[s] is Label.OTHER for s in voices):
             return Verdict.REJECT
         if asd_ok:
@@ -576,16 +576,17 @@ class FusionGate(AudioOnlyGate):
             return self._accept("asd")
         return Verdict.UNCERTAIN
 
-    def _target_verdict(self, slot, visible, asd_ok, mouth_ok):
+    def _target_verdict(self, slots, visible, asd_ok, mouth_ok):
+        voice_ok = any(self.lock.voice_ok(s) for s in slots)
         if visible:
             if asd_ok:
                 return self._accept("asd")
             if mouth_ok:
                 return self._accept("mar")
-            if self.lock.voice_ok(slot):
+            if voice_ok:
                 return self._accept("voice")  # MAR missed: hand or cup at the mouth
             return Verdict.REJECT
-        if self.lock.voice_ok(slot):
+        if voice_ok:
             return self._accept("voice")
         return Verdict.UNCERTAIN
 

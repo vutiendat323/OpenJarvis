@@ -459,6 +459,19 @@ def test_two_slots_of_the_customer_are_one_voice_not_an_overlap():
     assert not gate.target_overlap
 
 
+@pytest.mark.parametrize("sims", [(0.5, 0.9), (0.9, 0.5)])
+def test_the_voiceprint_fallback_checks_every_customer_slot(sims):
+    # Two slots of the locked customer, mouth not seen: the voiceprint decides,
+    # and the order of the slots must not change the verdict.
+    faces, now = _faces(mouth=0.0)
+    gate = _locked_gate(faces, now, voice=True)
+    gate.lock.target_slots.add(1)
+    gate.lock.slots[0] = SlotIdentity(voice_sim=sims[0])
+    gate.lock.slots[1] = SlotIdentity(voice_sim=sims[1])
+    assert _frame(gate, now, 0, 1, times=3) is A
+    assert gate.last_source == "voice"
+
+
 def test_overlap_without_the_target_is_rejected():
     faces, now = _faces(mouth=0.8)
     gate = _locked_gate(faces, now, voice=True)
